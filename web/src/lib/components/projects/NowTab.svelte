@@ -8,7 +8,7 @@
 	import Clock from '#lib/components/app/Clock.svelte';
 	import StateBadge from '#lib/components/app/StateBadge.svelte';
 	import Where from '#lib/components/app/Where.svelte';
-	import { fmtStamp, plain, toolLabel } from '#lib/format.js';
+	import { fmtStamp, plain, toolTitle } from '#lib/format.js';
 	import { live } from '#lib/live/store.svelte.js';
 	import { notePanel } from '#lib/notepanel.svelte.js';
 	import { claimPaths, label, shown } from '#lib/session.js';
@@ -86,7 +86,9 @@
 					<a class="truncate font-medium hover:underline" href="/sessions/{s.id}">{label(s)}</a>
 					<Where session={s} />
 					{#if s.activity === 'working' && s.tool}
-						<span class="truncate font-mono text-xs">{toolLabel(s.tool)}</span>
+						<span class="truncate text-xs {s.tool.description ? '' : 'font-mono'}"
+							>{toolTitle(s.tool)}</span
+						>
 					{/if}
 					{#if s.claim}
 						<span class="text-xs">

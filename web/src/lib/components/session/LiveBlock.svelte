@@ -1,9 +1,11 @@
 <script lang="ts">
 	// What the session is doing right now, below the newest exchange: the
-	// state, the running tool, the streaming text, the turn's facts,
-	// subagents and tasks; and the replies Claude has not taken yet.
+	// state, the running tool (what Claude said it does, the call below),
+	// the streaming text, the turn's facts, subagents and tasks; a pending
+	// interrupt; and the replies Claude has not taken yet.
+	import OctagonXIcon from '@lucide/svelte/icons/octagon-x';
 	import type { Session } from '#lib/api/types.js';
-	import { fmtDuration, plural, toolLabel } from '#lib/format.js';
+	import { fmtDuration, plural, toolLabel, toolTitle } from '#lib/format.js';
 	import { live } from '#lib/live/store.svelte.js';
 	import Clock from '#lib/components/app/Clock.svelte';
 	import Meter from '#lib/components/app/Meter.svelte';
@@ -61,7 +63,9 @@
 			<div class="flex items-center gap-2">
 				<StateBadge activity="working" />
 				{#if s.tool}
-					<span class="truncate font-mono text-xs">{toolLabel(s.tool)}</span>
+					<span class="min-w-0 truncate text-xs {s.tool.description ? '' : 'font-mono'}"
+						>{toolTitle(s.tool)}</span
+					>
 					<Clock since={s.tool.started_at} class="text-xs" />
 				{:else}
 					<span class="text-xs text-muted-foreground">thinking</span>
@@ -72,6 +76,16 @@
 					>
 				{/if}
 			</div>
+			{#if s.tool?.description}
+				<p class="truncate font-mono text-xs text-muted-foreground">{toolLabel(s.tool)}</p>
+			{/if}
+		{/if}
+		{#if s.interrupting}
+			<p class="flex items-center gap-1.5 text-xs font-medium text-warning">
+				<OctagonXIcon class="size-3.5 shrink-0" />
+				Interrupting: Claude stops at its next step
+				<Clock since={s.interrupting} class="font-normal" />
+			</p>
 		{/if}
 		{#if said}
 			<p class="text-sm whitespace-pre-wrap">

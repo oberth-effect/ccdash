@@ -195,6 +195,18 @@ pub enum Cmd {
         session: String,
         error: Option<String>,
     },
+    /// Interrupts the turn of the session `key` names: an open prompt is
+    /// denied with a stop, otherwise its next tool hook ends the turn.
+    Interrupt {
+        key: String,
+        reply: oneshot::Sender<Result<Session, String>>,
+    },
+    /// A tool hook on `host` stopped `session`'s turn at `at`.
+    Interrupted {
+        host: String,
+        session: String,
+        at: i64,
+    },
     /// Marks the session `key` names resolved: the wrap-up prompt goes
     /// through its channel, and the session closes when that turn ends.
     MarkResolved {
@@ -980,6 +992,10 @@ async fn run(mut core: Core, mut rx: mpsc::Receiver<Cmd>) {
                 session,
                 error,
             } => core.stopped(&host, &session, error),
+            Cmd::Interrupt { key, reply } => {
+                let _ = reply.send(core.interrupt(&key));
+            }
+            Cmd::Interrupted { host, session, at } => core.interrupted(&host, &session, at),
             Cmd::Forget { key, reply } => {
                 let _ = reply.send(core.forget(&key));
             }
@@ -2730,6 +2746,61 @@ impl Core {
             },
         );
         Ok(s.id)
+    }
+
+    /// Interrupts the session's turn. Open prompts are denied with Claude
+    /// Code's stop (the turn ends at once); otherwise the session is marked
+    /// and its collector makes the next tool hook end the turn.
+    fn interrupt(&mut self, key: &str) -> Result<Session, String> {
+        let (host, s) = self.running(key)?;
+        if !s.hooked {
+            return Err("the session runs without hooks: interrupt it in its terminal".into());
+        }
+        if !matches!(s.activity, Activity::Working | Activity::Permission) {
+            return Err("the session is not working".into());
+        }
+        if s.interrupting.is_some() {
+            return Err("asked already: Claude stops at its next step".into());
+        }
+        let id = s.id.clone();
+        let asks: Vec<String> = s.asks.iter().map(|a| a.id.clone()).collect();
+        info!(
+            "interrupting {id} on {host} ({} open prompt(s))",
+            asks.len()
+        );
+        let now = now_ms();
+        let mut fx = Effects::default();
+        if asks.is_empty() {
+            let state = self.states.get_mut(&host).ok_or("session vanished")?;
+            state.interrupting(&id, now, &mut fx);
+            self.tell(
+                &host,
+                ToCollector::Interrupt {
+                    session: id.clone(),
+                    at: now,
+                },
+            );
+        } else {
+            for ask in &asks {
+                self.answer(&host, &id, ask, &Answer::Deny { message: None }, "web")?;
+            }
+            let state = self.states.get_mut(&host).ok_or("session vanished")?;
+            state.interrupted(&id, now, &mut fx);
+        }
+        self.flush(&host, fx);
+        self.states[&host]
+            .session(&id)
+            .cloned()
+            .ok_or_else(|| "session vanished".to_owned())
+    }
+
+    fn interrupted(&mut self, host: &str, session: &str, at: i64) {
+        info!("interrupted {session} on {host}");
+        let mut fx = Effects::default();
+        if let Some(state) = self.states.get_mut(host) {
+            state.interrupted(session, at, &mut fx);
+        }
+        self.flush(host, fx);
     }
 
     fn stopped(&mut self, host: &str, session: &str, error: Option<String>) {

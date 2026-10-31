@@ -1,6 +1,7 @@
 <script lang="ts">
 	// One item of an exchange that is not a step: Claude's text, a reply,
 	// an error, a subagent, a compaction, a start or end divider.
+	import OctagonXIcon from '@lucide/svelte/icons/octagon-x';
 	import type { Item } from '#lib/api/types.js';
 	import { fmtDuration, fmtStamp, fmtTime, known, plural } from '#lib/format.js';
 	import Prose from './Prose.svelte';
@@ -60,5 +61,10 @@
 {:else if item.kind === 'end'}
 	<div class="text-center text-xs text-muted-foreground">
 		Session ended ({item.reason}) · {fmtStamp(item.at)}
+	</div>
+{:else if item.kind === 'interrupted'}
+	<div class="flex items-center gap-1.5 text-xs font-medium text-warning">
+		<OctagonXIcon class="size-3.5" />
+		Interrupted from ccdash · {fmtTime(item.at)}
 	</div>
 {/if}

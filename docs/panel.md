@@ -30,11 +30,30 @@ links can be shared and the back button works.
 
 ## 2. A session's page
 
-| Tab     | Shows                                                                                                                             |
-| ------- | --------------------------------------------------------------------------------------------------------------------------------- |
-| Chat    | the exchanges with Claude's text, grouped tool calls, subagents, task notifications, subagent messages, messages between sessions |
-| Shell   | its Bash calls as a terminal transcript with their output                                                                         |
-| Details | the project (pick one), the turn, files, tasks, processes, the claim, totals                                                      |
+| Tab     | Shows                                                                                                                    |
+| ------- | ------------------------------------------------------------------------------------------------------------------------ |
+| Chat    | the exchanges with Claude's text, its steps, subagents, task notifications, subagent messages, messages between sessions |
+| Shell   | its Bash calls as a terminal transcript with their output                                                                |
+| Details | the project (pick one), the turn, files, tasks, processes, the claim, totals                                             |
+
+**Steps** are the tool calls between Claude's messages, written to be read
+at a glance: a run of them has one line ("Ran 9 commands, edited 2 files ·
+1 failed · 2m") and its time range; each step is a sentence with an icon
+for what kind of thing it is: for a shell command, what Claude said it does
+("Run the tests through the dev env", the command dim below it; older
+calls, recorded before the description was kept, show the command), for
+files "Edited `src/state.rs`", for searches the pattern, for a plugin tool
+its server and action with the argument that tells most ("playwright:
+click `Units tab`"). Consecutive reads, edits or searches of one kind fold
+into one row ("Read 4 files", their names below). A failed step is red
+with the error's first line. Tap a step for the command, its output and
+when it ran; the Shell tab has every command in full. The run of the
+exchange Claude is working on stays open, older ones are folded.
+
+The block under the newest exchange shows what is happening now: the
+state, the running tool (what it does, the call below), the text Claude
+is writing, the turn's tools and files, subagents and tasks, and a pending
+**Stop** ([sessions](sessions.md#4-interrupt)).
 
 **Task notifications** are what Claude Code tells a session when a
 background task reports: a subagent finished, a background command exited,
@@ -49,9 +68,11 @@ Claude's text, when one arrives while Claude writes, is cut from it; Claude
 Code delivers it again on its own.
 
 Open prompts are pinned above a composer that sends a turn through the
-channel or leaves a note for the next prompt; it walks the prompt history,
-inserts `[[note]]` links and keeps drafts. The title renames in place;
-**Open on** and **Resolved** sit beside it, the other actions in its
+channel or leaves a note for the next prompt; while Claude works, **Stop**
+interrupts the turn, so what you type next is what Claude reads
+([sessions](sessions.md#4-interrupt)). The composer walks the prompt
+history, inserts `[[note]]` links and keeps drafts. The title renames in
+place; **Open on** and **Resolved** sit beside it, the other actions in its
 **Actions** menu, **Continue** at the foot once it ended
 ([sessions](sessions.md)).
 

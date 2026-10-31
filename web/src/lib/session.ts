@@ -144,7 +144,8 @@ export const signature = (s: Session) =>
 		s.tasks.map((t) => t.status).join(),
 		s.inbox?.length,
 		s.claim?.since,
-		s.outbox?.length
+		s.outbox?.length,
+		s.interrupting
 	].join('|');
 
 /** The session's workspace name and project directory, for headers. */

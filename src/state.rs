@@ -205,6 +205,9 @@ struct Aux {
     /// Title from `ccdash rename` that Claude Code has not adopted yet.
     pending_title: Option<String>,
     proc_window: Option<ProcWindow>,
+    /// The time of the hook that stopped the turn for an interrupt from
+    /// the panel: a PreToolUse from then arriving later changes nothing.
+    interrupted_at: Option<i64>,
 }
 
 /// Process samples collected since the last stored one.
@@ -537,6 +540,8 @@ impl State {
                 s.tool = None;
                 s.waiting_for = None;
                 s.asks.clear();
+                s.interrupting = None;
+                aux.interrupted_at = None;
                 s.turn = Some(Turn {
                     started_at: ts,
                     ..Turn::default()
@@ -578,6 +583,7 @@ impl State {
                     name: tool_name.to_owned(),
                     summary: tool_summary(tool_name, tool_input, &s.cwd),
                     started_at: ts,
+                    description: tool_description(tool_name, tool_input),
                 };
                 if tool_name == "TaskCreate"
                     && let (Some(subject), Some(form)) = (
@@ -591,7 +597,7 @@ impl State {
                     if let Some(sub) = s.subagents.iter_mut().find(|a| a.id == agent) {
                         sub.tool = Some(run);
                     }
-                } else {
+                } else if aux.interrupted_at.is_none_or(|at| ts > at) {
                     if tool_name == "Bash"
                         && str_of(tool_input, "command").is_some_and(starts_background_session)
                     {
@@ -681,15 +687,21 @@ impl State {
                         .get("duration_ms")
                         .and_then(Value::as_i64)
                         .or_else(|| running.as_ref().map(|t| ts - t.started_at));
-                    let summary = running.map_or_else(
-                        || tool_summary(tool_name, tool_input, &s.cwd),
-                        |t| t.summary,
-                    );
+                    let (summary, description) = match running {
+                        Some(t) => (t.summary, t.description),
+                        None => (
+                            tool_summary(tool_name, tool_input, &s.cwd),
+                            tool_description(tool_name, tool_input),
+                        ),
+                    };
                     if let Some(turn) = &mut s.turn {
                         turn.note_tool(tool_name, &summary, ok);
                     }
                     let mut data =
                         json!({ "name": tool_name, "summary": summary, "ms": ms, "ok": ok });
+                    if let Some(description) = description {
+                        data["description"] = description.into();
+                    }
                     if tool_name == "Bash"
                         && let Some(command) = str_of(tool_input, "command")
                     {
@@ -792,22 +804,28 @@ impl State {
                     .position(|a| Some(a.id.as_str()) == agent_id)
                     .map(|i| s.subagents.remove(i));
                 let text = str_of(p, "last_assistant_message").unwrap_or_default();
-                record(
-                    store,
-                    ts,
-                    id,
-                    "subagent",
-                    json!({
-                        "agent_type": done.as_ref().map_or_else(
-                            || str_of(p, "agent_type").unwrap_or_default(),
-                            |a| a.agent_type.as_str(),
-                        ),
-                        "description": done.as_ref().and_then(|a| a.description.as_deref()),
-                        "ms": done.as_ref().map(|a| ts - a.started_at),
-                        "tools": done.as_ref().map(|a| a.tools),
-                        "text": truncate(text, SUBAGENT_TEXT_LEN),
-                    }),
+                let agent_type = done.as_ref().map_or_else(
+                    || str_of(p, "agent_type").unwrap_or_default(),
+                    |a| a.agent_type.as_str(),
                 );
+                // NOTE: Claude Code 2.1.312 fires a bare SubagentStop (no agent, no type, no
+                // text) after some turns; it is no subagent of this conversation
+                let bare = done.is_none() && agent_type.is_empty() && text.trim().is_empty();
+                if !bare {
+                    record(
+                        store,
+                        ts,
+                        id,
+                        "subagent",
+                        json!({
+                            "agent_type": agent_type,
+                            "description": done.as_ref().and_then(|a| a.description.as_deref()),
+                            "ms": done.as_ref().map(|a| ts - a.started_at),
+                            "tools": done.as_ref().map(|a| a.tools),
+                            "text": truncate(text, SUBAGENT_TEXT_LEN),
+                        }),
+                    );
+                }
             }
             "TaskCreated" | "TaskCompleted" => {
                 if let (Some(task), Some(subject)) =
@@ -1129,6 +1147,50 @@ impl State {
         });
         let excess = s.outbox.len().saturating_sub(MAX_OUTBOX);
         s.outbox.drain(..excess);
+        fx.touched.insert(id.to_owned());
+    }
+
+    /// The owner asked to interrupt the session's turn from the panel:
+    /// Claude stops at its next step.
+    pub fn interrupting(&mut self, id: &str, now: i64, fx: &mut Effects) {
+        let Some(s) = self.sessions.get_mut(id) else {
+            return;
+        };
+        s.interrupting = Some(now);
+        fx.touched.insert(id.to_owned());
+    }
+
+    /// The interrupt landed: the hook at `at` ended the turn (Claude Code
+    /// fires no Stop for it), or an open prompt was denied with a stop.
+    /// Your turn, the turn closed, an `interrupted` event; the owner
+    /// carried on, so a resolved mark goes.
+    pub fn interrupted(&mut self, id: &str, at: i64, fx: &mut Effects) {
+        let Some(s) = self
+            .sessions
+            .get_mut(id)
+            .filter(|s| s.activity != Activity::Gone)
+        else {
+            return;
+        };
+        let aux = self.aux.entry(id.to_owned()).or_default();
+        aux.interrupted_at = Some(at);
+        aux.permission_agent = None;
+        s.interrupting = None;
+        s.tool = None;
+        s.waiting_for = None;
+        s.asks.clear();
+        s.resolved = None;
+        if let Some(turn) = &mut s.turn {
+            turn.ended_at = Some(at);
+        }
+        record(
+            &mut fx.store,
+            at,
+            id,
+            "interrupted",
+            json!({ "via": "ccdash" }),
+        );
+        set_activity(s, Activity::YourTurn, at, &mut fx.store);
         fx.touched.insert(id.to_owned());
     }
 
@@ -1466,6 +1528,7 @@ impl State {
             inbox: Vec::new(),
             claim: None,
             resolved: None,
+            interrupting: None,
             resources: None,
             turn: None,
             tasks: Vec::new(),
@@ -1861,6 +1924,7 @@ fn set_activity(s: &mut Session, to: Activity, ts: i64, store: &mut Vec<StoreMsg
     }
     if !matches!(to, Activity::Permission | Activity::Working) {
         s.asks.clear();
+        s.interrupting = None;
     }
     record(
         store,
@@ -1989,9 +2053,61 @@ fn tool_summary(name: &str, input: &Value, cwd: &str) -> String {
             let status = field("status").map(|s| s.replace('_', " "));
             format!("#{id} {}", status.unwrap_or_else(|| "updated".into()))
         }),
-        _ => field("description").map(str::to_owned),
+        _ => field("description")
+            .map(str::to_owned)
+            .or_else(|| argument_of(input)),
     };
     truncate(&text.unwrap_or_default(), SUMMARY_LEN)
+}
+
+/// Argument keys that make a one-line summary of an MCP or unknown tool
+/// call, best first.
+const ARGUMENT_KEYS: &[&str] = &[
+    "url",
+    "element",
+    "query",
+    "text",
+    "key",
+    "filename",
+    "title",
+    "subject",
+    "what",
+    "pattern",
+    "path",
+    "file_path",
+    "skill",
+    "slug",
+    "name",
+    "action",
+];
+/// Longest argument that reads as a summary.
+const ARGUMENT_LEN: usize = 200;
+
+/// What a tool without a known shape was given: the first short one-line
+/// string among its arguments, [`ARGUMENT_KEYS`] first.
+fn argument_of(input: &Value) -> Option<String> {
+    let map = input.as_object()?;
+    let short = |v: &Value| {
+        v.as_str()
+            .map(str::trim)
+            .filter(|s| !s.is_empty() && !s.contains('\n') && s.chars().count() <= ARGUMENT_LEN)
+            .map(str::to_owned)
+    };
+    ARGUMENT_KEYS
+        .iter()
+        .find_map(|key| map.get(*key).and_then(short))
+        .or_else(|| map.values().find_map(short))
+}
+
+/// What Claude said a call does, for tools that take a description apart
+/// from their arguments (Bash); for the others the description is the
+/// summary.
+fn tool_description(name: &str, input: &Value) -> Option<String> {
+    if name != "Bash" {
+        return None;
+    }
+    let description = input.get("description")?.as_str()?.trim();
+    (!description.is_empty()).then(|| truncate(description, SUMMARY_LEN))
 }
 
 fn relative(path: &str, cwd: &str) -> String {
@@ -3232,10 +3348,191 @@ mod tests {
                 json!({"questions": [{"question": "Which one?"}]}),
                 "Which one?",
             ),
+            // MCP and unknown tools: the best short argument
+            (
+                "mcp__plugin_hm_playwright__browser_click",
+                json!({"ref": "e12", "element": "Units tab"}),
+                "Units tab",
+            ),
+            (
+                "mcp__plugin_hm_playwright__browser_navigate",
+                json!({"url": "http://127.0.0.1:7898/machines"}),
+                "http://127.0.0.1:7898/machines",
+            ),
+            (
+                "mcp__plugin_ccdash_ccdash__remember",
+                json!({"title": "A fact", "body": "long\nbody", "slug": "a-fact"}),
+                "A fact",
+            ),
+            (
+                "mcp__plugin_hm_playwright__browser_evaluate",
+                json!({"function": "() => document.title"}),
+                "() => document.title",
+            ),
+            (
+                "mcp__plugin_hm_playwright__browser_run_code_unsafe",
+                json!({"code": "const a = 1;\nawait a;"}),
+                "",
+            ),
+            (
+                "mcp__plugin_hm_playwright__browser_resize",
+                json!({"width": 390, "height": 844}),
+                "",
+            ),
         ];
         for (name, input, want) in cases {
             assert_eq!(tool_summary(name, &input, "/work/repo"), want, "{name}");
         }
+        assert_eq!(
+            tool_description(
+                "Bash",
+                &json!({"command": "cargo test", "description": " Run the tests "})
+            )
+            .as_deref(),
+            Some("Run the tests")
+        );
+        assert_eq!(
+            tool_description("Bash", &json!({"command": "ls", "description": ""})),
+            None
+        );
+        assert_eq!(
+            tool_description("Agent", &json!({"description": "Find callers"})),
+            None,
+            "an Agent's description is its summary already"
+        );
+    }
+
+    #[test]
+    fn a_tool_event_carries_the_description_claude_gave() {
+        let mut st = state();
+        hook(&mut st, 1, "UserPromptSubmit", json!({"prompt": "go"}));
+        hook(
+            &mut st,
+            2,
+            "PreToolUse",
+            json!({"tool_name": "Bash", "tool_input": {"command": "cargo test\necho ok", "description": "Run the tests"}}),
+        );
+        assert_eq!(
+            session(&st).tool.as_ref().unwrap().description.as_deref(),
+            Some("Run the tests")
+        );
+        let fx = hook(
+            &mut st,
+            3,
+            "PostToolUse",
+            json!({"tool_name": "Bash", "tool_input": {"command": "cargo test\necho ok", "description": "Run the tests"}, "tool_response": {"stdout": "ok"}}),
+        );
+        let StoreMsg::Event { kind, data, .. } = &fx.store[0] else {
+            panic!("{:?}", fx.store)
+        };
+        assert_eq!(*kind, "tool");
+        assert_eq!(data["summary"], "cargo test");
+        assert_eq!(data["description"], "Run the tests");
+        let fx = hook(
+            &mut st,
+            4,
+            "PostToolUse",
+            json!({"tool_name": "Read", "tool_input": {"file_path": "/work/repo/a.rs"}}),
+        );
+        let StoreMsg::Event { data, .. } = &fx.store[0] else {
+            panic!()
+        };
+        assert!(data.get("description").is_none());
+    }
+
+    #[test]
+    fn a_bare_subagent_stop_is_no_subagent() {
+        let mut st = state();
+        hook(&mut st, 1, "UserPromptSubmit", json!({"prompt": "go"}));
+        let fx = hook(&mut st, 2, "SubagentStop", json!({}));
+        assert!(kinds(&fx).is_empty(), "{:?}", fx.store);
+        let fx = hook(
+            &mut st,
+            3,
+            "SubagentStop",
+            json!({"agent_type": "Explore", "last_assistant_message": "found it"}),
+        );
+        assert_eq!(kinds(&fx), ["subagent"]);
+    }
+
+    #[test]
+    fn an_interrupt_from_the_panel_ends_the_turn() {
+        let mut st = state();
+        hook(&mut st, 1, "UserPromptSubmit", json!({"prompt": "go"}));
+        hook(
+            &mut st,
+            2,
+            "PreToolUse",
+            json!({"tool_name": "Bash", "tool_input": {"command": "sleep 60"}}),
+        );
+        let mut fx = Effects::default();
+        st.interrupting(SID, 3, &mut fx);
+        assert_eq!(session(&st).interrupting, Some(3));
+        assert_eq!(session(&st).activity, Activity::Working);
+        assert!(fx.touched.contains(SID));
+
+        // the PostToolUse hook at 4 answered with the stop: the collector reports it
+        let mut fx = Effects::default();
+        st.interrupted(SID, 4, &mut fx);
+        let s = session(&st);
+        assert_eq!(s.activity, Activity::YourTurn);
+        assert_eq!(s.interrupting, None);
+        assert!(s.tool.is_none());
+        assert_eq!(s.turn.as_ref().unwrap().ended_at, Some(4));
+        assert_eq!(kinds(&fx), ["interrupted", "activity"]);
+
+        // the hook's own envelopes land after the report: the stopped call
+        // is recorded, nothing flips back to working
+        hook(
+            &mut st,
+            4,
+            "PreToolUse",
+            json!({"tool_name": "Bash", "tool_input": {"command": "sleep 60"}}),
+        );
+        assert_eq!(session(&st).activity, Activity::YourTurn);
+        assert!(session(&st).tool.is_none());
+        let fx = hook(
+            &mut st,
+            4,
+            "PostToolUse",
+            json!({"tool_name": "Bash", "tool_input": {"command": "sleep 60"}}),
+        );
+        assert_eq!(kinds(&fx), ["tool"]);
+        assert_eq!(session(&st).activity, Activity::YourTurn);
+
+        // the next turn works as ever
+        hook(&mut st, 10, "UserPromptSubmit", json!({"prompt": "again"}));
+        hook(
+            &mut st,
+            11,
+            "PreToolUse",
+            json!({"tool_name": "Read", "tool_input": {"file_path": "/work/repo/a.rs"}}),
+        );
+        assert_eq!(session(&st).activity, Activity::Working);
+        assert!(session(&st).tool.is_some());
+
+        // a turn that ends by itself takes the mark with it
+        let mut fx = Effects::default();
+        st.interrupting(SID, 12, &mut fx);
+        hook(
+            &mut st,
+            13,
+            "Stop",
+            json!({"last_assistant_message": "done anyway"}),
+        );
+        assert_eq!(session(&st).interrupting, None);
+        assert_eq!(session(&st).activity, Activity::YourTurn);
+        // and a new prompt too
+        hook(&mut st, 14, "UserPromptSubmit", json!({"prompt": "more"}));
+        let mut fx = Effects::default();
+        st.interrupting(SID, 15, &mut fx);
+        hook(
+            &mut st,
+            16,
+            "UserPromptSubmit",
+            json!({"prompt": "even more"}),
+        );
+        assert_eq!(session(&st).interrupting, None);
     }
 
     #[test]

@@ -8,9 +8,11 @@ import CircleOffIcon from '@lucide/svelte/icons/circle-off';
 import EraserIcon from '@lucide/svelte/icons/eraser';
 import LockOpenIcon from '@lucide/svelte/icons/lock-open';
 import MonitorUpIcon from '@lucide/svelte/icons/monitor-up';
+import OctagonXIcon from '@lucide/svelte/icons/octagon-x';
 import PlayIcon from '@lucide/svelte/icons/play';
 import {
 	forgetSession,
+	interruptSession,
 	keepSessionOpen,
 	openSession,
 	resolveSession,
@@ -18,10 +20,10 @@ import {
 	type Session
 } from './api/index';
 import { live } from './live/store.svelte';
-import { isAgent, label } from './session';
+import { busy, isAgent, label } from './session';
 import { starter } from './starter.svelte';
 
-export type ActionId = 'open' | 'resolve' | 'keep' | 'continue' | 'kill' | 'forget';
+export type ActionId = 'open' | 'interrupt' | 'resolve' | 'keep' | 'continue' | 'kill' | 'forget';
 
 export type Confirm = { title: string; body: string; button: string };
 
@@ -58,6 +60,17 @@ export const ACTIONS: SessionAction[] = [
 		run: async (s) => {
 			await put(openSession(s.id));
 			return `Opening on ${s.host}.`;
+		}
+	},
+	{
+		id: 'interrupt',
+		label: () => 'Interrupt',
+		icon: OctagonXIcon,
+		offered: (s) => running(s) && online(s) && s.hooked && busy(s),
+		blocked: (s) => (s.interrupting ? 'Asked already: Claude stops at its next step.' : null),
+		run: async (s) => {
+			await put(interruptSession(s.id));
+			return 'Claude stops at its next step.';
 		}
 	},
 	{

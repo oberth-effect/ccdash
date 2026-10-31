@@ -114,6 +114,7 @@ function toolName(name) {
 }
 
 function toolLabel(tool) {
+    if (tool.description) return tool.description;
     return tool.summary ? toolName(tool.name) + ": " + tool.summary : toolName(tool.name);
 }
 

@@ -89,6 +89,9 @@ pub enum LocalCmd {
     ),
     /// The hook holding ask `id` went away.
     AskGone(String),
+    /// A tool hook of the session asks whether an interrupt is pending
+    /// (`i64`: the hook payload's time); taking it reports to the hub.
+    TakeInterrupt(String, i64, oneshot::Sender<bool>),
     LinkUp,
     LinkDown,
     FromHub(Box<ToCollector>),
@@ -170,6 +173,15 @@ impl Local {
         self.send(LocalCmd::CatchUp(session.to_owned(), tx)).await?;
         rx.await.context("collector stopped")
     }
+
+    /// Whether an interrupt from the panel waits for `session`'s next tool
+    /// hook; true takes it, and the hook must stop the turn.
+    pub async fn take_interrupt(&self, session: &str, at: i64) -> Result<bool> {
+        let (tx, rx) = oneshot::channel();
+        self.send(LocalCmd::TakeInterrupt(session.to_owned(), at, tx))
+            .await?;
+        rx.await.context("collector stopped")
+    }
 }
 
 pub const NOT_CONNECTED: &str = "the hub is not connected";
@@ -179,6 +191,9 @@ const STOP_FLUSH_WAIT: Duration = Duration::from_secs(12);
 /// How long a launch that continues a session waits for its transcript.
 const LAUNCH_FLUSH_WAIT: Duration = Duration::from_secs(60);
 const DIRS_EVERY_MS: i64 = 60_000;
+/// A pending interrupt that no tool hook took within this (a turn of text
+/// alone, a lost hook) is dropped; the hub's mark went with the turn.
+const INTERRUPT_KEEP_MS: i64 = 10 * 60_000;
 pub const TIMED_OUT: &str = "the hub did not answer in time";
 
 /// What the collector keeps on disk of the hub's notes.
@@ -478,6 +493,9 @@ struct Actor {
     sync: Option<SyncHandle>,
     /// The workspace thread, when `[workspace]` is on.
     workspace: Option<WsHandle>,
+    /// Interrupts the owner asked for, by session: when. The session's
+    /// next tool hook takes one and stops the turn.
+    interrupts: HashMap<String, i64>,
 }
 
 impl Actor {
@@ -530,6 +548,38 @@ impl Actor {
             dirs_at: 0,
             sync: None,
             workspace: None,
+            interrupts: HashMap::new(),
+        }
+    }
+
+    /// Takes the pending interrupt of `session` for the tool hook at `at`,
+    /// telling the hub; false when none waits, or it waited too long.
+    fn take_interrupt(&mut self, session: &str, at: i64) -> bool {
+        let Some(asked) = self.interrupts.remove(session) else {
+            return false;
+        };
+        if at - asked > INTERRUPT_KEEP_MS {
+            info!("interrupt of {session} expired untaken");
+            return false;
+        }
+        info!("interrupt of {session} taken by its hook");
+        self.to_hub(ToHub::Interrupted {
+            session: session.to_owned(),
+            at,
+        });
+        true
+    }
+
+    /// A turn boundary drops a pending interrupt: the hub clears its mark
+    /// on the same hooks.
+    fn note_interrupt(&mut self, envelope: &Envelope) {
+        let p = &envelope.payload;
+        if matches!(
+            p["hook_event_name"].as_str(),
+            Some("UserPromptSubmit" | "Stop" | "StopFailure" | "SessionEnd")
+        ) && let Some(session) = p["session_id"].as_str()
+        {
+            self.interrupts.remove(session);
         }
     }
 
@@ -935,6 +985,9 @@ impl Actor {
                 self.launch(launch, spec);
             }
             ToCollector::Stop { session, .. } => self.stop(session),
+            ToCollector::Interrupt { session, at } => {
+                self.interrupts.insert(session, at);
+            }
             ToCollector::Open { session } => self.open(&session),
             ToCollector::SyncChanged { .. } => self.kick_sync(SyncCmd::Changed),
             ToCollector::SyncResync => self.kick_sync(SyncCmd::Resync),
@@ -1047,6 +1100,7 @@ async fn run_actor(mut a: Actor, mut rx: mpsc::Receiver<LocalCmd>) {
                     a.kick_sync(SyncCmd::Changed);
                 }
                 a.note_tool(&envelope);
+                a.note_interrupt(&envelope);
                 a.to_hub(ToHub::Envelope { envelope });
             }
             LocalCmd::Agents(mut list, at) => {
@@ -1116,6 +1170,9 @@ async fn run_actor(mut a: Actor, mut rx: mpsc::Receiver<LocalCmd>) {
             }
             LocalCmd::Resolve(key, reply) => {
                 let _ = reply.send(a.resolve(&key).cloned());
+            }
+            LocalCmd::TakeInterrupt(session, at, reply) => {
+                let _ = reply.send(a.take_interrupt(&session, at));
             }
             LocalCmd::Pids(reply) => {
                 let pids = a

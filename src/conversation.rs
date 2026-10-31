@@ -103,6 +103,10 @@ pub enum Item {
         summary: String,
         ms: Option<i64>,
         ok: bool,
+        /// What Claude said the call does (a Bash call's `description`).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        description: Option<String>,
         /// A Bash call's whole command (the summary is its first line).
         #[serde(skip_serializing_if = "Option::is_none")]
         #[ts(optional)]
@@ -172,6 +176,11 @@ pub enum Item {
         id: i64,
         at: i64,
         reason: String,
+    },
+    /// The owner interrupted the turn from the panel.
+    Interrupted {
+        id: i64,
+        at: i64,
     },
 }
 
@@ -279,6 +288,7 @@ fn item(id: i64, at: i64, kind: &str, data: &Value) -> Option<Item> {
             summary: text(data, "summary"),
             ms: data["ms"].as_i64(),
             ok: data["ok"].as_bool().unwrap_or(true),
+            description: data["description"].as_str().map(str::to_owned),
             command: data["command"].as_str().map(str::to_owned),
             output: data["output"].as_str().map(str::to_owned),
         },
@@ -347,6 +357,7 @@ fn item(id: i64, at: i64, kind: &str, data: &Value) -> Option<Item> {
             at,
             reason: text(data, "reason"),
         },
+        "interrupted" => Item::Interrupted { id, at },
         _ => return None,
     })
 }
@@ -774,6 +785,7 @@ mod tests {
                 summary: "make".into(),
                 ms: None,
                 ok: false,
+                description: None,
                 command: Some("make\nmake test".into()),
                 output: Some("Exit code 2".into()),
             }
@@ -787,11 +799,34 @@ mod tests {
             summary: "a".into(),
             ms: None,
             ok: true,
+            description: None,
             command: None,
             output: None,
         })
         .unwrap();
         assert!(json.get("output").is_none() && json.get("command").is_none());
+    }
+
+    #[test]
+    fn a_described_call_and_an_interrupt_show_in_the_exchange() {
+        use serde_json::json;
+        let conn = db();
+        event(&conn, 1, "prompt", json!({"text": "go"}));
+        event(
+            &conn,
+            2,
+            "tool",
+            json!({"name": "Bash", "summary": "cargo test", "description": "Run the tests", "ok": true, "ms": 1200}),
+        );
+        event(&conn, 3, "interrupted", json!({"via": "ccdash"}));
+        let c = conversation(&conn, "s", None, 10).unwrap();
+        let items = &c.exchanges[0].items;
+        assert!(
+            matches!(&items[0], Item::Tool { description: Some(d), .. } if d == "Run the tests")
+        );
+        assert_eq!(items[1], Item::Interrupted { id: 3, at: 3 });
+        let json = serde_json::to_value(&items[1]).unwrap();
+        assert_eq!(json["kind"], "interrupted");
     }
 
     #[test]

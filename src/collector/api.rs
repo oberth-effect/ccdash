@@ -18,7 +18,9 @@
 //! context (`{"type":"context","text":"…"}` or `{"type":"none"}`);
 //! `{"cmd":"import","dir":"…","notes":[…]}` loads notes into the hub.
 //! Writes are queued while the hub is unreachable, reads fall back to the
-//! notes cache.
+//! notes cache. A tool hook's `inject` is answered `{"type":"stop","text":
+//! "…"}` when the owner asked to interrupt the session from the panel: the
+//! hook then ends the turn.
 //!
 //! `{"cmd":"workspace","op":"status"|"resync"|"init"|"adopt","unit":"…","prefer":"mine"|"hub"}`
 //! drives the workspace sync (`ccdash workspace …`).
@@ -49,6 +51,7 @@ use crate::{
     actions,
     ask::Answer,
     config::CollectorConfig,
+    emit::{INTERRUPT_REASON, tool_hook},
     knowledge::{Upsert, tools},
     protocol::{Call, Injection, Reply, Who},
     sync::collector::Handle as SyncHandle,
@@ -190,6 +193,17 @@ async fn handle(
             Ok(Request::Ask { envelope }) => return ask(lines, write, local, envelope).await,
             Ok(Request::Tool { name, args, who }) => tool(&local, &name, &args, who).await?,
             Ok(Request::Inject { envelope }) => {
+                if tool_hook(&envelope.payload)
+                    && let Some(session) = envelope.payload["session_id"].as_str()
+                    && local.take_interrupt(session, envelope.ts).await?
+                {
+                    send(
+                        &mut write,
+                        &json!({ "type": "stop", "text": INTERRUPT_REASON }),
+                    )
+                    .await?;
+                    continue;
+                }
                 let (warning, injected) = tokio::join!(
                     guard(&local, sync.as_ref(), &envelope),
                     inject(&local, &cfg, &envelope)

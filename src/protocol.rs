@@ -39,7 +39,7 @@ use crate::{
 /// `Stop`, `Open` down; `Launched`, `Stopped` up), `branch` and `launched`
 /// on sessions, `branch` on agents entries and envelopes, `launch` on
 /// envelopes.
-pub const VERSION: u32 = 9;
+pub const VERSION: u32 = 10;
 
 /// Collector → hub.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -124,6 +124,12 @@ pub enum ToHub {
         #[serde(default)]
         error: Option<String>,
     },
+    /// A tool hook of `session` answered a pending `Interrupt` with a stop;
+    /// `at` is the hook payload's time, which ends the turn.
+    Interrupted {
+        session: String,
+        at: i64,
+    },
     /// Workspace name → the directories directly under it on this machine;
     /// a workspace whose directory is missing here is left out. Sent after
     /// each welcome and when it changes.
@@ -183,7 +189,10 @@ impl ToHub {
     pub fn durable(&self) -> bool {
         matches!(
             self,
-            Self::Envelope { .. } | Self::Telemetry { .. } | Self::Queued { .. }
+            Self::Envelope { .. }
+                | Self::Telemetry { .. }
+                | Self::Queued { .. }
+                | Self::Interrupted { .. }
         )
     }
 }
@@ -399,6 +408,12 @@ pub enum ToCollector {
         pid: Option<u32>,
         kind: Kind,
     },
+    /// The owner asked to interrupt the session's turn at `at`: its next
+    /// tool hook answers with a stop; answered by `Interrupted`.
+    Interrupt {
+        session: String,
+        at: i64,
+    },
     /// Focuses the session's window, or attaches to a background session
     /// (what `ccdash open` does on that host).
     Open {
@@ -601,6 +616,18 @@ mod tests {
                 ..
             }
         ));
+        let interrupt: ToCollector =
+            serde_json::from_str(r#"{"type":"interrupt","session":"s","at":5}"#).unwrap();
+        assert!(matches!(interrupt, ToCollector::Interrupt { at: 5, .. }));
+        let interrupted = ToHub::Interrupted {
+            session: "s".into(),
+            at: 6,
+        };
+        assert!(interrupted.durable(), "a turn's end is history");
+        assert_eq!(
+            serde_json::to_string(&interrupted).unwrap(),
+            r#"{"type":"interrupted","session":"s","at":6}"#
+        );
         let dirs = ToHub::Dirs {
             dirs: BTreeMap::from([("w".to_owned(), vec!["ccdash".to_owned()])]),
         };

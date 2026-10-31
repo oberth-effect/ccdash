@@ -8,10 +8,11 @@ sessions that need you, and the session page pins **Open on** and
 1. [Start](#1-start)
 2. [Continue](#2-continue)
 3. [Resolve](#3-resolve)
-4. [Kill](#4-kill)
-5. [Open on the desktop, forget](#5-open-on-the-desktop-forget)
-6. [Background sessions](#6-background-sessions)
-7. [Configuration](#7-configuration)
+4. [Interrupt](#4-interrupt)
+5. [Kill](#5-kill)
+6. [Open on the desktop, forget](#6-open-on-the-desktop-forget)
+7. [Background sessions](#7-background-sessions)
+8. [Configuration](#8-configuration)
 
 ## 1. Start
 
@@ -88,7 +89,34 @@ working queues the prompt after its current turn.
 
 Resolve needs the ccdash channel; without it the action shows disabled.
 
-## 4. Kill
+## 4. Interrupt
+
+**Stop** in a working session's composer, or **Interrupt** in its Actions
+menu, ends the current turn the way Esc does in the terminal: Claude stops,
+the session is on your turn, and what you send next is what it reads. No
+confirmation: nothing is lost but the rest of the turn.
+
+How it lands, through the hooks only (Claude Code's documented way; a
+SIGINT would exit the process):
+
+| The session is                   | What happens                                                                                       |
+| -------------------------------- | -------------------------------------------------------------------------------------------------- |
+| waiting on a permission prompt   | the prompt is denied with Claude Code's stop; the turn ends at once                                |
+| about to call a tool             | the PreToolUse hook denies the call and ends the turn (`continue: false`)                          |
+| running a tool                   | the command runs to its end (a long build finishes first); the PostToolUse hook then ends the turn |
+| writing text, no tool call ahead | the turn ends by itself; the interrupt is dropped with it                                          |
+| run by hooks older than ccdash   | the action shows disabled: interrupt it in its terminal                                            |
+
+Until it lands the live block reads "Interrupting: Claude stops at its next
+step"; then the chat shows **Interrupted from ccdash** where the turn ended.
+The terminal shows "hook stopped continuation: Interrupted from ccdash: the
+user stopped this turn from their dashboard", and Claude reads the same
+line at its next turn, so it knows why it stopped. Claude Code fires no
+Stop hook for an interrupted turn; the hub closes the turn on the hook's
+report. A subagent's tool calls do not take the interrupt: the main thread's
+next step does.
+
+## 5. Kill
 
 **Kill** asks first and answers only once the session is over. Never
 SIGKILL.
@@ -101,7 +129,7 @@ SIGKILL.
 Why the escalation: Claude Code acts on SIGTERM only once an editor it
 opened for the prompt (Ctrl+G), or a running command, has finished.
 
-## 5. Open on the desktop, forget
+## 6. Open on the desktop, forget
 
 - **Open on** (the host's name) focuses the session's terminal window, or
   attaches a background session in a new terminal (`attach.command`), as
@@ -109,14 +137,14 @@ opened for the prompt (Ctrl+G), or a running command, has finished.
 - **Forget**, when the session's host is offline, marks it ended on the
   hub; it comes back if its host reports it running again.
 
-## 6. Background sessions
+## 7. Background sessions
 
 Claude Code keeps listing a background session whose turn ended and that
 waits for your answer (`blocked`), often with no process left, sometimes
 for weeks. ccdash shows it as your turn right after its turn ends and as
 parked otherwise; finished ones (`done`, `stopped`) end.
 
-## 7. Configuration
+## 8. Configuration
 
 The Home Manager module fills these in with the Claude Code binary and the
 ccdash plugin, so the channel, the knowledge tools and the wrap-up skill

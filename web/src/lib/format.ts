@@ -70,6 +70,9 @@ export function toolName(name: string): string {
 export const toolLabel = (tool: ToolRun) =>
 	tool.summary ? `${toolName(tool.name)} ${tool.summary}` : toolName(tool.name);
 
+/** What a running tool does, in Claude's words when it said; else the call. */
+export const toolTitle = (tool: ToolRun) => tool.description ?? toolLabel(tool);
+
 export type Level = 'normal' | 'warning' | 'critical';
 
 export const meterLevel = (pct: number): Level =>

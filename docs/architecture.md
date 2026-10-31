@@ -61,6 +61,12 @@ lines; the transcript format is never parsed.
 Claude Code reads hooks when a session starts: sessions that were running
 before ccdash was installed only show busy and idle until they are resumed.
 
+The hooks answer Claude Code, too: a queued title, the knowledge the hub
+injects at a session start or prompt, the one-machine guard, and the stop
+of a turn interrupted from the panel: every main-thread tool hook asks the
+collector (one local round trip, in memory) whether an interrupt is
+pending and, if so, ends the turn ([sessions](sessions.md#4-interrupt)).
+
 ## 4. The hub
 
 - One reducer per host turns events and polls into live session state; the

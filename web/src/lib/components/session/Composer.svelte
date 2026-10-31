@@ -1,14 +1,23 @@
 <script lang="ts">
 	// Text for the session: Send starts a turn through the channel, Next
 	// prompt leaves it as context for the next prompt (also for sessions
-	// without the channel). Quick replies send at once; the field (history,
-	// templates, note links, fence, preview) is `PromptField`; the draft
-	// survives reloads.
+	// without the channel); Stop interrupts a turn, so the correction typed
+	// next is what Claude reads. Quick replies send at once; the field
+	// (history, templates, note links, fence, preview) is `PromptField`; the
+	// draft survives reloads.
+	import OctagonXIcon from '@lucide/svelte/icons/octagon-x';
 	import { Unauthorized } from '#lib/api/client.js';
-	import { fetchPrompts, messageTo, replyTo, type Session } from '#lib/api/index.js';
+	import {
+		fetchPrompts,
+		interruptSession,
+		messageTo,
+		replyTo,
+		type Session
+	} from '#lib/api/index.js';
 	import { Button } from '#lib/components/ui/button/index.js';
 	import { live } from '#lib/live/store.svelte.js';
 	import { prefs } from '#lib/prefs.svelte.js';
+	import { busy as working } from '#lib/session.js';
 	import PromptField from './PromptField.svelte';
 
 	let { session: s, onsent }: { session: Session; onsent?: (kind: 'reply' | 'message') => void } =
@@ -21,6 +30,22 @@
 	let error = $state('');
 
 	const canReply = $derived(s.channel && s.activity !== 'gone');
+	const canStop = $derived(working(s) && s.hooked && live.connected(s.host));
+	let stopping = $state(false);
+
+	async function stop() {
+		if (stopping || s.interrupting) return;
+		stopping = true;
+		error = '';
+		try {
+			live.put((await interruptSession(s.id)).session);
+		} catch (e) {
+			if (e instanceof Unauthorized) live.needToken = true;
+			else error = (e as Error).message;
+		} finally {
+			stopping = false;
+		}
+	}
 
 	$effect(() => {
 		prefs.setDraft(s.id, text);
@@ -83,6 +108,19 @@
 		onsubmit={() => submit(canReply ? 'reply' : 'message')}
 	>
 		{#snippet actions()}
+			{#if canStop}
+				<Button
+					type="button"
+					size="sm"
+					variant="outline"
+					class="text-critical"
+					disabled={stopping || Boolean(s.interrupting)}
+					title={s.interrupting
+						? 'Asked already: Claude stops at its next step'
+						: 'Interrupt the turn: Claude stops at its next step, then reads what you send'}
+					onclick={stop}><OctagonXIcon /> Stop</Button
+				>
+			{/if}
 			{#if canReply}
 				<Button type="submit" size="sm" disabled={busy || !text.trim()}>Send</Button>
 			{/if}

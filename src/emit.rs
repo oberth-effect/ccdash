@@ -4,8 +4,10 @@
 //! no output except what a hook may answer with: a queued title (see
 //! [`apply_pending_title`]); on SessionStart, UserPromptSubmit and edits,
 //! the context the collector injects (see `knowledge::tools::injection_of`);
-//! and the one-machine guard: a prompt in a session open on another
-//! machine is blocked, a resume of one warned about.
+//! the one-machine guard: a prompt in a session open on another machine is
+//! blocked, a resume of one warned about; and the stop of a turn the owner
+//! interrupted from the panel, which the main thread's tool hooks ask the
+//! collector about (see [`tool_hook`]).
 
 use std::{
     io::{BufRead, BufReader, Read, Write},
@@ -28,6 +30,10 @@ use crate::{
 /// before these run out.
 const START_WAIT: Duration = Duration::from_millis(3500);
 const HOOK_WAIT: Duration = Duration::from_millis(1800);
+/// Why a turn ended, as the terminal shows it and Claude reads it at its
+/// next turn ("<hook> hook stopped continuation: …").
+pub const INTERRUPT_REASON: &str =
+    "Interrupted from ccdash: the user stopped this turn from their dashboard";
 
 /// Forwards stdin to the daemon. With a `command`, also runs it on the same
 /// stdin and returns its exit code (statusline tee).
@@ -85,13 +91,26 @@ pub struct Answer {
     pub block: Option<String>,
     /// A warning shown to the owner (the guard on a resume).
     pub warn: Option<String>,
+    /// Ends the turn with this reason (an interrupt from the panel).
+    pub stop: Option<String>,
+}
+
+/// A main thread tool hook: one that may have to stop an interrupted turn.
+pub fn tool_hook(payload: &Value) -> bool {
+    matches!(
+        payload.get("hook_event_name").and_then(Value::as_str),
+        Some("PreToolUse" | "PostToolUse" | "PostToolUseFailure")
+    ) && payload.get("agent_id").is_none_or(Value::is_null)
 }
 
 /// Asks the collector what to inject for this hook, within the hook's time.
 fn inject(env: &Envelope) -> Option<Answer> {
-    let what = tools::injection_of(&env.payload)?;
+    let what = tools::injection_of(&env.payload);
+    if what.is_none() && !tool_hook(&env.payload) {
+        return None;
+    }
     let wait = match what {
-        Injection::SessionStart => START_WAIT,
+        Some(Injection::SessionStart) => START_WAIT,
         _ => HOOK_WAIT,
     };
     let mut stream = UnixStream::connect(paths::api_socket()).ok()?;
@@ -116,6 +135,10 @@ fn inject(env: &Envelope) -> Option<Answer> {
             block: text(),
             ..Answer::default()
         },
+        Some("stop") => Answer {
+            stop: text(),
+            ..Answer::default()
+        },
         Some("context") => Answer {
             context: text(),
             warn: reply["warn"].as_str().map(str::to_owned),
@@ -128,11 +151,12 @@ fn inject(env: &Envelope) -> Option<Answer> {
     })
 }
 
-/// The hook's JSON answer: the title it adopts, the context it reads, and
-/// the guard's block or warning.
+/// The hook's JSON answer: the title it adopts, the context it reads, the
+/// guard's block or warning, and the stop of an interrupted turn.
 pub fn hook_output(payload: &Value, title: Option<&str>, answer: &Answer) -> Option<Value> {
     let event = payload.get("hook_event_name")?.as_str()?;
     let mut top = json!({});
+    let mut out = json!({ "hookEventName": event });
     if let Some(reason) = &answer.block {
         top["decision"] = json!("block");
         top["reason"] = json!(reason);
@@ -140,14 +164,22 @@ pub fn hook_output(payload: &Value, title: Option<&str>, answer: &Answer) -> Opt
     if let Some(warning) = &answer.warn {
         top["systemMessage"] = json!(warning);
     }
-    if title.is_some() || answer.context.is_some() {
-        let mut out = json!({ "hookEventName": event });
-        if let Some(title) = title {
-            out["sessionTitle"] = json!(title);
+    if let Some(reason) = &answer.stop {
+        top["continue"] = json!(false);
+        top["stopReason"] = json!(reason);
+        // NOTE: `continue: false` alone lets a PreToolUse's tool run first (2.1.312)
+        if event == "PreToolUse" {
+            out["permissionDecision"] = json!("deny");
+            out["permissionDecisionReason"] = json!(reason);
         }
-        if let Some(context) = &answer.context {
-            out["additionalContext"] = json!(context);
-        }
+    }
+    if let Some(title) = title {
+        out["sessionTitle"] = json!(title);
+    }
+    if let Some(context) = &answer.context {
+        out["additionalContext"] = json!(context);
+    }
+    if out.as_object().is_some_and(|o| o.len() > 1) {
         top["hookSpecificOutput"] = out;
     }
     (top.as_object().is_some_and(|o| !o.is_empty())).then_some(top)
@@ -239,5 +271,31 @@ mod tests {
                 .get("permissionDecision")
                 .is_none()
         );
+    }
+
+    #[test]
+    fn an_interrupt_stops_the_turn_and_denies_the_tool_before_it_runs() {
+        let stop = Answer {
+            stop: Some(INTERRUPT_REASON.into()),
+            ..Answer::default()
+        };
+        let pre = json!({"hook_event_name": "PreToolUse", "tool_name": "Bash"});
+        let out = hook_output(&pre, None, &stop).unwrap();
+        assert_eq!(out["continue"], false);
+        assert_eq!(out["stopReason"], INTERRUPT_REASON);
+        assert_eq!(out["hookSpecificOutput"]["permissionDecision"], "deny");
+        assert_eq!(
+            out["hookSpecificOutput"]["permissionDecisionReason"],
+            INTERRUPT_REASON
+        );
+        let post = json!({"hook_event_name": "PostToolUse", "tool_name": "Bash"});
+        let out = hook_output(&post, None, &stop).unwrap();
+        assert_eq!(out["continue"], false);
+        assert!(out.get("hookSpecificOutput").is_none());
+        assert!(tool_hook(&pre) && tool_hook(&post));
+        assert!(!tool_hook(
+            &json!({"hook_event_name": "PreToolUse", "agent_id": "a1"})
+        ));
+        assert!(!tool_hook(&json!({"hook_event_name": "Stop"})));
     }
 }

@@ -4,7 +4,7 @@
 	// Actions menu beside the link.
 	import { resolvedNote } from '#lib/actions.js';
 	import type { Lane, Session } from '#lib/api/types.js';
-	import { fmtBytes, fmtDuration, fmtUsd, known, plain, plural, toolLabel } from '#lib/format.js';
+	import { fmtBytes, fmtDuration, fmtUsd, known, plain, plural, toolTitle } from '#lib/format.js';
 	import { live } from '#lib/live/store.svelte.js';
 	import { children, claimPaths, isAgent, label, shown } from '#lib/session.js';
 	import Clock from './Clock.svelte';
@@ -86,7 +86,8 @@
 			{:else if !compact}
 				{#if working && s.tool}
 					<span class="flex items-center gap-2 text-xs">
-						<span class="truncate font-mono">{toolLabel(s.tool)}</span>
+						<span class="truncate {s.tool.description ? '' : 'font-mono'}">{toolTitle(s.tool)}</span
+						>
 						<Clock since={s.tool.started_at} />
 					</span>
 				{/if}

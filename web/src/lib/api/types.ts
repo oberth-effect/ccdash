@@ -597,13 +597,17 @@ issue: string | null, excerpt: string, };
  */
 export type Item = { "kind": "tool", id: number, at: number, name: string, summary: string, ms: number | null, ok: boolean, 
 /**
+ * What Claude said the call does (a Bash call's `description`).
+ */
+description?: string, 
+/**
  * A Bash call's whole command (the summary is its first line).
  */
 command?: string, 
 /**
  * A Bash call's output, or a failed call's error, capped by the hub.
  */
-output?: string, } | { "kind": "permission", id: number, at: number, tool: string, summary: string, } | { "kind": "answered", id: number, at: number, tool: string, action: string, via: string, } | { "kind": "message", id: number, at: number, html: string, } | { "kind": "reply", id: number, at: number, html: string, } | { "kind": "error", id: number, at: number, error: string, } | { "kind": "subagent", id: number, at: number, agent_type: string, description: string | null, ms: number | null, tools: number | null, html: string, } | { "kind": "compact", id: number, at: number, trigger: string | null, html: string, } | { "kind": "task", id: number, at: number, subject: string, status: string, } | { "kind": "start", id: number, at: number, source: string, } | { "kind": "end", id: number, at: number, reason: string, };
+output?: string, } | { "kind": "permission", id: number, at: number, tool: string, summary: string, } | { "kind": "answered", id: number, at: number, tool: string, action: string, via: string, } | { "kind": "message", id: number, at: number, html: string, } | { "kind": "reply", id: number, at: number, html: string, } | { "kind": "error", id: number, at: number, error: string, } | { "kind": "subagent", id: number, at: number, agent_type: string, description: string | null, ms: number | null, tools: number | null, html: string, } | { "kind": "compact", id: number, at: number, trigger: string | null, html: string, } | { "kind": "task", id: number, at: number, subject: string, status: string, } | { "kind": "start", id: number, at: number, source: string, } | { "kind": "end", id: number, at: number, reason: string, } | { "kind": "interrupted", id: number, at: number, };
 
 /**
  * Which version of a conflicted file stays.
@@ -1110,7 +1114,12 @@ claim: Claim | null,
 /**
  * The owner marked it resolved: Claude wraps up, then the hub closes it.
  */
-resolved: Resolved | null, resources: Resources | null, turn: Turn | null, tasks: Array<Task>, subagents: Array<Subagent>, started_at: number, 
+resolved: Resolved | null, 
+/**
+ * The owner asked to interrupt the turn from the panel, when: Claude
+ * stops at its next step.
+ */
+interrupting: number | null, resources: Resources | null, turn: Turn | null, tasks: Array<Task>, subagents: Array<Subagent>, started_at: number, 
 /**
  * When this host's process opened the session (started or resumed
  * it); who opened it first holds it when two hosts have it open.
@@ -1407,7 +1416,11 @@ current: boolean, };
 
 export type ToolCount = { name: string, calls: number, failed: number, };
 
-export type ToolRun = { name: string, summary: string, started_at: number, };
+export type ToolRun = { name: string, summary: string, started_at: number, 
+/**
+ * What Claude said the call does (the Bash tool's `description`).
+ */
+description: string | null, };
 
 export type ToolStat = { 
 /**

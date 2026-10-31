@@ -119,7 +119,7 @@ pub fn anatomy(sessions: &[SessionEvents], clock: &Clock, buckets: &mut [Bucket]
                         asks: Vec::new(),
                     });
                 }
-                "reply" | "error" => {
+                "reply" | "error" | "interrupted" => {
                     if let Some(t) = turn.take() {
                         out.close(t, ts, clock, buckets);
                     }

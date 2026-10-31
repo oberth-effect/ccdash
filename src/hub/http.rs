@@ -142,6 +142,7 @@ pub async fn serve(
         .route("/sessions/{id}/messages", post(message))
         .route("/sessions/{id}/asks/{ask}", post(answer))
         .route("/sessions/{id}/stop", post(stop))
+        .route("/sessions/{id}/interrupt", post(interrupt))
         .route("/sessions/{id}/resolved", post(resolve).delete(keep_open))
         .route("/sessions/{id}/forget", post(forget))
         .route("/sessions/{id}/open", post(open))
@@ -698,6 +699,20 @@ async fn stop(State(app): State<App>, Path(id): Path<String>) -> Result<Json<Val
         )
     })??;
     let session = result.map_err(|e| ApiError(StatusCode::CONFLICT, e))?;
+    Ok(Json(json!({ "session": session })))
+}
+
+/// Interrupts the session's turn: an open prompt is denied with a stop at
+/// once, otherwise Claude stops at its next tool call.
+async fn interrupt(
+    State(app): State<App>,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    let session = app
+        .hub
+        .session_cmd(|reply| Cmd::Interrupt { key: id, reply })
+        .await?
+        .map_err(|e| ApiError(StatusCode::CONFLICT, e))?;
     Ok(Json(json!({ "session": session })))
 }
 

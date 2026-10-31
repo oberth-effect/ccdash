@@ -31,7 +31,8 @@ and notes in step across machines.
   from the notification's buttons; notifications wait 15 s, so a prompt
   answered at the desk never sends one.
   ([prompts and notifications](docs/prompts-and-notifications.md))
-- **Talk to** a running session, **start** one in a known project,
+- **Talk to** a running session, **stop** its turn when it heads the wrong
+  way and tell it what you meant, **start** one in a known project,
   **continue** an ended one on any machine, mark one **resolved** (Claude
   wraps up, records what it learned, then it closes) or **kill** one, even
   a stuck one.

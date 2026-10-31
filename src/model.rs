@@ -45,6 +45,9 @@ pub struct ToolRun {
     pub name: String,
     pub summary: String,
     pub started_at: i64,
+    /// What Claude said the call does (the Bash tool's `description`).
+    #[serde(default)]
+    pub description: Option<String>,
 }
 
 /// Progress of the current or last turn. Counts cover the main thread;
@@ -312,6 +315,10 @@ pub struct Session {
     /// The owner marked it resolved: Claude wraps up, then the hub closes it.
     #[serde(default)]
     pub resolved: Option<Resolved>,
+    /// The owner asked to interrupt the turn from the panel, when: Claude
+    /// stops at its next step.
+    #[serde(default)]
+    pub interrupting: Option<i64>,
     pub resources: Option<Resources>,
     pub turn: Option<Turn>,
     pub tasks: Vec<Task>,
@@ -366,6 +373,7 @@ impl Session {
             inbox: Vec::new(),
             claim: None,
             resolved: None,
+            interrupting: None,
             resources: None,
             turn: None,
             tasks: Vec::new(),

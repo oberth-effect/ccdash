@@ -89,6 +89,10 @@ export const fetchLaunch = (id: string) =>
 export const stopSession = (id: string) =>
 	postJson<{ session: Session }>(`sessions/${encodeURIComponent(id)}/stop`, {});
 
+/** Interrupts the turn: an open prompt is denied at once, else Claude stops at its next step. */
+export const interruptSession = (id: string) =>
+	postJson<{ session: Session }>(`sessions/${encodeURIComponent(id)}/interrupt`, {});
+
 /** Sends the wrap-up prompt; the hub closes the session when that turn ends. */
 export const resolveSession = (id: string) =>
 	postJson<{ session: Session }>(`sessions/${encodeURIComponent(id)}/resolved`, {});
