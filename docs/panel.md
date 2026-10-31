@@ -110,18 +110,20 @@ sync](state-sync.md)): machines with Resync, conflicts with their
 resolutions, sizes and growth.
 
 **Workspace** is the workspace root on every machine (the [workspace
-sync](workspace.md)): the machines with their collector (units, in step,
-a seed or adoption as progress) and Resync; the grid of units × machines
-grouped by bundle with a chip per cell and filters (changed today, needs
-you, conflicts, held, paused, a search); new directories with Include and
-Ignore; held snapshots with Apply and Drop; conflicts with both versions
-side by side and Keep mine / Take theirs / Dismiss; the configuration
-(globs, what never travels, what travels although ignored, limits, the
-conflict shape, per-bundle thresholds). A unit's page shows its state on
-every machine with the snapshot id, diverged branches, its conflicts, the
-ignored directories present with a switch each (carry `node_modules`,
-with its size), the overrides (size limit, conflict shape, pause,
-exclude, Adopt here) and the snapshot history.
+sync](workspace.md#7-the-workspace-area)), in sections: **Overview** (the
+tiles, what needs you with the buttons at hand, the machines in a line
+each, the last day's traffic, the units that changed last), **Units** (the
+grid of units × machines grouped by bundle with a chip per cell and
+filters, new directories, held snapshots, conflicts; a unit's page with
+its state on every machine, diverged branches, conflicts, the ignored
+directories with a switch each, overrides and the snapshot history),
+**Machines** (a card per collector: the link's round trip, what it moved
+today and this week, the rate of its large transfers, what the sync cost
+in CPU, I/O and memory), **Statistics** (24 hours to 90 days: traffic,
+pushes, CPU and memory per machine, the hub's repositories, conflicts) and
+**Configuration** (the rules with live match counts and what each never-
+travelling name keeps home, previewed by the hub as you type; then the
+coverage: what travels and what stays home on every machine, and why).
 
 ## 6. Desktop (DankMaterialShell)
 

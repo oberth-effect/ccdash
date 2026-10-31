@@ -788,6 +788,7 @@ impl Actor {
                 name: self.host.clone(),
                 connected: self.connected,
                 since: self.link_since,
+                rtt_ms: None,
             }],
             sessions,
             rate_limits: self.rate_limits.clone(),

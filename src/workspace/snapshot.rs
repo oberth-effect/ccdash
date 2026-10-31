@@ -342,6 +342,7 @@ pub fn take(t: &Take) -> Result<Report> {
             code: None,
             stdout: Vec::new(),
             stderr: String::new(),
+            usage: super::git::Usage::default(),
         },
     };
     let stash: Vec<(u32, String)> = if stash_list.ok {
@@ -387,11 +388,23 @@ pub fn take(t: &Take) -> Result<Report> {
         let share =
             prev.tracked >= HELD_MIN_TRACKED && churn as f64 > HELD_SHARE * prev.tracked as f64;
         if churn > HELD_FILES || share {
-            let commit =
-                t.git
-                    .commit_tree(t.repo, &tree, &[&prev.commit], &meta.message(t.host))?;
-            t.git
-                .update_ref(t.repo, &format!("{}/{}", super::HELD_REFS, t.host), &commit)?;
+            let held_ref = format!("{}/{}", super::HELD_REFS, t.host);
+            // NOTE: the same tree keeps its commit: the panel names the commit it
+            // showed, and a new id every pass made every choice stale
+            let kept = t
+                .git
+                .rev(t.repo, &held_ref)?
+                .filter(|c| t.git.tree_of(t.repo, c).ok().as_deref() == Some(tree.as_str()));
+            let commit = match kept {
+                Some(c) => c,
+                None => {
+                    let c =
+                        t.git
+                            .commit_tree(t.repo, &tree, &[&prev.commit], &meta.message(t.host))?;
+                    t.git.update_ref(t.repo, &held_ref, &c)?;
+                    c
+                }
+            };
             report.outcome = Outcome::Held(HeldReport {
                 commit,
                 added,

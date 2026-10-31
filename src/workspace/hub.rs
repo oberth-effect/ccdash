@@ -12,7 +12,8 @@ use std::{
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
     process::Stdio,
-    sync::Arc,
+    sync::{Arc, Mutex},
+    time::{Duration, Instant},
 };
 
 use anyhow::{Context, Result, bail};
@@ -36,8 +37,10 @@ use tokio_stream::wrappers::ReceiverStream;
 use tracing::{debug, info, warn};
 
 use super::{
-    ConflictReport, HistoryEntry, NewDir, SYNC_REFS, SeenUnit, Side, UnitKind, UnitStatus,
-    WorkspaceConfig, WorkspaceConflict, WorkspaceSetup, valid_host, valid_unit,
+    ConflictReport, Cost, CostRow, Coverage, CoverageHost, CoverageUnit, Decision, GlobMatch,
+    HistoryEntry, HomeDir, LeftOutName, NewDir, Preview, PushRow, RepoSize, SYNC_REFS, SeenUnit,
+    Side, TrafficRow, Transfer, UnitKind, UnitStatus, WorkspaceConfig, WorkspaceConflict,
+    WorkspaceSetup, WorkspaceStats, valid_host, valid_unit,
 };
 use crate::{
     hub::{collect::Tokens, core::Cmd},
@@ -104,7 +107,53 @@ CREATE TABLE IF NOT EXISTS workspace_seen (
     at INTEGER NOT NULL,
     PRIMARY KEY (host, unit)
 );
+CREATE TABLE IF NOT EXISTS workspace_traffic (
+    host TEXT NOT NULL,
+    hour INTEGER NOT NULL,
+    kind TEXT NOT NULL,
+    requests INTEGER NOT NULL DEFAULT 0,
+    bytes_in INTEGER NOT NULL DEFAULT 0,
+    bytes_out INTEGER NOT NULL DEFAULT 0,
+    ms INTEGER NOT NULL DEFAULT 0,
+    failures INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (host, hour, kind)
+);
+CREATE TABLE IF NOT EXISTS workspace_cost (
+    host TEXT NOT NULL,
+    hour INTEGER NOT NULL,
+    cpu_ms INTEGER NOT NULL DEFAULT 0,
+    git_cpu_ms INTEGER NOT NULL DEFAULT 0,
+    git_calls INTEGER NOT NULL DEFAULT 0,
+    git_wall_ms INTEGER NOT NULL DEFAULT 0,
+    io_read INTEGER NOT NULL DEFAULT 0,
+    io_write INTEGER NOT NULL DEFAULT 0,
+    passes INTEGER NOT NULL DEFAULT 0,
+    snapshots INTEGER NOT NULL DEFAULT 0,
+    pushes INTEGER NOT NULL DEFAULT 0,
+    fetches INTEGER NOT NULL DEFAULT 0,
+    push_ms INTEGER NOT NULL DEFAULT 0,
+    fetch_ms INTEGER NOT NULL DEFAULT 0,
+    failures INTEGER NOT NULL DEFAULT 0,
+    rss_kb INTEGER NOT NULL DEFAULT 0,
+    watches INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (host, hour)
+);
+CREATE TABLE IF NOT EXISTS workspace_transfers (
+    id INTEGER PRIMARY KEY,
+    host TEXT NOT NULL,
+    unit TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    bytes INTEGER NOT NULL,
+    ms INTEGER NOT NULL,
+    at INTEGER NOT NULL
+);
 ";
+
+/// Columns added after the tables' first release.
+pub const ADDED_COLUMNS: &[(&str, &str, &str)] = &[
+    ("workspace_seen", "excluded", "TEXT"),
+    ("workspace_seen", "unsyncable", "TEXT"),
+];
 
 /// The one configuration row.
 const SCOPE: &str = "root";
@@ -114,6 +163,16 @@ const MAX_BLOB: usize = 8 << 20;
 const HISTORY_LIMIT: usize = 60;
 /// Event rows are kept this long.
 const EVENTS_KEEP_MS: i64 = 90 * 86_400_000;
+/// Traffic and cost rows are kept this long.
+const STATS_KEEP_MS: i64 = 366 * 86_400_000;
+/// Large transfers kept for the throughput view.
+const TRANSFERS_KEEP: i64 = 300;
+/// A transfer this large counts as a measurement of the link.
+pub const TRANSFER_MIN: u64 = 64 << 10;
+/// How long the repositories' sizes are reused.
+const SIZES_TTL: Duration = Duration::from_secs(300);
+const HOUR_MS: i64 = 3_600_000;
+const DAY_MS: i64 = 86_400_000;
 
 // ---------------------------------------------------------------------------
 // repositories
@@ -126,7 +185,14 @@ pub struct Repos {
     /// Two hosts seeding one unit at the same instant both ran `git init`;
     /// one failed with "cannot mkdir". Creation is serialised.
     creating: Arc<std::sync::Mutex<()>>,
+    /// Every repository's size, measured at most every `SIZES_TTL` (the
+    /// panel polls every few seconds; 4.5 GB of packs is not walked for
+    /// each poll).
+    sizes: Arc<Mutex<Option<Sizes>>>,
 }
+
+/// The repositories' sizes and when they were measured.
+type Sizes = (Instant, Vec<RepoSize>);
 
 impl Repos {
     /// Creates the directory and the shared hooks directory with the
@@ -154,6 +220,7 @@ impl Repos {
             root: root.to_owned(),
             hooks,
             creating: Arc::new(std::sync::Mutex::new(())),
+            sizes: Arc::new(Mutex::new(None)),
         })
     }
 
@@ -317,7 +384,52 @@ impl Repos {
 
     /// Bytes the repositories take.
     pub fn bytes(&self) -> u64 {
-        super::units::size_of(&self.root, &[]).1
+        self.sizes().iter().map(|r| r.bytes).sum()
+    }
+
+    /// Every repository with its size, largest first; measured at most
+    /// every `SIZES_TTL`.
+    pub fn sizes(&self) -> Vec<RepoSize> {
+        if let Ok(cache) = self.sizes.lock()
+            && let Some((at, sizes)) = cache.as_ref()
+            && at.elapsed() < SIZES_TTL
+        {
+            return sizes.clone();
+        }
+        let mut out = Vec::new();
+        let mut stack = vec![self.root.clone()];
+        while let Some(dir) = stack.pop() {
+            for entry in fs::read_dir(&dir).into_iter().flatten().flatten() {
+                let path = entry.path();
+                if !path.is_dir() || entry.file_name() == ".hooks" {
+                    continue;
+                }
+                if path.extension().is_some_and(|e| e == "git") && path.join("HEAD").is_file() {
+                    let unit = path
+                        .strip_prefix(&self.root)
+                        .map(|p| p.to_string_lossy().trim_end_matches(".git").to_owned())
+                        .unwrap_or_default();
+                    out.push(RepoSize {
+                        unit,
+                        bytes: super::units::size_of(&path, &[]).1,
+                    });
+                } else {
+                    stack.push(path);
+                }
+            }
+        }
+        out.sort_by(|a, b| b.bytes.cmp(&a.bytes).then(a.unit.cmp(&b.unit)));
+        if let Ok(mut cache) = self.sizes.lock() {
+            *cache = Some((Instant::now(), out.clone()));
+        }
+        out
+    }
+
+    /// The next `sizes()` measures again (a push landed).
+    pub fn sizes_stale(&self) {
+        if let Ok(mut cache) = self.sizes.lock() {
+            *cache = None;
+        }
     }
 }
 
@@ -596,6 +708,7 @@ async fn git_route(
         Err(_) => return text(StatusCode::INTERNAL_SERVER_ERROR, "join"),
     }
 
+    let started = Instant::now();
     let mut cmd = tokio::process::Command::new("git");
     cmd.arg("http-backend")
         .env("GIT_PROJECT_ROOT", &state.repos.root)
@@ -708,7 +821,9 @@ async fn git_route(
     let (tx, rx) = mpsc::channel::<Result<Bytes, std::io::Error>>(16);
     let cmds = state.cmds.clone();
     let (unit_owned, host_owned) = (unit.to_owned(), host.clone());
+    let failed_status = !status.is_success();
     tokio::spawn(async move {
+        let mut bytes_out = first.len() as u64;
         if !first.is_empty() && tx.send(Ok(first)).await.is_err() {
             return;
         }
@@ -717,6 +832,7 @@ async fn git_route(
             match stdout.read(&mut buf).await {
                 Ok(0) => break,
                 Ok(n) => {
+                    bytes_out += n as u64;
                     if tx
                         .send(Ok(Bytes::copy_from_slice(&buf[..n])))
                         .await
@@ -734,13 +850,24 @@ async fn git_route(
         drop(tx);
         let exit = child.wait().await;
         let err_text = errors.await.unwrap_or_default();
-        let ok = exit.as_ref().is_ok_and(|s| s.success());
+        let ok = exit.as_ref().is_ok_and(|s| s.success()) && !failed_status;
         if !ok || !err_text.trim().is_empty() {
             debug!(
                 "workspace: git http-backend for {unit_owned} ({service}) exited {exit:?}: {}",
                 err_text.trim()
             );
         }
+        let _ = cmds
+            .send(Cmd::WorkspaceTransfer {
+                host: host_owned.clone(),
+                unit: unit_owned.clone(),
+                kind: if receiving { "push" } else { "fetch" }.into(),
+                bytes_in: bytes,
+                bytes_out,
+                ms: started.elapsed().as_millis() as u64,
+                ok,
+            })
+            .await;
         if receiving && ok && method == Method::POST {
             let _ = cmds
                 .send(Cmd::WorkspacePushed {
@@ -903,23 +1030,35 @@ pub fn seen(conn: &mut Connection, host: &str, list: &[SeenUnit], now: i64) -> R
             continue;
         }
         tx.execute(
-            "INSERT INTO workspace_seen (host, unit, kind, size, selected, at)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            "INSERT INTO workspace_seen (host, unit, kind, size, selected, at, excluded, unsyncable)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             params![
                 host,
                 s.unit,
                 kind_name(s.kind),
                 i64::try_from(s.size).unwrap_or(0),
                 s.selected,
-                now
+                now,
+                (!s.excluded.is_empty()).then(|| serde_json::to_string(&s.excluded).unwrap_or_default()),
+                s.unsyncable,
             ],
         )?;
-        let known: bool = tx.query_row(
-            "SELECT EXISTS (SELECT 1 FROM workspace_units WHERE unit = ?1)",
-            [&s.unit],
-            |r| r.get(0),
-        )?;
-        if known || !config.selects(&s.unit) {
+        let state: Option<String> = tx
+            .query_row(
+                "SELECT state FROM workspace_units WHERE unit = ?1",
+                [&s.unit],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if s.unsyncable.is_some() {
+            // NOTE: never a unit; one that travelled leaves the setup
+            if state.as_deref() != Some("unsyncable") {
+                upsert_unit(&tx, &s.unit, s.kind, Some("unsyncable"), Some(s.size), now)?;
+                changed = state.as_deref() == Some("included");
+            }
+            continue;
+        }
+        if state.is_some() || !config.selects(&s.unit) {
             continue;
         }
         let state = if s.size <= config.auto_include_bytes(WorkspaceConfig::bundle_of(&s.unit)) {
@@ -950,7 +1089,7 @@ pub fn seen(conn: &mut Connection, host: &str, list: &[SeenUnit], now: i64) -> R
 pub fn new_dirs(conn: &Connection, config: &WorkspaceConfig) -> Result<Vec<NewDir>> {
     let mut by_unit: BTreeMap<String, NewDir> = BTreeMap::new();
     let mut stmt = conn.prepare_cached(
-        "SELECT s.host, s.unit, s.kind, s.size, s.at, u.state FROM workspace_seen s
+        "SELECT s.host, s.unit, s.kind, s.size, s.at, u.state, s.unsyncable FROM workspace_seen s
         LEFT JOIN workspace_units u ON u.unit = s.unit ORDER BY s.unit, s.host",
     )?;
     let mut rows = stmt.query([])?;
@@ -958,10 +1097,12 @@ pub fn new_dirs(conn: &Connection, config: &WorkspaceConfig) -> Result<Vec<NewDi
         let host: String = r.get(0)?;
         let unit: String = r.get(1)?;
         let state: Option<String> = r.get(5)?;
+        let reason: Option<String> = r.get(6)?;
         let state = match state.as_deref() {
             Some("included") if config.selects(&unit) => continue,
             Some("included") => "excluded".to_owned(),
             Some(other) => other.to_owned(),
+            None if reason.is_some() => "unsyncable".to_owned(),
             None if config.selects(&unit) => "waiting".to_owned(),
             None => "excluded".to_owned(),
         };
@@ -972,7 +1113,11 @@ pub fn new_dirs(conn: &Connection, config: &WorkspaceConfig) -> Result<Vec<NewDi
             hosts: Vec::new(),
             state,
             at: r.get(4).unwrap_or(0),
+            reason: None,
         });
+        if entry.reason.is_none() {
+            entry.reason = reason;
+        }
         entry.size = entry.size.max(r.get::<_, i64>(3)?.try_into().unwrap_or(0));
         entry.hosts.push(host);
     }
@@ -1312,6 +1457,407 @@ pub fn unit_op(
     Ok(Ok(true))
 }
 
+/// A host's traffic in one direction since the last flush.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TrafficDelta {
+    pub requests: u64,
+    pub bytes_in: u64,
+    pub bytes_out: u64,
+    pub ms: u64,
+    pub failures: u64,
+}
+
+/// Adds a host's traffic to its row of the hour.
+pub fn add_traffic(
+    conn: &Connection,
+    host: &str,
+    hour: i64,
+    kind: &str,
+    d: &TrafficDelta,
+) -> Result<()> {
+    conn.execute(
+        "INSERT INTO workspace_traffic (host, hour, kind, requests, bytes_in, bytes_out, ms, failures)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+        ON CONFLICT (host, hour, kind) DO UPDATE SET
+            requests = requests + ?4, bytes_in = bytes_in + ?5, bytes_out = bytes_out + ?6,
+            ms = ms + ?7, failures = failures + ?8",
+        params![
+            host,
+            hour,
+            kind,
+            d.requests as i64,
+            d.bytes_in as i64,
+            d.bytes_out as i64,
+            d.ms as i64,
+            d.failures as i64
+        ],
+    )?;
+    conn.execute(
+        "DELETE FROM workspace_traffic WHERE hour < ?1",
+        [hour - STATS_KEEP_MS],
+    )?;
+    Ok(())
+}
+
+/// Adds what a host's sync cost (the deltas of its counters, the gauges
+/// as reported) to its row of the hour.
+pub fn add_cost(conn: &Connection, host: &str, hour: i64, d: &Cost) -> Result<()> {
+    conn.execute(
+        "INSERT INTO workspace_cost (host, hour, cpu_ms, git_cpu_ms, git_calls, git_wall_ms, io_read,
+            io_write, passes, snapshots, pushes, fetches, push_ms, fetch_ms, failures, rss_kb, watches)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)
+        ON CONFLICT (host, hour) DO UPDATE SET
+            cpu_ms = cpu_ms + ?3, git_cpu_ms = git_cpu_ms + ?4, git_calls = git_calls + ?5,
+            git_wall_ms = git_wall_ms + ?6, io_read = io_read + ?7, io_write = io_write + ?8,
+            passes = passes + ?9, snapshots = snapshots + ?10, pushes = pushes + ?11,
+            fetches = fetches + ?12, push_ms = push_ms + ?13, fetch_ms = fetch_ms + ?14,
+            failures = failures + ?15, rss_kb = MAX(rss_kb, ?16), watches = ?17",
+        params![
+            host,
+            hour,
+            d.cpu_ms as i64,
+            d.git_cpu_ms as i64,
+            d.git_calls as i64,
+            d.git_wall_ms as i64,
+            d.io_read as i64,
+            d.io_write as i64,
+            d.passes as i64,
+            d.snapshots as i64,
+            d.pushes as i64,
+            d.fetches as i64,
+            d.push_ms as i64,
+            d.fetch_ms as i64,
+            d.failures as i64,
+            d.rss_kb as i64,
+            d.watches as i64
+        ],
+    )?;
+    conn.execute(
+        "DELETE FROM workspace_cost WHERE hour < ?1",
+        [hour - STATS_KEEP_MS],
+    )?;
+    Ok(())
+}
+
+/// Records a large transfer; the last `TRANSFERS_KEEP` are kept.
+pub fn add_transfer(conn: &Connection, t: &Transfer) -> Result<()> {
+    conn.execute(
+        "INSERT INTO workspace_transfers (host, unit, kind, bytes, ms, at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        params![t.host, t.unit, t.kind, t.bytes as i64, t.ms as i64, t.at],
+    )?;
+    conn.execute(
+        "DELETE FROM workspace_transfers WHERE id <= (SELECT MAX(id) FROM workspace_transfers) - ?1",
+        [TRANSFERS_KEEP],
+    )?;
+    Ok(())
+}
+
+/// The SQL that turns a millisecond stamp in `col` into its bucket: the
+/// hour as it is, or local midnight for daily buckets.
+fn bucket_sql(col: &str, daily: bool) -> String {
+    if daily {
+        format!(
+            "CAST(strftime('%s', date({col} / 1000, 'unixepoch', 'localtime'), 'utc') AS INTEGER) * 1000"
+        )
+    } else {
+        format!("({col} / {HOUR_MS}) * {HOUR_MS}")
+    }
+}
+
+/// Traffic, cost, transfers, pushes and conflicts over the last `days`.
+pub fn stats(
+    conn: &Connection,
+    days: i64,
+    repos: Vec<RepoSize>,
+    now: i64,
+) -> Result<WorkspaceStats> {
+    let days = days.clamp(1, 366);
+    let daily = days > 3;
+    let since = now - days * DAY_MS;
+    let bucket = bucket_sql("hour", daily);
+    let traffic = conn
+        .prepare(&format!(
+            "SELECT host, {bucket} AS b, kind, SUM(requests), SUM(bytes_in), SUM(bytes_out), SUM(ms), SUM(failures)
+            FROM workspace_traffic WHERE hour >= ?1 GROUP BY host, b, kind ORDER BY b, host, kind"
+        ))?
+        .query_map([since], |r| {
+            Ok(TrafficRow {
+                host: r.get(0)?,
+                at: r.get(1)?,
+                kind: r.get(2)?,
+                requests: r.get::<_, i64>(3)? as u64,
+                bytes_in: r.get::<_, i64>(4)? as u64,
+                bytes_out: r.get::<_, i64>(5)? as u64,
+                ms: r.get::<_, i64>(6)? as u64,
+                failures: r.get::<_, i64>(7)? as u64,
+            })
+        })?
+        .collect::<rusqlite::Result<_>>()?;
+    let cost = conn
+        .prepare(&format!(
+            "SELECT host, {bucket} AS b, SUM(cpu_ms), SUM(git_cpu_ms), SUM(git_calls), SUM(git_wall_ms),
+                SUM(io_read), SUM(io_write), SUM(passes), SUM(snapshots), SUM(pushes), SUM(fetches),
+                SUM(push_ms), SUM(fetch_ms), SUM(failures), MAX(rss_kb), MAX(watches)
+            FROM workspace_cost WHERE hour >= ?1 GROUP BY host, b ORDER BY b, host"
+        ))?
+        .query_map([since], |r| {
+            let g = |i: usize| -> rusqlite::Result<u64> { Ok(r.get::<_, i64>(i)? as u64) };
+            Ok(CostRow {
+                host: r.get(0)?,
+                at: r.get(1)?,
+                cpu_ms: g(2)?,
+                git_cpu_ms: g(3)?,
+                git_calls: g(4)?,
+                git_wall_ms: g(5)?,
+                io_read: g(6)?,
+                io_write: g(7)?,
+                passes: g(8)?,
+                snapshots: g(9)?,
+                pushes: g(10)?,
+                fetches: g(11)?,
+                push_ms: g(12)?,
+                fetch_ms: g(13)?,
+                failures: g(14)?,
+                rss_kb: g(15)?,
+                watches: g(16)?,
+            })
+        })?
+        .collect::<rusqlite::Result<_>>()?;
+    let transfers = conn
+        .prepare("SELECT host, unit, kind, bytes, ms, at FROM workspace_transfers WHERE at >= ?1 ORDER BY at DESC LIMIT 100")?
+        .query_map([since], |r| {
+            Ok(Transfer {
+                host: r.get(0)?,
+                unit: r.get(1)?,
+                kind: r.get(2)?,
+                bytes: r.get::<_, i64>(3)? as u64,
+                ms: r.get::<_, i64>(4)? as u64,
+                at: r.get(5)?,
+            })
+        })?
+        .collect::<rusqlite::Result<_>>()?;
+    let event_bucket = bucket_sql("at", daily);
+    let pushes = conn
+        .prepare(&format!(
+            "SELECT host, {event_bucket} AS b, COUNT(*), SUM(bytes) FROM workspace_events
+            WHERE at >= ?1 GROUP BY host, b ORDER BY b, host"
+        ))?
+        .query_map([since], |r| {
+            Ok(PushRow {
+                host: r.get(0)?,
+                at: r.get(1)?,
+                pushes: r.get::<_, i64>(2)? as u64,
+                bytes: r.get::<_, i64>(3)? as u64,
+            })
+        })?
+        .collect::<rusqlite::Result<_>>()?;
+    let conflicts = conn
+        .prepare(&format!(
+            "SELECT {event_bucket} AS b, COUNT(*) FROM workspace_conflicts WHERE at >= ?1 GROUP BY b ORDER BY b"
+        ))?
+        .query_map([since], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)? as u64)))?
+        .collect::<rusqlite::Result<_>>()?;
+    Ok(WorkspaceStats {
+        days,
+        bucket_ms: if daily { DAY_MS } else { HOUR_MS },
+        since,
+        traffic,
+        cost,
+        transfers,
+        pushes,
+        conflicts,
+        hub_bytes: repos.iter().map(|r| r.bytes).sum(),
+        repos,
+    })
+}
+
+/// One row of `workspace_seen`, with what the host measured.
+struct SeenRow {
+    host: String,
+    unit: String,
+    kind: UnitKind,
+    size: u64,
+    excluded: BTreeMap<String, u64>,
+    unsyncable: Option<String>,
+    state: Option<String>,
+}
+
+fn seen_rows(conn: &Connection) -> Result<Vec<SeenRow>> {
+    Ok(conn
+        .prepare_cached(
+            "SELECT s.host, s.unit, s.kind, s.size, s.excluded, s.unsyncable, u.state
+            FROM workspace_seen s LEFT JOIN workspace_units u ON u.unit = s.unit
+            ORDER BY s.unit, s.host",
+        )?
+        .query_map([], |r| {
+            Ok(SeenRow {
+                host: r.get(0)?,
+                unit: r.get(1)?,
+                kind: kind_of(&r.get::<_, String>(2)?),
+                size: r.get::<_, i64>(3)?.try_into().unwrap_or(0),
+                excluded: r
+                    .get::<_, Option<String>>(4)?
+                    .and_then(|j| serde_json::from_str(&j).ok())
+                    .unwrap_or_default(),
+                unsyncable: r.get(5)?,
+                state: r.get(6)?,
+            })
+        })?
+        .collect::<rusqlite::Result<_>>()?)
+}
+
+/// What `config` decides for every directory the hub knows, folded over
+/// the hosts that see it (the largest copy's sizes).
+fn decide(rows: &[SeenRow], config: &WorkspaceConfig) -> Vec<CoverageUnit> {
+    let mut by_unit: BTreeMap<String, CoverageUnit> = BTreeMap::new();
+    for r in rows {
+        let decision = config.explain(&r.unit);
+        let selected = matches!(decision, Decision::Selected { .. } | Decision::ForcedIn);
+        let status = match (r.unsyncable.as_deref(), r.state.as_deref()) {
+            (Some(_), _) => "unsyncable",
+            (None, Some("unsyncable")) => "unsyncable",
+            (None, Some("included")) if selected => "travels",
+            (None, Some("waiting")) if selected => "waiting",
+            (None, Some("ignored")) => "ignored",
+            _ => "left_out",
+        };
+        let entry = by_unit
+            .entry(r.unit.clone())
+            .or_insert_with(|| CoverageUnit {
+                unit: r.unit.clone(),
+                kind: r.kind,
+                hosts: Vec::new(),
+                size: 0,
+                excluded: BTreeMap::new(),
+                status: status.to_owned(),
+                decision: decision.clone(),
+                reason: r.unsyncable.clone(),
+            });
+        entry.hosts.push(r.host.clone());
+        entry.size = entry.size.max(r.size);
+        for (name, bytes) in &r.excluded {
+            let slot = entry.excluded.entry(name.clone()).or_insert(0);
+            *slot = (*slot).max(*bytes);
+        }
+        if entry.reason.is_none() {
+            entry.reason = r.unsyncable.clone();
+        }
+        if status == "unsyncable" {
+            entry.status = status.to_owned();
+        }
+    }
+    by_unit.into_values().collect()
+}
+
+/// What travels and what stays home, from what every host sees and what
+/// the travelling units' collectors report as ignored directories.
+pub fn coverage(
+    conn: &Connection,
+    config: &WorkspaceConfig,
+    reports: &HashMap<String, HashMap<String, UnitStatus>>,
+    hub_bytes: u64,
+) -> Result<Coverage> {
+    let rows = seen_rows(conn)?;
+    let units = decide(&rows, config);
+    let travels: BTreeSet<&str> = units
+        .iter()
+        .filter(|u| u.status == "travels")
+        .map(|u| u.unit.as_str())
+        .collect();
+    let mut hosts: BTreeMap<String, CoverageHost> = BTreeMap::new();
+    for r in &rows {
+        let h = hosts.entry(r.host.clone()).or_insert_with(|| CoverageHost {
+            host: r.host.clone(),
+            units: 0,
+            bytes: 0,
+            travels: 0,
+        });
+        h.units += 1;
+        h.bytes += r.size + r.excluded.values().sum::<u64>();
+        if travels.contains(r.unit.as_str()) {
+            h.travels += r.size;
+        }
+    }
+    let mut names: BTreeMap<String, LeftOutName> = BTreeMap::new();
+    for u in &units {
+        for (name, bytes) in &u.excluded {
+            let n = names.entry(name.clone()).or_insert_with(|| LeftOutName {
+                name: name.clone(),
+                bytes: 0,
+                units: 0,
+            });
+            n.bytes += bytes;
+            n.units += 1;
+        }
+    }
+    let mut names: Vec<LeftOutName> = names.into_values().collect();
+    names.sort_by_key(|n| std::cmp::Reverse(n.bytes));
+    // gitignored directories inside travelling units, as reported live
+    let mut home: BTreeMap<(String, String), HomeDir> = BTreeMap::new();
+    for (host, units) in reports {
+        for (unit, status) in units {
+            for d in &status.ignored {
+                let e = home
+                    .entry((unit.clone(), d.path.clone()))
+                    .or_insert_with(|| HomeDir {
+                        unit: unit.clone(),
+                        path: d.path.clone(),
+                        bytes: 0,
+                        files: 0,
+                        hosts: Vec::new(),
+                        carried: d.carried,
+                    });
+                e.bytes = e.bytes.max(d.bytes);
+                e.files = e.files.max(d.files);
+                if !e.hosts.contains(host) {
+                    e.hosts.push(host.clone());
+                }
+                e.carried = e.carried || d.carried;
+            }
+        }
+    }
+    let mut home: Vec<HomeDir> = home.into_values().collect();
+    home.sort_by_key(|h| std::cmp::Reverse(h.bytes));
+    Ok(Coverage {
+        hosts: hosts.into_values().collect(),
+        units,
+        names,
+        home,
+        hub_bytes,
+    })
+}
+
+/// What a proposed configuration would decide for every directory the
+/// hub knows, and how many units each glob matches.
+pub fn preview(conn: &Connection, config: &WorkspaceConfig) -> Result<Preview> {
+    let rows = seen_rows(conn)?;
+    let units = decide(&rows, config);
+    let ids: BTreeSet<&str> = units.iter().map(|u| u.unit.as_str()).collect();
+    let count = |pattern: &str| -> u64 {
+        ids.iter()
+            .filter(|id| {
+                crate::sync::glob(pattern, id)
+                    || (!id.contains('/') && crate::sync::glob(pattern, &format!("{id}/")))
+            })
+            .count() as u64
+    };
+    let globs = config
+        .include
+        .iter()
+        .map(|p| GlobMatch {
+            pattern: p.clone(),
+            exclude: false,
+            matches: count(p),
+        })
+        .chain(config.exclude.iter().map(|p| GlobMatch {
+            pattern: p.clone(),
+            exclude: true,
+            matches: count(p),
+        }))
+        .collect();
+    Ok(Preview { units, globs })
+}
+
 /// Hosts that appear in `workspace_seen` or `workspace_refs`, for the grid.
 pub fn hosts(conn: &Connection) -> Result<BTreeSet<String>> {
     let mut out = BTreeSet::new();
@@ -1332,6 +1878,10 @@ mod tests {
     fn conn() -> Connection {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(SCHEMA).unwrap();
+        for (table, column, kind) in ADDED_COLUMNS {
+            conn.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} {kind}"))
+                .unwrap();
+        }
         conn
     }
 
@@ -1341,6 +1891,8 @@ mod tests {
             kind: UnitKind::Git,
             size,
             selected,
+            excluded: BTreeMap::new(),
+            unsyncable: None,
         }
     }
 
@@ -1571,6 +2123,269 @@ mod tests {
         };
         assert!(dismiss_conflict(&c, dismissed, 18).unwrap());
         assert!(!dismiss_conflict(&c, dismissed, 19).unwrap());
+    }
+
+    #[test]
+    fn unsyncable_directories_never_travel_and_leave_the_setup() {
+        let mut c = conn();
+        save_config(&c, &WorkspaceConfig::default(), 1).unwrap();
+        // included first (a plain repository), then found to be a linked worktree
+        assert!(seen(&mut c, "navi", &[seen_unit("ts/wt", 100, true)], 2).unwrap());
+        assert_eq!(
+            setup(&c).unwrap().units.keys().collect::<Vec<_>>(),
+            ["ts/wt"]
+        );
+        let mut wt = seen_unit("ts/wt", 100, false);
+        wt.unsyncable = Some("a linked worktree of /r/ts/main".into());
+        assert!(
+            seen(&mut c, "navi", &[wt.clone()], 3).unwrap(),
+            "the setup changed"
+        );
+        assert!(setup(&c).unwrap().units.is_empty());
+        assert!(!seen(&mut c, "navi", &[wt.clone()], 4).unwrap());
+        let new = new_dirs(&c, &WorkspaceConfig::default()).unwrap();
+        assert_eq!(new.len(), 1);
+        assert_eq!(new[0].state, "unsyncable");
+        assert_eq!(
+            new[0].reason.as_deref(),
+            Some("a linked worktree of /r/ts/main")
+        );
+        // a brand-new one on another host is never included
+        let mut other = seen_unit("ts/wt2", 100, false);
+        other.unsyncable = Some("a linked worktree of /r/ts/main".into());
+        assert!(!seen(&mut c, "flat", &[other], 5).unwrap());
+        assert!(units(&c).unwrap().iter().all(|u| u.state == "unsyncable"));
+        let cov = coverage(&c, &WorkspaceConfig::default(), &HashMap::new(), 0).unwrap();
+        assert!(cov.units.iter().all(|u| u.status == "unsyncable"));
+    }
+
+    #[test]
+    fn traffic_cost_and_transfers_add_up_into_stats() {
+        let c = conn();
+        let hour = 1_700_000_000_000 - (1_700_000_000_000 % HOUR_MS);
+        let d = TrafficDelta {
+            requests: 3,
+            bytes_in: 1000,
+            bytes_out: 20,
+            ms: 90,
+            failures: 1,
+        };
+        add_traffic(&c, "navi", hour, "push", &d).unwrap();
+        add_traffic(&c, "navi", hour, "push", &d).unwrap();
+        add_traffic(&c, "flat", hour, "fetch", &d).unwrap();
+        let cost = Cost {
+            cpu_ms: 10,
+            git_cpu_ms: 20,
+            git_calls: 5,
+            passes: 2,
+            rss_kb: 30_000,
+            watches: 7,
+            ..Cost::default()
+        };
+        add_cost(&c, "navi", hour, &cost).unwrap();
+        add_cost(
+            &c,
+            "navi",
+            hour,
+            &Cost {
+                rss_kb: 25_000,
+                watches: 8,
+                ..cost.clone()
+            },
+        )
+        .unwrap();
+        add_transfer(
+            &c,
+            &Transfer {
+                host: "navi".into(),
+                unit: "ts/u".into(),
+                kind: "push".into(),
+                bytes: 5 << 20,
+                ms: 500,
+                at: hour + 1,
+            },
+        )
+        .unwrap();
+        let now = hour + 2 * HOUR_MS;
+        let s = stats(
+            &c,
+            1,
+            vec![RepoSize {
+                unit: "ts/u".into(),
+                bytes: 42,
+            }],
+            now,
+        )
+        .unwrap();
+        assert_eq!((s.bucket_ms, s.hub_bytes, s.repos.len()), (HOUR_MS, 42, 1));
+        let navi: Vec<&TrafficRow> = s.traffic.iter().filter(|t| t.host == "navi").collect();
+        assert_eq!(navi.len(), 1);
+        assert_eq!(
+            (
+                navi[0].requests,
+                navi[0].bytes_in,
+                navi[0].ms,
+                navi[0].failures,
+                navi[0].at
+            ),
+            (6, 2000, 180, 2, hour)
+        );
+        assert_eq!(s.cost.len(), 1);
+        let cr = &s.cost[0];
+        assert_eq!(
+            (
+                cr.cpu_ms,
+                cr.git_cpu_ms,
+                cr.git_calls,
+                cr.passes,
+                cr.rss_kb,
+                cr.watches
+            ),
+            (20, 40, 10, 4, 30_000, 8),
+            "counters add, the resident set keeps its peak, the watches their last value"
+        );
+        assert_eq!(s.transfers.len(), 1);
+        assert_eq!((s.transfers[0].bytes, s.transfers[0].ms), (5 << 20, 500));
+        // daily buckets beyond three days land on a local midnight
+        let week = stats(&c, 7, Vec::new(), now).unwrap();
+        assert_eq!(week.bucket_ms, DAY_MS);
+        assert_eq!(week.traffic.len(), 2);
+        assert!(
+            week.traffic
+                .iter()
+                .all(|t| t.at <= hour && hour - t.at < DAY_MS)
+        );
+        // old rows go
+        add_traffic(&c, "navi", hour + STATS_KEEP_MS + HOUR_MS, "push", &d).unwrap();
+        let later = stats(&c, 1, Vec::new(), hour + STATS_KEEP_MS + 2 * HOUR_MS).unwrap();
+        assert_eq!(later.traffic.len(), 1);
+        let old: i64 = c
+            .query_row(
+                "SELECT COUNT(*) FROM workspace_traffic WHERE hour = ?1",
+                [hour],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(old, 0);
+    }
+
+    #[test]
+    fn coverage_and_preview_explain_every_directory() {
+        let mut c = conn();
+        let cfg = WorkspaceConfig {
+            include: vec!["ts/*".into()],
+            exclude: vec!["*_bkp".into()],
+            auto_include_mb: 1,
+            ..WorkspaceConfig::default()
+        };
+        save_config(&c, &cfg, 1).unwrap();
+        let mut small = seen_unit("ts/small", 100, true);
+        small.excluded.insert("node_modules".into(), 5000);
+        let big = seen_unit("ts/big", 5 << 20, true);
+        let bkp = seen_unit("ts/old_bkp", 300, false);
+        let other = seen_unit("other/x", 700, false);
+        assert!(seen(&mut c, "navi", &[small.clone(), big, bkp, other], 2).unwrap());
+        let mut small_flat = small.clone();
+        small_flat.size = 120;
+        small_flat.excluded.insert("node_modules".into(), 9000);
+        small_flat.excluded.insert("target".into(), 100);
+        seen(&mut c, "flat", &[small_flat], 3).unwrap();
+        let mut reports: HashMap<String, HashMap<String, UnitStatus>> = HashMap::new();
+        reports.entry("navi".into()).or_default().insert(
+            "ts/small".into(),
+            UnitStatus {
+                unit: "ts/small".into(),
+                kind: UnitKind::Git,
+                state: super::super::UnitState::InStep,
+                detail: None,
+                snapshot: None,
+                files: 3,
+                last_pass: None,
+                failing_since: None,
+                conflicts: Vec::new(),
+                held: None,
+                diverged: Vec::new(),
+                ignored: vec![super::super::IgnoredDir {
+                    path: "dist".into(),
+                    files: 2,
+                    bytes: 400,
+                    carried: false,
+                    quiescent: false,
+                }],
+            },
+        );
+        let cov = coverage(&c, &cfg, &reports, 77).unwrap();
+        assert_eq!(cov.hub_bytes, 77);
+        let by: BTreeMap<&str, &CoverageUnit> =
+            cov.units.iter().map(|u| (u.unit.as_str(), u)).collect();
+        assert_eq!(by["ts/small"].status, "travels");
+        assert_eq!(
+            (by["ts/small"].size, by["ts/small"].excluded["node_modules"]),
+            (120, 9000)
+        );
+        assert_eq!(by["ts/small"].hosts, ["flat", "navi"]);
+        assert_eq!(by["ts/big"].status, "waiting");
+        assert_eq!(by["ts/old_bkp"].status, "left_out");
+        assert_eq!(
+            by["ts/old_bkp"].decision,
+            Decision::Excluded {
+                rule: "*_bkp".into()
+            }
+        );
+        assert_eq!(by["other/x"].decision, Decision::Unmatched);
+        let navi = cov.hosts.iter().find(|h| h.host == "navi").unwrap();
+        assert_eq!(
+            (navi.units, navi.bytes, navi.travels),
+            (4, 100 + 5000 + (5 << 20) + 300 + 700, 100)
+        );
+        assert_eq!(cov.names.len(), 2);
+        assert_eq!(
+            (
+                cov.names[0].name.as_str(),
+                cov.names[0].bytes,
+                cov.names[0].units
+            ),
+            ("node_modules", 9000, 1)
+        );
+        assert_eq!(cov.home.len(), 1);
+        assert_eq!(
+            (cov.home[0].path.as_str(), cov.home[0].bytes),
+            ("dist", 400)
+        );
+
+        // a draft that drops the exclude and includes `other`
+        let draft = WorkspaceConfig {
+            include: vec!["ts/*".into(), "other/*".into()],
+            exclude: Vec::new(),
+            ..cfg.clone()
+        };
+        let p = preview(&c, &draft).unwrap();
+        let by: BTreeMap<&str, &CoverageUnit> =
+            p.units.iter().map(|u| (u.unit.as_str(), u)).collect();
+        assert_eq!(
+            by["ts/old_bkp"].decision,
+            Decision::Selected {
+                rule: Some("ts/*".into())
+            }
+        );
+        assert_eq!(
+            by["other/x"].decision,
+            Decision::Selected {
+                rule: Some("other/*".into())
+            }
+        );
+        let counts: Vec<(&str, bool, u64)> = p
+            .globs
+            .iter()
+            .map(|g| (g.pattern.as_str(), g.exclude, g.matches))
+            .collect();
+        assert_eq!(counts, [("ts/*", false, 3), ("other/*", false, 1)]);
+        let p2 = preview(&c, &cfg).unwrap();
+        assert!(
+            p2.globs
+                .iter()
+                .any(|g| g.pattern == "*_bkp" && g.exclude && g.matches == 1)
+        );
     }
 
     #[test]

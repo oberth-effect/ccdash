@@ -164,6 +164,38 @@ impl Registry {
         }
     }
 
+    /// Drops the watches of a unit at `rel` and below (a nested
+    /// repository appeared there: its own unit watches it).
+    pub fn forget_under(&self, unit: &str, rel: &str) {
+        let Ok(mut map) = self.map.lock() else {
+            return;
+        };
+        let Some(list) = map.by_unit.get(unit) else {
+            return;
+        };
+        let prefix = format!("{rel}/");
+        let gone: Vec<WatchDescriptor> = list
+            .iter()
+            .filter(|wd| {
+                matches!(map.by_wd.get(wd), Some(Entry::Unit { rel: r, .. })
+                    if r == rel || r.starts_with(&prefix))
+            })
+            .cloned()
+            .collect();
+        for wd in gone {
+            let _ = self.watches.clone().remove(wd.clone());
+            map.by_wd.remove(&wd);
+            if let Some(list) = map.by_unit.get_mut(unit) {
+                list.retain(|w| *w != wd);
+            }
+        }
+    }
+
+    /// Every watch held (the units' directories and the layout's).
+    pub fn total(&self) -> usize {
+        self.map.lock().ok().map_or(0, |map| map.by_wd.len())
+    }
+
     /// Watched directories of a unit.
     pub fn count(&self, unit: &str) -> usize {
         self.map

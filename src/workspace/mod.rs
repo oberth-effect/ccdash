@@ -190,12 +190,13 @@ pub const HELD_SHARE: f64 = 0.2;
 pub const QUIESCENT_PREFIX: &str = ".devenv/state";
 
 /// A git repository or a plain directory under the workspace root.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS, Default)]
 #[ts(export_to = "types.ts")]
 #[serde(rename_all = "snake_case")]
 pub enum UnitKind {
     /// Has its own `.git` (a repository at unit depth, nested deeper, or a
     /// bundle root).
+    #[default]
     Git,
     /// A directory without `.git`: a hidden repository under the state dir
     /// snapshots it.
@@ -342,6 +343,35 @@ impl WorkspaceConfig {
             })
     }
 
+    /// Why the globs select `unit` or not: the rule that decided.
+    pub fn explain(&self, unit: &str) -> Decision {
+        if let Some(force) = self.units.get(unit).and_then(|u| u.include) {
+            return if force {
+                Decision::ForcedIn
+            } else {
+                Decision::ForcedOut
+            };
+        }
+        if let Some(rule) = self.exclude.iter().find(|p| crate::sync::glob(p, unit)) {
+            return Decision::Excluded { rule: rule.clone() };
+        }
+        if self.include.is_empty() {
+            return Decision::Selected { rule: None };
+        }
+        let as_bundle = (!unit.contains('/')).then(|| format!("{unit}/"));
+        match self.include.iter().find(|p| {
+            crate::sync::glob(p, unit)
+                || as_bundle
+                    .as_deref()
+                    .is_some_and(|b| crate::sync::glob(p, b))
+        }) {
+            Some(rule) => Decision::Selected {
+                rule: Some(rule.clone()),
+            },
+            None => Decision::Unmatched,
+        }
+    }
+
     /// The size under which a new directory of `bundle` is included by
     /// itself, in bytes.
     pub fn auto_include_bytes(&self, bundle: &str) -> u64 {
@@ -424,6 +454,14 @@ pub struct SeenUnit {
     pub size: u64,
     /// Whether the globs select it.
     pub selected: bool,
+    /// Bytes under each never-travelling directory name found inside
+    /// (`node_modules` → 347 MB): what stays home, by rule.
+    #[serde(default)]
+    pub excluded: BTreeMap<String, u64>,
+    /// Why the directory can never be a unit (a linked worktree): the hub
+    /// leaves it out and says so.
+    #[serde(default)]
+    pub unsyncable: Option<String>,
 }
 
 /// Where a unit stands on one host.
@@ -539,6 +577,42 @@ pub struct UnitStatus {
     pub ignored: Vec<IgnoredDir>,
 }
 
+/// What the sync has cost this host since its collector started:
+/// cumulative counters (the hub keeps the deltas per hour) and two gauges.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export_to = "types.ts")]
+#[serde(default)]
+pub struct Cost {
+    /// When the counters started (the collector's start), so the hub
+    /// tells a restart from a decrease.
+    pub since: i64,
+    /// CPU time of the sync's own threads (scheduler, workers, watcher).
+    pub cpu_ms: u64,
+    /// CPU time of the git processes it ran (user + system).
+    pub git_cpu_ms: u64,
+    pub git_calls: u64,
+    pub git_wall_ms: u64,
+    /// Bytes git read from and wrote to the disk (block I/O, not cache hits).
+    pub io_read: u64,
+    pub io_write: u64,
+    /// The largest resident set a git process reached, in kB.
+    pub max_rss_kb: u64,
+    pub passes: u64,
+    /// Snapshot commits taken.
+    pub snapshots: u64,
+    pub pushes: u64,
+    pub fetches: u64,
+    pub push_ms: u64,
+    pub fetch_ms: u64,
+    /// Passes that ended in an error.
+    pub failures: u64,
+    /// The collector process's resident set now, in kB (the whole
+    /// process, not only the sync).
+    pub rss_kb: u64,
+    /// inotify watches held for the workspace.
+    pub watches: u64,
+}
+
 /// How a host's collector stands as a whole.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export_to = "types.ts")]
@@ -556,6 +630,8 @@ pub struct WorkspaceStatus {
     #[serde(default)]
     pub progress: Option<(u64, u64)>,
     pub last_pass: Option<i64>,
+    #[serde(default)]
+    pub cost: Option<Cost>,
 }
 
 /// Which side a conflict is resolved to.
@@ -600,6 +676,8 @@ pub struct HistoryEntry {
 pub struct WorkspaceHost {
     pub host: String,
     pub connected: bool,
+    /// Round trip of the hub's last WebSocket ping to the collector.
+    pub rtt_ms: Option<u64>,
     pub status: Option<WorkspaceStatus>,
 }
 
@@ -657,10 +735,12 @@ pub struct NewDir {
     pub kind: UnitKind,
     pub size: u64,
     pub hosts: Vec<String>,
-    /// `waiting` (over the threshold), `excluded` (the globs) or
-    /// `ignored` (the owner said so).
+    /// `waiting` (over the threshold), `excluded` (the globs), `ignored`
+    /// (the owner said so) or `unsyncable` (a linked worktree).
     pub state: String,
     pub at: i64,
+    /// Why it can never travel, when `unsyncable`.
+    pub reason: Option<String>,
 }
 
 /// `GET /api/v1/workspace`.
@@ -679,6 +759,199 @@ pub struct WorkspaceView {
     pub bytes: u64,
     /// Bytes pushed per day (local dates), the last 30 days.
     pub growth: Vec<(String, i64)>,
+}
+
+/// What the globs decided for one unit, and by which rule.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
+#[ts(export_to = "types.ts")]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Decision {
+    /// An include glob matched (`rule`), or no include glob is set.
+    Selected { rule: Option<String> },
+    /// The unit's override says in.
+    ForcedIn,
+    /// The unit's override says out.
+    ForcedOut,
+    /// An exclude glob matched.
+    Excluded { rule: String },
+    /// Include globs are set and none matches.
+    Unmatched,
+}
+
+/// One directory at unit depth as the coverage view sees it: whether it
+/// travels, what decided, what it weighs and what inside it stays home.
+#[derive(Debug, Clone, Serialize, TS)]
+#[ts(export_to = "types.ts")]
+pub struct CoverageUnit {
+    pub unit: String,
+    pub kind: UnitKind,
+    pub hosts: Vec<String>,
+    /// What would travel (working tree plus `.git`), the largest copy.
+    pub size: u64,
+    /// Never-travelling directory name → bytes inside, the largest copy.
+    pub excluded: BTreeMap<String, u64>,
+    /// `travels`, `waiting` (over the threshold), `ignored` (the owner),
+    /// `unsyncable` (a linked worktree) or `left_out` (the globs).
+    pub status: String,
+    pub decision: Decision,
+    /// Why it can never travel, when `unsyncable`.
+    pub reason: Option<String>,
+}
+
+/// One machine's share of the coverage.
+#[derive(Debug, Clone, Serialize, TS)]
+#[ts(export_to = "types.ts")]
+pub struct CoverageHost {
+    pub host: String,
+    /// Directories at unit depth seen there.
+    pub units: u64,
+    /// Everything they weigh, the never-travelling directories included.
+    pub bytes: u64,
+    /// What travels from there.
+    pub travels: u64,
+}
+
+/// A never-travelling directory name and what it keeps home.
+#[derive(Debug, Clone, Serialize, TS)]
+#[ts(export_to = "types.ts")]
+pub struct LeftOutName {
+    pub name: String,
+    pub bytes: u64,
+    pub units: u64,
+}
+
+/// A gitignored directory inside a travelling unit (what the collectors
+/// report live), carried or not.
+#[derive(Debug, Clone, Serialize, TS)]
+#[ts(export_to = "types.ts")]
+pub struct HomeDir {
+    pub unit: String,
+    pub path: String,
+    pub bytes: u64,
+    pub files: u64,
+    pub hosts: Vec<String>,
+    pub carried: bool,
+}
+
+/// `GET /api/v1/workspace/coverage`: what travels and what stays home.
+#[derive(Debug, Clone, Serialize, TS)]
+#[ts(export_to = "types.ts")]
+pub struct Coverage {
+    pub hosts: Vec<CoverageHost>,
+    pub units: Vec<CoverageUnit>,
+    /// The never-travelling names, largest first.
+    pub names: Vec<LeftOutName>,
+    pub home: Vec<HomeDir>,
+    /// Bytes the repositories take on the hub.
+    pub hub_bytes: u64,
+}
+
+/// One glob of a proposed configuration and how many units it matches.
+#[derive(Debug, Clone, Serialize, TS)]
+#[ts(export_to = "types.ts")]
+pub struct GlobMatch {
+    pub pattern: String,
+    pub exclude: bool,
+    pub matches: u64,
+}
+
+/// `POST /api/v1/workspace/config/preview`: what a configuration would
+/// decide for every directory the hub knows.
+#[derive(Debug, Clone, Serialize, TS)]
+#[ts(export_to = "types.ts")]
+pub struct Preview {
+    pub units: Vec<CoverageUnit>,
+    pub globs: Vec<GlobMatch>,
+}
+
+/// Traffic of one host in one bucket, one direction.
+#[derive(Debug, Clone, Serialize, TS)]
+#[ts(export_to = "types.ts")]
+pub struct TrafficRow {
+    pub host: String,
+    pub at: i64,
+    /// `push` (receive-pack) or `fetch` (upload-pack, info/refs).
+    pub kind: String,
+    pub requests: u64,
+    /// Bytes the host sent to the hub.
+    pub bytes_in: u64,
+    /// Bytes the hub sent to the host.
+    pub bytes_out: u64,
+    pub ms: u64,
+    pub failures: u64,
+}
+
+/// The sync's cost on one host in one bucket (deltas of [`Cost`]).
+#[derive(Debug, Clone, Default, Serialize, TS)]
+#[ts(export_to = "types.ts")]
+pub struct CostRow {
+    pub host: String,
+    pub at: i64,
+    pub cpu_ms: u64,
+    pub git_cpu_ms: u64,
+    pub git_calls: u64,
+    pub git_wall_ms: u64,
+    pub io_read: u64,
+    pub io_write: u64,
+    pub passes: u64,
+    pub snapshots: u64,
+    pub pushes: u64,
+    pub fetches: u64,
+    pub push_ms: u64,
+    pub fetch_ms: u64,
+    pub failures: u64,
+    /// The largest resident set reported in the bucket, in kB.
+    pub rss_kb: u64,
+    /// The last watch count reported in the bucket.
+    pub watches: u64,
+}
+
+/// A large transfer, for the throughput view.
+#[derive(Debug, Clone, Serialize, TS)]
+#[ts(export_to = "types.ts")]
+pub struct Transfer {
+    pub host: String,
+    pub unit: String,
+    pub kind: String,
+    pub bytes: u64,
+    pub ms: u64,
+    pub at: i64,
+}
+
+/// Pushes of one host in one bucket (from the event log).
+#[derive(Debug, Clone, Serialize, TS)]
+#[ts(export_to = "types.ts")]
+pub struct PushRow {
+    pub host: String,
+    pub at: i64,
+    pub pushes: u64,
+    pub bytes: u64,
+}
+
+/// A unit's repository on the hub and its size.
+#[derive(Debug, Clone, Serialize, TS)]
+#[ts(export_to = "types.ts")]
+pub struct RepoSize {
+    pub unit: String,
+    pub bytes: u64,
+}
+
+/// `GET /api/v1/workspace/stats?days=N`: traffic, cost and growth over
+/// the last `days`, in hourly buckets up to three days, else daily.
+#[derive(Debug, Clone, Serialize, TS)]
+#[ts(export_to = "types.ts")]
+pub struct WorkspaceStats {
+    pub days: i64,
+    pub bucket_ms: i64,
+    pub since: i64,
+    pub traffic: Vec<TrafficRow>,
+    pub cost: Vec<CostRow>,
+    pub transfers: Vec<Transfer>,
+    pub pushes: Vec<PushRow>,
+    /// Conflicts recorded per bucket.
+    pub conflicts: Vec<(i64, u64)>,
+    pub repos: Vec<RepoSize>,
+    pub hub_bytes: u64,
 }
 
 #[cfg(test)]
@@ -729,6 +1002,31 @@ mod tests {
         );
         assert!(cfg.selects("other/repo"));
         assert!(!cfg.selects("tsandrini/ccdash"));
+        assert_eq!(cfg.explain("other/repo"), Decision::ForcedIn);
+        assert_eq!(cfg.explain("tsandrini/ccdash"), Decision::ForcedOut);
+        assert_eq!(
+            cfg.explain("tsandrini/nixpkgs"),
+            Decision::Excluded {
+                rule: "tsandrini/nixpkgs".into()
+            }
+        );
+        assert_eq!(
+            cfg.explain("meteopress/radar"),
+            Decision::Selected {
+                rule: Some("meteopress/*".into())
+            }
+        );
+        assert_eq!(
+            cfg.explain("tsandrini"),
+            Decision::Selected {
+                rule: Some("tsandrini/*".into())
+            }
+        );
+        assert_eq!(cfg.explain("stranger/repo"), Decision::Unmatched);
+        assert_eq!(
+            WorkspaceConfig::default().explain("any/thing"),
+            Decision::Selected { rule: None }
+        );
         let rules = cfg.rules("other/repo");
         assert!(rules.always_exclude.contains(&"node_modules".to_owned()));
         assert!(rules.always_exclude.contains(&"data".to_owned()));

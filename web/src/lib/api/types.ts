@@ -162,6 +162,12 @@ export type Card = { workspace: string, slug: string, kind: NoteKind, project: s
  */
 issue: string | null, excerpt: string, };
 
+/**
+ * What kind of thing a notification is about; a device mutes kinds
+ * (Settings › This device), the hub skips it for those.
+ */
+export type Category = "permission" | "question" | "plan" | "turn" | "ws_held" | "ws_conflict" | "ws_new" | "ws_failing";
+
 export type Choice = { label: string, description: string, };
 
 /**
@@ -246,6 +252,121 @@ export type Conversation = { exchanges: Array<Exchange>,
  * Older exchanges exist; ask again with `before` set to the first one's `at`.
  */
 more: boolean, };
+
+/**
+ * What the sync has cost this host since its collector started:
+ * cumulative counters (the hub keeps the deltas per hour) and two gauges.
+ */
+export type Cost = { 
+/**
+ * When the counters started (the collector's start), so the hub
+ * tells a restart from a decrease.
+ */
+since: number, 
+/**
+ * CPU time of the sync's own threads (scheduler, workers, watcher).
+ */
+cpu_ms: number, 
+/**
+ * CPU time of the git processes it ran (user + system).
+ */
+git_cpu_ms: number, git_calls: number, git_wall_ms: number, 
+/**
+ * Bytes git read from and wrote to the disk (block I/O, not cache hits).
+ */
+io_read: number, io_write: number, 
+/**
+ * The largest resident set a git process reached, in kB.
+ */
+max_rss_kb: number, passes: number, 
+/**
+ * Snapshot commits taken.
+ */
+snapshots: number, pushes: number, fetches: number, push_ms: number, fetch_ms: number, 
+/**
+ * Passes that ended in an error.
+ */
+failures: number, 
+/**
+ * The collector process's resident set now, in kB (the whole
+ * process, not only the sync).
+ */
+rss_kb: number, 
+/**
+ * inotify watches held for the workspace.
+ */
+watches: number, };
+
+/**
+ * The sync's cost on one host in one bucket (deltas of [`Cost`]).
+ */
+export type CostRow = { host: string, at: number, cpu_ms: number, git_cpu_ms: number, git_calls: number, git_wall_ms: number, io_read: number, io_write: number, passes: number, snapshots: number, pushes: number, fetches: number, push_ms: number, fetch_ms: number, failures: number, 
+/**
+ * The largest resident set reported in the bucket, in kB.
+ */
+rss_kb: number, 
+/**
+ * The last watch count reported in the bucket.
+ */
+watches: number, };
+
+/**
+ * `GET /api/v1/workspace/coverage`: what travels and what stays home.
+ */
+export type Coverage = { hosts: Array<CoverageHost>, units: Array<CoverageUnit>, 
+/**
+ * The never-travelling names, largest first.
+ */
+names: Array<LeftOutName>, home: Array<HomeDir>, 
+/**
+ * Bytes the repositories take on the hub.
+ */
+hub_bytes: number, };
+
+/**
+ * One machine's share of the coverage.
+ */
+export type CoverageHost = { host: string, 
+/**
+ * Directories at unit depth seen there.
+ */
+units: number, 
+/**
+ * Everything they weigh, the never-travelling directories included.
+ */
+bytes: number, 
+/**
+ * What travels from there.
+ */
+travels: number, };
+
+/**
+ * One directory at unit depth as the coverage view sees it: whether it
+ * travels, what decided, what it weighs and what inside it stays home.
+ */
+export type CoverageUnit = { unit: string, kind: UnitKind, hosts: Array<string>, 
+/**
+ * What would travel (working tree plus `.git`), the largest copy.
+ */
+size: number, 
+/**
+ * Never-travelling directory name → bytes inside, the largest copy.
+ */
+excluded: { [key in string]: number }, 
+/**
+ * `travels`, `waiting` (over the threshold), `ignored` (the owner),
+ * `unsyncable` (a linked worktree) or `left_out` (the globs).
+ */
+status: string, decision: Decision, 
+/**
+ * Why it can never travel, when `unsyncable`.
+ */
+reason: string | null, };
+
+/**
+ * What the globs decided for one unit, and by which rule.
+ */
+export type Decision = { "kind": "selected", rule: string | null, } | { "kind": "forced_in" } | { "kind": "forced_out" } | { "kind": "excluded", rule: string, } | { "kind": "unmatched" };
 
 export type DecisionUse = { source: string, decision: string, count: number, };
 
@@ -334,6 +455,11 @@ at_reset_avg: number | null, at_reset_recent: number | null,
 full_at: number | null, };
 
 /**
+ * One glob of a proposed configuration and how many units it matches.
+ */
+export type GlobMatch = { pattern: string, exclude: boolean, matches: number, };
+
+/**
  * `GET /graph`: the workspace's notes and the links between them
  * (backlinks are the same edges seen from the other end).
  */
@@ -397,13 +523,23 @@ snippet: string, workspace: string, slug: string, kind: NoteKind, project: strin
 issue: string | null, excerpt: string, };
 
 /**
+ * A gitignored directory inside a travelling unit (what the collectors
+ * report live), carried or not.
+ */
+export type HomeDir = { unit: string, path: string, bytes: number, files: number, hosts: Array<string>, carried: boolean, };
+
+/**
  * A machine whose collector reports to the hub.
  */
 export type HostStatus = { name: string, connected: boolean, 
 /**
  * When the link last came up or went down.
  */
-since: number, };
+since: number, 
+/**
+ * Round trip of the hub's last WebSocket ping to the collector.
+ */
+rtt_ms: number | null, };
 
 export type HostTotals = { host: string, sessions: number, working_ms: number, permission_ms: number, 
 /**
@@ -535,6 +671,11 @@ resume?: string, };
  */
 export type LaunchTarget = { host: string, workspaces: Array<TargetWorkspace>, };
 
+/**
+ * A never-travelling directory name and what it keeps home.
+ */
+export type LeftOutName = { name: string, bytes: number, units: number, };
+
 export type Limit = { used_pct: number, 
 /**
  * Unix seconds.
@@ -609,10 +750,14 @@ ttft_p50_ms: number | null, };
  */
 export type NewDir = { unit: string, kind: UnitKind, size: number, hosts: Array<string>, 
 /**
- * `waiting` (over the threshold), `excluded` (the globs) or
- * `ignored` (the owner said so).
+ * `waiting` (over the threshold), `excluded` (the globs), `ignored`
+ * (the owner said so) or `unsyncable` (a linked worktree).
  */
-state: string, at: number, };
+state: string, at: number, 
+/**
+ * Why it can never travel, when `unsyncable`.
+ */
+reason: string | null, };
 
 /**
  * A note as stored, body included.
@@ -707,6 +852,12 @@ blocked: Array<[string, number]>,
  */
 rules: Array<RuleStat>, };
 
+/**
+ * `POST /api/v1/workspace/config/preview`: what a configuration would
+ * decide for every directory the hub knows.
+ */
+export type Preview = { units: Array<CoverageUnit>, globs: Array<GlobMatch>, };
+
 export type Priority = "low" | "normal" | "high";
 
 export type ProcInfo = { pid: number, name: string, 
@@ -755,6 +906,17 @@ export type Prompt = { at: number, session: string, text: string, };
 
 export type PushOutcome = { "outcome": "sent" } | { "outcome": "dropped", status: number, } | { "outcome": "failed", error: string, };
 
+export type PushPrefs = { endpoint: string, 
+/**
+ * The kinds the device wants (`Category` names); null means every kind.
+ */
+categories: Array<string> | null, };
+
+/**
+ * Pushes of one host in one bucket (from the event log).
+ */
+export type PushRow = { host: string, at: number, pushes: number, bytes: number, };
+
 export type PutNote = { kind: NoteKind, title: string, body: string, summary: string | null, project: string | null, status: Status | null, extra: Record<string, unknown> | null, 
 /**
  * The version the edit is based on; refused when the note moved on.
@@ -781,6 +943,11 @@ scoped: Array<ScopedLimit>, };
 export type Rename = { title: string, };
 
 export type Reply = { text: string, };
+
+/**
+ * A unit's repository on the hub and its size.
+ */
+export type RepoSize = { unit: string, bytes: number, };
 
 export type Resolve = { keep: Keep, };
 
@@ -1055,7 +1222,12 @@ export type Subscription = { id: number, endpoint: string, user_agent: string | 
  * The device token that registered it; revoking the token drops it.
  * Null for devices on the bootstrap token.
  */
-token_id: number | null, };
+token_id: number | null, 
+/**
+ * The notification kinds the device wants (`Category::name`); None
+ * means every kind.
+ */
+categories: Array<string> | null, };
 
 /**
  * A conflict the hub recorded.
@@ -1242,6 +1414,28 @@ export type ToolStat = {
  * Tool name, or the command key for Bash commands.
  */
 name: string, calls: number, failed: number, total_ms: number, p50_ms: number | null, p95_ms: number | null, max_ms: number | null, last_failed_at: number | null, };
+
+/**
+ * Traffic of one host in one bucket, one direction.
+ */
+export type TrafficRow = { host: string, at: number, 
+/**
+ * `push` (receive-pack) or `fetch` (upload-pack, info/refs).
+ */
+kind: string, requests: number, 
+/**
+ * Bytes the host sent to the hub.
+ */
+bytes_in: number, 
+/**
+ * Bytes the hub sent to the host.
+ */
+bytes_out: number, ms: number, failures: number, };
+
+/**
+ * A large transfer, for the throughput view.
+ */
+export type Transfer = { host: string, unit: string, kind: string, bytes: number, ms: number, at: number, };
 
 /**
  * Progress of the current or last turn. Counts cover the main thread;
@@ -1437,7 +1631,11 @@ commit: string | null, };
 /**
  * One host's column in the panel's grid.
  */
-export type WorkspaceHost = { host: string, connected: boolean, status: WorkspaceStatus | null, };
+export type WorkspaceHost = { host: string, connected: boolean, 
+/**
+ * Round trip of the hub's last WebSocket ping to the collector.
+ */
+rtt_ms: number | null, status: WorkspaceStatus | null, };
 
 export type WorkspaceProjects = { name: string, 
 /**
@@ -1456,6 +1654,16 @@ total: number, };
 export type WorkspaceResyncBody = { unit: string | null, };
 
 /**
+ * `GET /api/v1/workspace/stats?days=N`: traffic, cost and growth over
+ * the last `days`, in hourly buckets up to three days, else daily.
+ */
+export type WorkspaceStats = { days: number, bucket_ms: number, since: number, traffic: Array<TrafficRow>, cost: Array<CostRow>, transfers: Array<Transfer>, pushes: Array<PushRow>, 
+/**
+ * Conflicts recorded per bucket.
+ */
+conflicts: Array<[number, number]>, repos: Array<RepoSize>, hub_bytes: number, };
+
+/**
  * How a host's collector stands as a whole.
  */
 export type WorkspaceStatus = { root: string, 
@@ -1466,7 +1674,7 @@ setup_version: number, watching: boolean, units: number, in_step: number, pendin
 /**
  * While every unit is seeded, created or adopted: done and total.
  */
-progress: [number, number] | null, last_pass: number | null, };
+progress: [number, number] | null, last_pass: number | null, cost: Cost | null, };
 
 export type WorkspaceUnitBody = { 
 /**

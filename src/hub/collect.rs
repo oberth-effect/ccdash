@@ -6,7 +6,7 @@ use std::{
     collections::BTreeMap,
     path::PathBuf,
     sync::atomic::{AtomicU64, Ordering},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use anyhow::{Context, Result, bail};
@@ -31,6 +31,8 @@ use crate::{
 const HELLO_TIMEOUT: Duration = Duration::from_secs(10);
 /// A link with no frame for this long is dropped (collectors ping every 30 s).
 const IDLE: Duration = Duration::from_secs(90);
+/// The hub pings every link this often and keeps the round trip.
+const PING_EVERY: Duration = Duration::from_secs(30);
 
 /// Collector tokens by host name, read at every connection so a rotated
 /// token needs no restart.
@@ -127,6 +129,9 @@ async fn link(
     })
     .await?;
     changed.mark_unchanged();
+    let mut ping = tokio::time::interval(PING_EVERY);
+    ping.tick().await;
+    let mut pinged: Option<Instant> = None;
     let result = async {
         loop {
             tokio::select! {
@@ -136,9 +141,25 @@ async fn link(
                     let text = serde_json::to_string(&ToCollector::SyncChanged { seq })?;
                     sink.send(Message::Text(text.into())).await?;
                 }
+                _ = ping.tick() => {
+                    pinged = Some(Instant::now());
+                    sink.send(Message::Ping(Vec::new().into())).await?;
+                }
                 msg = tokio::time::timeout(IDLE, stream.next()) => {
                     let Some(msg) = msg.context("idle")? else { return Ok(()) };
-                    if let Some(cmd) = parse(&msg?)?.and_then(|m| command(&host, m)) {
+                    let msg = msg?;
+                    if matches!(msg, Message::Pong(_))
+                        && let Some(at) = pinged.take()
+                    {
+                        hub.send(Cmd::CollectorRtt {
+                            host: host.clone(),
+                            conn,
+                            ms: at.elapsed().as_millis() as u64,
+                        })
+                        .await?;
+                        continue;
+                    }
+                    if let Some(cmd) = parse(&msg)?.and_then(|m| command(&host, m)) {
                         hub.send(cmd).await?;
                     }
                 }
@@ -226,6 +247,9 @@ fn command(host: &str, msg: ToHub) -> Option<Cmd> {
             full,
         },
         ToHub::WorkspaceResolved { id, error } => Cmd::WorkspaceResolved { host, id, error },
+        ToHub::WorkspaceHeldDone { unit, error, .. } => {
+            Cmd::WorkspaceHeldDone { host, unit, error }
+        }
         ToHub::WorkspaceConfig { config } => Cmd::WorkspaceStarting { host, config },
     })
 }

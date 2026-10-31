@@ -22,6 +22,9 @@ use crate::{
     },
 };
 
+/// 9: the sync's cost and coverage (`WorkspaceStatus.cost`,
+/// `SeenUnit.excluded`/`.unsyncable`) and held actions acknowledged
+/// (`WorkspaceHeldDone` up).
 /// 8: the workspace on the hub (`WorkspaceUnits`, `Workspace`,
 /// `WorkspaceResolved` up; `WorkspaceSetup`, `WorkspaceChanged`,
 /// `WorkspaceResync`, `WorkspaceResolve`, `WorkspaceHeld`,
@@ -36,7 +39,7 @@ use crate::{
 /// `Stop`, `Open` down; `Launched`, `Stopped` up), `branch` and `launched`
 /// on sessions, `branch` on agents entries and envelopes, `launch` on
 /// envelopes.
-pub const VERSION: u32 = 8;
+pub const VERSION: u32 = 9;
 
 /// Collector → hub.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -155,6 +158,15 @@ pub enum ToHub {
     /// What came of `WorkspaceResolve` for conflict `id`.
     WorkspaceResolved {
         id: i64,
+        #[serde(default)]
+        error: Option<String>,
+    },
+    /// Whether `WorkspaceHeld` for `unit` was taken (it runs between
+    /// passes), or why not.
+    WorkspaceHeldDone {
+        unit: String,
+        #[serde(default)]
+        commit: Option<String>,
         #[serde(default)]
         error: Option<String>,
     },

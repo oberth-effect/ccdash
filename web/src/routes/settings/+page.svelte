@@ -10,6 +10,7 @@
 		mintToken,
 		relabelToken,
 		revokeToken,
+		setPushPrefs,
 		testPush,
 		type Devices,
 		type Pairing,
@@ -18,11 +19,13 @@
 	} from '#lib/api/index.js';
 	import { Badge } from '#lib/components/ui/badge/index.js';
 	import { Button } from '#lib/components/ui/button/index.js';
+	import { Checkbox } from '#lib/components/ui/checkbox/index.js';
 	import * as Dialog from '#lib/components/ui/dialog/index.js';
 	import { Input } from '#lib/components/ui/input/index.js';
 	import { Textarea } from '#lib/components/ui/textarea/index.js';
 	import { fmtDuration, fmtStamp } from '#lib/format.js';
 	import { live } from '#lib/live/store.svelte.js';
+	import { CATEGORIES, wants } from '#lib/notify.js';
 	import { DEFAULT_QUICK, prefs, SCHEMES, type Theme } from '#lib/prefs.svelte.js';
 	import { pwa } from '#lib/pwa.svelte.js';
 
@@ -196,6 +199,28 @@
 		}
 	}
 
+	/** This device's subscription as the hub has it. */
+	const mine = $derived(push?.subscriptions.find((s) => s.endpoint === sub?.endpoint) ?? null);
+	let prefsBusy = $state(false);
+
+	/** Mutes or unmutes one kind for this device; every kind on means "all". */
+	async function toggleKind(id: (typeof CATEGORIES)[number]['id'], on: boolean) {
+		if (!mine) return;
+		const next = CATEGORIES.map((c) => c.id).filter((c) =>
+			c === id ? on : wants(mine.categories, c)
+		);
+		prefsBusy = true;
+		status = '';
+		try {
+			await setPushPrefs(mine.endpoint, next.length === CATEGORIES.length ? null : next);
+			push = await fetchPush();
+		} catch (e) {
+			failed(e, (m) => (status = m));
+		} finally {
+			prefsBusy = false;
+		}
+	}
+
 	const device = (ua: string | null) =>
 		(ua || '')
 			.match(/(Firefox|Chrome|Safari)\/[\d.]+|Android|iPhone|Linux|Windows|Mac/g)
@@ -314,6 +339,34 @@
 						>Send a test</Button
 					>{/if}
 			</div>
+			{#if sub && mine}
+				<fieldset class="flex flex-col gap-1.5 rounded-md border px-3 py-2">
+					<legend class="px-1 text-xs font-medium">Notify this device about</legend>
+					<div class="grid gap-x-6 gap-y-1 sm:grid-cols-2">
+						{#each ['sessions', 'workspace'] as const as group (group)}
+							<div class="flex flex-col gap-1">
+								<span class="text-xs text-muted-foreground"
+									>{group === 'sessions' ? 'Sessions' : 'Workspace sync'}</span
+								>
+								{#each CATEGORIES.filter((c) => c.group === group) as c (c.id)}
+									<label class="flex items-center gap-2 text-sm">
+										<Checkbox
+											checked={wants(mine.categories, c.id)}
+											disabled={prefsBusy}
+											onCheckedChange={(on) => toggleKind(c.id, on === true)}
+										/>
+										{c.label}
+									</label>
+								{/each}
+							</div>
+						{/each}
+					</div>
+					<p class="text-xs text-muted-foreground">
+						Kinds the hub's configuration turns off never notify; other devices keep their own
+						choice.
+					</p>
+				</fieldset>
+			{/if}
 			{#if push.subscriptions.length}
 				<ul class="text-sm">
 					{#each push.subscriptions as d (d.id)}
@@ -326,7 +379,8 @@
 									? `failed ${fmtDuration(live.now - d.last_failure_at)} ago: ${d.last_failure}`
 									: d.last_success_at
 										? `sent ${fmtDuration(live.now - d.last_success_at)} ago`
-										: 'nothing sent yet'}
+										: 'nothing sent yet'}{#if d.categories}
+									· {d.categories.length} of {CATEGORIES.length} kinds{/if}
 							</span>
 						</li>
 					{/each}

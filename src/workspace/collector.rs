@@ -15,6 +15,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
+        atomic::{AtomicU64, Ordering},
         mpsc::{self, Receiver, RecvTimeoutError, Sender},
     },
     thread,
@@ -28,9 +29,9 @@ use tokio::sync::{mpsc::UnboundedSender, oneshot};
 use tracing::{debug, info, warn};
 
 use super::{
-    ConflictReport, Diverged, HELD_REFS, HeldAction, HeldReport, IgnoredDir, Rules, SYNC_REFS,
-    SeenUnit, Side, TIPS_REFS, UnitKind, UnitState, UnitStatus, WorkspaceConfig, WorkspaceSetup,
-    WorkspaceStatus, apply,
+    ConflictMode, ConflictReport, Cost, Diverged, HELD_REFS, HeldAction, HeldReport, IgnoredDir,
+    Rules, SYNC_REFS, SeenUnit, Side, TIPS_REFS, UnitKind, UnitState, UnitStatus, WorkspaceConfig,
+    WorkspaceSetup, WorkspaceStatus, apply,
     git::{Git, Opts, Repo},
     snapshot::{self, Local, Outcome as Snap},
     units::{self, Layout},
@@ -60,6 +61,9 @@ const LAG_RETRY: Duration = Duration::from_secs(15);
 /// missing).
 const TOOL_STALE_MS: i64 = 600_000;
 const WORKERS: usize = 4;
+/// Every directory at unit depth is measured again this often (what
+/// travels, what the never-travelling directories keep home).
+const MEASURE_EVERY: Duration = Duration::from_secs(6 * 3600);
 
 /// What the collector, the hub and the watcher ask of the scheduler.
 pub enum Cmd {
@@ -229,6 +233,7 @@ pub fn spawn(settings: Settings, hub: UnboundedSender<ToHub>) -> Result<Handle> 
         hub_base: settings.hub_base.clone(),
         registry,
         busy: busy.clone(),
+        own_cpu_ms: AtomicU64::new(0),
     });
     let (job_tx, job_rx) = mpsc::channel::<Job>();
     let job_rx = Arc::new(Mutex::new(job_rx));
@@ -266,6 +271,10 @@ pub fn spawn(settings: Settings, hub: UnboundedSender<ToHub>) -> Result<Handle> 
         pending_sizes: 0,
         seen_dirty: false,
         starting: settings.starting.clone(),
+        last_measure: None,
+        passes: 0,
+        snapshots: 0,
+        failures: 0,
     };
     thread::Builder::new()
         .name("workspace".into())
@@ -297,6 +306,8 @@ struct Shared {
     hub_base: String,
     registry: Option<Registry>,
     busy: Busy,
+    /// CPU time the worker threads spent on jobs, in ms.
+    own_cpu_ms: AtomicU64,
 }
 
 impl Shared {
@@ -332,12 +343,15 @@ enum Job {
         /// whole unit.
         new_dirs: Vec<String>,
     },
-    /// Working tree plus `.git`, the always excluded left out.
+    /// Working tree plus `.git`, the always excluded left out (and what
+    /// they weigh, by name). `fresh`: a directory that just appeared, so
+    /// wait until it stops growing.
     Size {
         unit: String,
         kind: UnitKind,
         always_exclude: Vec<String>,
         selected: bool,
+        fresh: bool,
     },
     /// The ignored directories present, with their size.
     Ignored {
@@ -449,6 +463,7 @@ enum Done {
         unit: String,
         kind: UnitKind,
         size: u64,
+        excluded: BTreeMap<String, u64>,
         selected: bool,
     },
     Ignored {
@@ -518,6 +533,9 @@ struct Entry {
     /// Quiescent directories whose working tree lags behind the snapshot
     /// (a process held them during an apply); written once free.
     lagging: BTreeSet<String>,
+    /// Why the unit can never be synced from here (a linked worktree):
+    /// no passes, the hub is told through the seen list.
+    blocked: Option<String>,
 }
 
 impl Entry {
@@ -557,6 +575,7 @@ impl Entry {
             new_dirs: Vec::new(),
             held_action: None,
             lagging: BTreeSet::new(),
+            blocked: None,
         }
     }
 
@@ -579,7 +598,13 @@ impl Entry {
 
     /// Whether a pass is due now, and when the next check is.
     fn due(&self, now: Instant) -> (bool, Option<Instant>) {
-        if self.running || !self.present || !self.included || self.rules.paused || self.creating {
+        if self.running
+            || !self.present
+            || !self.included
+            || self.rules.paused
+            || self.creating
+            || self.blocked.is_some()
+        {
             return (false, None);
         }
         if self.held_action.is_some() {
@@ -614,7 +639,7 @@ struct Scheduler {
     setup_known: bool,
     units: BTreeMap<String, Entry>,
     /// Directories at unit depth found here, with their size once known.
-    seen: BTreeMap<String, (UnitKind, Option<u64>, bool)>,
+    seen: BTreeMap<String, Seen>,
     jobs: Sender<Job>,
     in_flight: usize,
     connected: bool,
@@ -632,6 +657,22 @@ struct Scheduler {
     /// The collector config's starting configuration, offered to a hub
     /// without one.
     starting: WorkspaceConfig,
+    /// When every seen directory was last measured.
+    last_measure: Option<Instant>,
+    passes: u64,
+    snapshots: u64,
+    failures: u64,
+}
+
+/// A directory at unit depth as this host sees it.
+#[derive(Debug, Clone, Default)]
+struct Seen {
+    kind: UnitKind,
+    /// Once measured.
+    size: Option<u64>,
+    selected: bool,
+    excluded: BTreeMap<String, u64>,
+    unsyncable: Option<String>,
 }
 
 impl Scheduler {
@@ -683,6 +724,15 @@ impl Scheduler {
         if self.discover_due {
             self.discover_due = false;
             self.discover();
+        }
+        if self.setup_known
+            && self.pending_sizes == 0
+            && self
+                .last_measure
+                .is_none_or(|at| now.duration_since(at) >= MEASURE_EVERY)
+        {
+            self.last_measure = Some(now);
+            self.measure_all();
         }
         if self.sweep_due && self.setup_known {
             self.sweep_due = false;
@@ -852,21 +902,33 @@ impl Scheduler {
                 unit,
                 action,
                 commit,
-            } => match self.units.get_mut(&unit) {
-                Some(e) if e.held.is_some() => {
-                    let current = e.held.as_ref().map(|h| h.commit.clone());
-                    if commit.is_some() && commit != current {
-                        warn!(
-                            "workspace {unit}: the held snapshot moved on since the panel showed it; choose again"
-                        );
-                    } else {
-                        // NOTE: run between passes, never under one
-                        e.held_action = Some(action);
+            } => {
+                let error = match self.units.get_mut(&unit) {
+                    Some(e) if e.held.is_some() => {
+                        let current = e.held.as_ref().map(|h| h.commit.clone());
+                        if commit.is_some() && commit != current {
+                            Some(format!(
+                                "the held snapshot moved on since the panel showed it (now {}); choose again",
+                                current.as_deref().map_or("none", |c| &c[..c.len().min(8)])
+                            ))
+                        } else {
+                            // NOTE: run between passes, never under one
+                            e.held_action = Some(action);
+                            None
+                        }
                     }
+                    Some(_) => Some("nothing is held here".to_owned()),
+                    None => Some("not a unit on this host".to_owned()),
+                };
+                if let Some(e) = &error {
+                    warn!("workspace {unit}: {e}");
                 }
-                Some(_) => warn!("workspace {unit}: nothing is held here"),
-                None => warn!("workspace {unit}: not a unit here"),
-            },
+                let _ = self.hub.send(ToHub::WorkspaceHeldDone {
+                    unit,
+                    commit,
+                    error,
+                });
+            }
             Cmd::Adopt { unit, prefer } => {
                 for (id, e) in &mut self.units {
                     if unit.as_ref().is_none_or(|u| u == id) && e.state == UnitState::Unadopted {
@@ -894,6 +956,8 @@ impl Scheduler {
             Cmd::Connected(up) => {
                 self.connected = up;
                 if up {
+                    // NOTE: the link reconnected: the hub may have moved
+                    self.shared.git.forget_hub_address();
                     self.report(true);
                     self.seen_dirty = true;
                     for e in self.units.values_mut() {
@@ -1008,14 +1072,16 @@ impl Scheduler {
         let mut present: BTreeSet<String> = BTreeSet::new();
         for f in &found {
             present.insert(f.id.clone());
-            let selected = self.setup.config.selects(&f.id);
-            let entry = self
-                .seen
-                .entry(f.id.clone())
-                .or_insert((f.kind, None, selected));
-            entry.0 = f.kind;
-            entry.2 = selected;
-            if self.setup_known && !self.setup.units.contains_key(&f.id) && entry.1.is_none() {
+            let selected = f.unsyncable.is_none() && self.setup.config.selects(&f.id);
+            let included = self.setup.units.contains_key(&f.id);
+            let entry = self.seen.entry(f.id.clone()).or_default();
+            entry.kind = f.kind;
+            entry.selected = selected;
+            if entry.unsyncable != f.unsyncable {
+                entry.unsyncable = f.unsyncable.clone();
+                self.seen_dirty = true;
+            }
+            if self.setup_known && entry.size.is_none() {
                 self.pending_sizes += 1;
                 self.seen_dirty = true;
                 let _ = self.jobs.send(Job::Size {
@@ -1023,9 +1089,15 @@ impl Scheduler {
                     kind: f.kind,
                     always_exclude: self.setup.config.rules(&f.id).always_exclude,
                     selected,
+                    // NOTE: a unit that travels already is not being copied in
+                    fresh: !included,
                 });
             }
         }
+        let blocked: BTreeMap<String, String> = found
+            .iter()
+            .filter_map(|f| f.unsyncable.clone().map(|why| (f.id.clone(), why)))
+            .collect();
         // nested units the snapshots found live in `seen` too
         for id in self.seen.keys().cloned().collect::<Vec<_>>() {
             if self.shared.layout.unit_dir(&id).join(".git").exists() {
@@ -1047,7 +1119,7 @@ impl Scheduler {
             let is_here = present.contains(&id)
                 || dir.join(".git").exists()
                 || (kind == UnitKind::Plain && dir.is_dir());
-            let local_kind = self.seen.get(&id).map_or(kind, |(k, _, _)| *k);
+            let local_kind = self.seen.get(&id).map_or(kind, |s| s.kind);
             let kind = if is_here { local_kind } else { kind };
             if !self.units.contains_key(&id) {
                 let rules = self.setup.config.rules(&id);
@@ -1079,6 +1151,17 @@ impl Scheduler {
                 continue;
             };
             e.included = true;
+            if let Some(why) = blocked.get(&id) {
+                // NOTE: never a pass; the hub drops it from the setup once told
+                if e.blocked.as_deref() != Some(why) {
+                    e.blocked = Some(why.clone());
+                    e.present = true;
+                    e.state = UnitState::Skipped;
+                    e.detail = Some(format!("{why}: it cannot be synced"));
+                    self.changed.insert(id.clone());
+                }
+                continue;
+            }
             if e.present != is_here {
                 e.present = is_here;
                 e.state = if is_here {
@@ -1089,7 +1172,9 @@ impl Scheduler {
                 e.detail = None;
                 self.changed.insert(id.clone());
             }
-            if is_here && !e.watched && !e.rules.paused {
+            // NOTE: not while it is being created: a `.git` seen half-made
+            // would be watched whole (objects included)
+            if is_here && !e.watched && !e.rules.paused && !e.creating {
                 e.watched = true;
                 let _ = self.jobs.send(Job::Watch {
                     unit: id.clone(),
@@ -1120,11 +1205,20 @@ impl Scheduler {
             Done::Pass { unit, result } => {
                 let result = *result;
                 self.in_flight = self.in_flight.saturating_sub(1);
+                self.passes += 1;
+                if result.error.is_some() {
+                    self.failures += 1;
+                }
                 let Some(e) = self.units.get_mut(&unit) else {
                     return;
                 };
                 e.running = false;
                 e.last_pass = Some(now_ms());
+                if let Some(local) = &result.local
+                    && e.local.as_ref().is_none_or(|l| l.commit != local.commit)
+                {
+                    self.snapshots += 1;
+                }
                 if result.missing {
                     e.present = false;
                     e.watched = false;
@@ -1257,11 +1351,18 @@ impl Scheduler {
                 unit,
                 kind,
                 size,
+                excluded,
                 selected,
             } => {
                 self.pending_sizes = self.pending_sizes.saturating_sub(1);
-                self.seen.insert(unit, (kind, Some(size), selected));
-                self.seen_dirty = true;
+                let entry = self.seen.entry(unit).or_default();
+                entry.kind = kind;
+                entry.selected = selected;
+                if entry.size != Some(size) || entry.excluded != excluded {
+                    entry.size = Some(size);
+                    entry.excluded = excluded;
+                    self.seen_dirty = true;
+                }
             }
             Done::Ignored { unit, dirs } => {
                 if let Some(e) = self.units.get_mut(&unit)
@@ -1400,18 +1501,77 @@ impl Scheduler {
     fn note_nested(&mut self, id: String) {
         if let std::collections::btree_map::Entry::Vacant(v) = self.seen.entry(id.clone()) {
             let selected = self.setup.config.selects(&id);
-            v.insert((UnitKind::Git, None, selected));
+            v.insert(Seen {
+                kind: UnitKind::Git,
+                selected,
+                ..Seen::default()
+            });
             self.discover_due = true;
-            if self.setup_known && !self.setup.units.contains_key(&id) {
+            if self.setup_known {
                 self.pending_sizes += 1;
                 self.seen_dirty = true;
                 let _ = self.jobs.send(Job::Size {
                     always_exclude: self.setup.config.rules(&id).always_exclude,
+                    fresh: !self.setup.units.contains_key(&id),
                     unit: id,
                     kind: UnitKind::Git,
                     selected,
                 });
             }
+        }
+    }
+
+    /// Measures every seen directory again (its size and what the
+    /// never-travelling directories inside keep home).
+    fn measure_all(&mut self) {
+        let jobs: Vec<Job> = self
+            .seen
+            .iter()
+            .filter(|(_, s)| s.size.is_some())
+            .map(|(id, s)| Job::Size {
+                unit: id.clone(),
+                kind: s.kind,
+                always_exclude: self.setup.config.rules(id).always_exclude,
+                selected: s.selected,
+                fresh: false,
+            })
+            .collect();
+        if jobs.is_empty() {
+            return;
+        }
+        debug!("workspace: measuring {} directories", jobs.len());
+        self.pending_sizes += jobs.len();
+        for job in jobs {
+            let _ = self.jobs.send(job);
+        }
+    }
+
+    /// What the sync has cost since the collector started.
+    fn cost(&self) -> Cost {
+        let git = &self.shared.git.cost;
+        let get = |a: &AtomicU64| a.load(Ordering::Relaxed);
+        Cost {
+            since: self.started,
+            cpu_ms: get(&self.shared.own_cpu_ms) + thread_cpu_ms(),
+            git_cpu_ms: get(&git.cpu_ms),
+            git_calls: get(&git.calls),
+            git_wall_ms: get(&git.wall_ms),
+            io_read: get(&git.io_read),
+            io_write: get(&git.io_write),
+            max_rss_kb: get(&git.max_rss_kb),
+            passes: self.passes,
+            snapshots: self.snapshots,
+            pushes: get(&git.pushes),
+            fetches: get(&git.fetches),
+            push_ms: get(&git.push_ms),
+            fetch_ms: get(&git.fetch_ms),
+            failures: self.failures,
+            rss_kb: rss_kb(),
+            watches: self
+                .shared
+                .registry
+                .as_ref()
+                .map_or(0, |r| r.total() as u64),
         }
     }
 
@@ -1424,7 +1584,8 @@ impl Scheduler {
             "connected": self.connected,
             "status": self.overall(),
             "units": units,
-            "new": self.seen.iter().filter(|(id, _)| !self.units.contains_key(*id)).map(|(id, (kind, size, selected))| json!({"unit": id, "kind": kind, "size": size, "selected": selected})).collect::<Vec<_>>(),
+            "new": self.seen.iter().filter(|(id, _)| !self.units.contains_key(*id)).map(|(id, s)| json!({"unit": id, "kind": s.kind, "size": s.size, "selected": s.selected, "excluded": s.excluded, "unsyncable": s.unsyncable})).collect::<Vec<_>>(),
+            "cost": self.cost(),
         })
     }
 
@@ -1461,6 +1622,7 @@ impl Scheduler {
             progress: (busy > 0 && now_ms() - self.started < 3_600_000)
                 .then(|| (total - busy, total)),
             last_pass: self.units.values().filter_map(|e| e.last_pass).max(),
+            cost: Some(self.cost()),
         }
     }
 
@@ -1490,11 +1652,13 @@ impl Scheduler {
         let units: Vec<SeenUnit> = self
             .seen
             .iter()
-            .map(|(id, (kind, size, selected))| SeenUnit {
+            .map(|(id, s)| SeenUnit {
                 unit: id.clone(),
-                kind: *kind,
-                size: size.unwrap_or(0),
-                selected: *selected,
+                kind: s.kind,
+                size: s.size.unwrap_or(0),
+                selected: s.selected,
+                excluded: s.excluded.clone(),
+                unsyncable: s.unsyncable.clone(),
             })
             .collect();
         let _ = self.hub.send(ToHub::WorkspaceUnits { units });
@@ -1513,6 +1677,7 @@ fn worker(shared: &Shared, rx: &Arc<Mutex<Receiver<Job>>>, tx: &Sender<Msg>) {
         let Ok(job) = job else {
             return;
         };
+        let cpu0 = thread_cpu_ms();
         let done = match job {
             Job::Pass(job) => {
                 let unit = job.unit.clone();
@@ -1537,22 +1702,26 @@ fn worker(shared: &Shared, rx: &Arc<Mutex<Receiver<Job>>>, tx: &Sender<Msg>) {
                 kind,
                 always_exclude,
                 selected,
+                fresh,
             } => {
-                // NOTE: a directory being copied in is measured once it stops growing
                 let dir = shared.layout.unit_dir(&unit);
-                let mut bytes = units::size_of(&dir, &always_exclude).1;
-                for _ in 0..10 {
-                    thread::sleep(Duration::from_secs(2));
-                    let again = units::size_of(&dir, &always_exclude).1;
-                    if again == bytes {
-                        break;
+                let mut m = units::measure(&dir, &always_exclude, true);
+                if fresh {
+                    // NOTE: a directory being copied in is measured once it stops growing
+                    for _ in 0..10 {
+                        thread::sleep(Duration::from_secs(2));
+                        let again = units::measure(&dir, &always_exclude, true);
+                        if again.bytes == m.bytes {
+                            break;
+                        }
+                        m = again;
                     }
-                    bytes = again;
                 }
                 Done::Size {
                     unit,
                     kind,
-                    size: bytes,
+                    size: m.bytes,
+                    excluded: m.excluded,
                     selected,
                 }
             }
@@ -1597,10 +1766,33 @@ fn worker(shared: &Shared, rx: &Arc<Mutex<Receiver<Job>>>, tx: &Sender<Msg>) {
                 Done::Held { unit, result }
             }
         };
+        shared
+            .own_cpu_ms
+            .fetch_add(thread_cpu_ms().saturating_sub(cpu0), Ordering::Relaxed);
         if tx.send(Msg::Done(Box::new(done))).is_err() {
             return;
         }
     }
+}
+
+/// CPU time of the calling thread (user + system), in ms.
+fn thread_cpu_ms() -> u64 {
+    // SAFETY: a zeroed rusage is a valid value; getrusage fills it in.
+    let mut usage: libc::rusage = unsafe { std::mem::zeroed() };
+    // SAFETY: plain libc call with a pointer to a live local.
+    if unsafe { libc::getrusage(libc::RUSAGE_THREAD, &mut usage) } != 0 {
+        return 0;
+    }
+    let tv = |t: libc::timeval| (t.tv_sec as u64) * 1000 + (t.tv_usec as u64) / 1000;
+    tv(usage.ru_utime) + tv(usage.ru_stime)
+}
+
+/// The process's resident set, in kB (`/proc/self/statm`).
+fn rss_kb() -> u64 {
+    fs::read_to_string("/proc/self/statm")
+        .ok()
+        .and_then(|s| s.split_whitespace().nth(1)?.parse::<u64>().ok())
+        .map_or(0, |pages| pages * 4)
 }
 
 /// Hosts with a snapshot in the repository and their commits.
@@ -1984,10 +2176,11 @@ fn run_pass(shared: &Shared, job: &PassJob, res: &mut PassResult) -> Result<()> 
     res.pushed = pushed.clone();
     res.remotes = remotes_now.clone();
 
-    // conflicts whose markers are gone are over; a binary one once the file
-    // is no longer the kept version
+    // conflicts whose markers are gone are over; a binary one, or one kept
+    // whole (`set_aside`), once the file is no longer the kept version
     for c in &job.open_conflicts {
-        let over = if c.kind == "binary" {
+        let kept_whole = c.kind == "binary" || job.rules.conflicts == ConflictMode::SetAside;
+        let over = if kept_whole {
             let now = shared.git.run(
                 Some(&repo),
                 &["hash-object", "--", &c.path],
@@ -2115,13 +2308,27 @@ fn watch_unit(
             if ignored.contains(rel) && !opted_in {
                 continue;
             }
-            // a new directory in the git dir (a branch namespace): the
-            // hidden git dir of a plain unit is not under the unit
+            // a new ref namespace in the git dir (`refs/sync`, a branch
+            // directory): the hidden git dir of a plain unit is not under
+            // the unit. Nothing else in `.git` is watched: watching
+            // `objects/` made every snapshot's own writes a new event.
             if let Some(inner) = rel.strip_prefix(".git/") {
-                let dir = repo.git_dir.join(inner);
-                if let Err(e) = reg.watch(unit, rel, &dir) {
-                    debug!("workspace: cannot watch {}: {e}", dir.display());
+                if inner == "refs" || inner.starts_with("refs/") {
+                    let dir = repo.git_dir.join(inner);
+                    if let Err(e) = reg.watch(unit, rel, &dir) {
+                        debug!("workspace: cannot watch {}: {e}", dir.display());
+                    }
                 }
+                continue;
+            }
+            // a repository initialised inside a watched directory: that
+            // directory is a nested unit's now, its watches go with it
+            if let Some(parent) = rel.strip_suffix("/.git") {
+                reg.forget_under(unit, parent);
+                nested.push(parent.to_owned());
+                continue;
+            }
+            if rel.split('/').any(|seg| seg == ".git") {
                 continue;
             }
             if unit_dir.join(rel).join(".git").exists() {

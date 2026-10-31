@@ -1,7 +1,7 @@
 <script lang="ts">
 	// Workspace › New directories: what exists at unit depth and does not
-	// travel (over the threshold, left out by the globs, or ignored), with
-	// Include and Ignore.
+	// travel (over the threshold, left out by the globs, ignored, or a
+	// linked worktree that cannot), with Include and Ignore.
 	import { workspaceUnitOp, type NewDir } from '#lib/api/index.js';
 	import { Button } from '#lib/components/ui/button/index.js';
 	import { fmtBytes, fmtStamp } from '#lib/format.js';
@@ -15,7 +15,8 @@
 	const STATE_TEXT: Record<string, string> = {
 		waiting: 'larger than the threshold, waits for you',
 		excluded: 'left out by the globs',
-		ignored: 'ignored by you'
+		ignored: 'ignored by you',
+		unsyncable: 'cannot travel'
 	};
 
 	const waiting = $derived(dirs.filter((d) => d.state === 'waiting'));
@@ -40,11 +41,13 @@
 		<div class="flex min-w-0 flex-1 flex-col">
 			<span class="font-mono text-sm">{d.unit}</span>
 			<span class="text-xs text-muted-foreground">
-				{d.kind} · {fmtBytes(d.size)} · on {d.hosts.join(', ')} · {STATE_TEXT[d.state] ?? d.state}
+				{d.kind} · {fmtBytes(d.size)} · on {d.hosts.join(', ')} · {STATE_TEXT[d.state] ??
+					d.state}{#if d.reason}:
+					{d.reason}{/if}
 				· seen {fmtStamp(d.at)}
 			</span>
 		</div>
-		{#if d.state !== 'ignored'}
+		{#if d.state !== 'ignored' && d.state !== 'unsyncable'}
 			<Button size="xs" disabled={busy !== null} onclick={() => act(d, 'include')}>Include</Button>
 		{/if}
 		{#if d.state === 'waiting'}

@@ -64,7 +64,8 @@ use crate::{
     tokens,
     util::{self, now_ms},
     workspace::{
-        self as ws, HeldAction, HeldView, Scope, Side, UnitView, WorkspaceView, Workspaces,
+        self as ws, Coverage, HeldAction, HeldView, Preview, Scope, Side, UnitView, WorkspaceStats,
+        WorkspaceView, Workspaces,
         hub::{self as wshub, GitState, UnitOp},
     },
 };
@@ -162,6 +163,7 @@ pub async fn serve(
             post(push_subscribe).delete(push_unsubscribe),
         )
         .route("/push/test", post(push_test))
+        .route("/push/prefs", put(push_prefs))
         .route("/tokens", get(devices).post(mint))
         .route("/tokens/{id}", patch(relabel).delete(revoke))
         .route("/sync", get(sync_view))
@@ -170,7 +172,10 @@ pub async fn serve(
         .route("/sync/conflicts/{id}/resolve", post(sync_resolve))
         .route("/sync/stats", get(sync_stats))
         .route("/workspace", get(workspace_view))
+        .route("/workspace/stats", get(workspace_stats))
+        .route("/workspace/coverage", get(workspace_coverage))
         .route("/workspace/config", put(workspace_config))
+        .route("/workspace/config/preview", post(workspace_preview))
         .route("/workspace/units/{*unit}", post(workspace_unit))
         .route("/workspace/history/{*unit}", get(workspace_history))
         .route("/workspace/held/{host}/{*unit}", post(workspace_held))
@@ -1384,6 +1389,44 @@ async fn push_test(State(app): State<App>) -> Result<Json<Value>, ApiError> {
     Ok(Json(json!({ "results": results })))
 }
 
+#[derive(Deserialize, TS)]
+#[ts(export_to = "types.ts")]
+#[serde(deny_unknown_fields)]
+pub(crate) struct PushPrefs {
+    endpoint: String,
+    /// The kinds the device wants (`Category` names); null means every kind.
+    categories: Option<Vec<String>>,
+}
+
+/// Sets which kinds of notification a subscribed device gets.
+async fn push_prefs(
+    State(app): State<App>,
+    Json(body): Json<PushPrefs>,
+) -> Result<Json<Value>, ApiError> {
+    app.push()?;
+    if let Some(list) = &body.categories
+        && let Some(bad) = list
+            .iter()
+            .find(|c| crate::notify::Category::parse(c).is_none())
+    {
+        return Err(ApiError(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            format!("unknown notification kind {bad:?}"),
+        ));
+    }
+    let found = app
+        .store
+        .exec(move |conn| push::set_categories(conn, &body.endpoint, body.categories.as_deref()))
+        .await??;
+    if !found {
+        return Err(ApiError(
+            StatusCode::NOT_FOUND,
+            "the hub does not know this device's subscription; turn push off and on".into(),
+        ));
+    }
+    Ok(Json(json!({ "ok": true })))
+}
+
 /// Whether `host` can continue `session` that ran elsewhere: it syncs
 /// and the hub holds the transcript (the collector pulls it first).
 async fn continues_elsewhere(app: &App, session: &str, host: &str) -> Result<bool> {
@@ -1570,6 +1613,7 @@ async fn workspace_view(State(app): State<App>) -> Result<Json<WorkspaceView>, A
             state.hosts.push(ws::WorkspaceHost {
                 host,
                 connected: false,
+                rtt_ms: None,
                 status: None,
             });
         }
@@ -1621,6 +1665,65 @@ async fn workspace_view(State(app): State<App>) -> Result<Json<WorkspaceView>, A
         bytes,
         growth,
     }))
+}
+
+#[derive(Deserialize)]
+struct StatsQuery {
+    #[serde(default)]
+    days: Option<i64>,
+}
+
+/// Traffic, cost and growth of the workspace sync over the last `days`
+/// (30 by default).
+async fn workspace_stats(
+    State(app): State<App>,
+    Query(query): Query<StatsQuery>,
+) -> Result<Json<WorkspaceStats>, ApiError> {
+    let git = app.git()?.clone();
+    let store = app.store.clone();
+    let days = query.days.unwrap_or(30);
+    let stats = tokio::task::spawn_blocking(move || -> Result<_> {
+        let repos = git.repos.sizes();
+        wshub::stats(&store.reader()?, days, repos, now_ms())
+    })
+    .await
+    .context("workspace stats")??;
+    Ok(Json(stats))
+}
+
+/// What travels and what stays home, per machine and per directory.
+async fn workspace_coverage(State(app): State<App>) -> Result<Json<Coverage>, ApiError> {
+    let git = app.git()?.clone();
+    let Some(state) = app.hub.workspace_state().await? else {
+        return Err(ApiError(
+            StatusCode::NOT_FOUND,
+            "the workspace sync is off".into(),
+        ));
+    };
+    let store = app.store.clone();
+    let coverage = tokio::task::spawn_blocking(move || -> Result<_> {
+        let hub_bytes = git.repos.bytes();
+        wshub::coverage(&store.reader()?, &state.config, &state.reports, hub_bytes)
+    })
+    .await
+    .context("workspace coverage")??;
+    Ok(Json(coverage))
+}
+
+/// What a proposed configuration would decide for every directory the hub
+/// knows: the panel shows it while the owner edits.
+async fn workspace_preview(
+    State(app): State<App>,
+    Json(body): Json<WorkspaceConfigBody>,
+) -> Result<Json<Preview>, ApiError> {
+    app.git()?;
+    let store = app.store.clone();
+    let preview = tokio::task::spawn_blocking(move || -> Result<_> {
+        wshub::preview(&store.reader()?, &body.config)
+    })
+    .await
+    .context("workspace preview")??;
+    Ok(Json(preview))
 }
 
 #[derive(Deserialize, TS)]
@@ -1751,18 +1854,24 @@ async fn workspace_held(
             format!("bad unit {unit:?}"),
         ));
     }
-    app.hub
-        .send_to(
-            &host,
-            crate::protocol::ToCollector::WorkspaceHeld {
-                unit,
-                action: body.action,
-                commit: body.commit,
-            },
-        )
-        .await?
-        .map_err(|e| ApiError(StatusCode::CONFLICT, e))?;
-    Ok(Json(json!({ "ok": true })))
+    let answer = app
+        .hub
+        .workspace_held(&host, &unit, body.action, body.commit)
+        .await?;
+    // NOTE: the collector answers at once (it queues the action between
+    // passes); no answer in five seconds is a stalled collector
+    match tokio::time::timeout(Duration::from_secs(5), answer).await {
+        Ok(Ok(Ok(()))) => Ok(Json(json!({ "ok": true }))),
+        Ok(Ok(Err(e))) => Err(ApiError(StatusCode::CONFLICT, e)),
+        Ok(Err(_)) => Err(ApiError(
+            StatusCode::CONFLICT,
+            "the hub dropped the request".into(),
+        )),
+        Err(_) => Err(ApiError(
+            StatusCode::GATEWAY_TIMEOUT,
+            format!("{host} has not answered; it may be stalled: check its collector"),
+        )),
+    }
 }
 
 #[derive(Deserialize, TS)]

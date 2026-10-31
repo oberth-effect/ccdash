@@ -3,6 +3,7 @@
 //! to touch (a lock, a rebase in progress).
 
 use std::{
+    collections::BTreeMap,
     fs,
     path::{Path, PathBuf},
 };
@@ -20,6 +21,38 @@ pub struct Found {
     /// Relative to the root, `/`-separated.
     pub id: String,
     pub kind: UnitKind,
+    /// Why it can never be a unit (a linked worktree: its refs are the
+    /// main repository's), naming that repository.
+    pub unsyncable: Option<String>,
+}
+
+/// The main repository of a linked worktree whose `.git` file is at
+/// `dot`, when it is one.
+fn linked_worktree(dir: &Path) -> Option<String> {
+    let dot = dir.join(".git");
+    if !fs::symlink_metadata(&dot).ok()?.is_file() {
+        return None;
+    }
+    let text = fs::read_to_string(&dot).ok()?;
+    let target = text
+        .lines()
+        .next()?
+        .strip_prefix("gitdir:")
+        .map(str::trim)?;
+    let target = if Path::new(target).is_absolute() {
+        PathBuf::from(target)
+    } else {
+        dir.join(target)
+    };
+    if !target.components().any(|c| c.as_os_str() == "worktrees") {
+        return None;
+    }
+    let main = target
+        .ancestors()
+        .find(|p| p.file_name().is_some_and(|n| n == ".git"))
+        .and_then(Path::parent)
+        .map_or_else(|| target.display().to_string(), |p| p.display().to_string());
+    Some(format!("a linked worktree of {main}"))
 }
 
 /// Where everything lives: the workspace root and the collector's state
@@ -208,16 +241,19 @@ fn walk(root: &Path, rel: &str, level: u32, depth: u32, in_repo: bool, out: &mut
             format!("{rel}/{name}")
         };
         let has_git = entry.path().join(".git").exists();
+        let unsyncable = has_git.then(|| linked_worktree(&entry.path())).flatten();
         if level >= depth {
             if has_git {
                 out.push(Found {
                     id,
                     kind: UnitKind::Git,
+                    unsyncable,
                 });
             } else if !in_repo {
                 out.push(Found {
                     id,
                     kind: UnitKind::Plain,
+                    unsyncable: None,
                 });
             }
         } else {
@@ -225,6 +261,7 @@ fn walk(root: &Path, rel: &str, level: u32, depth: u32, in_repo: bool, out: &mut
                 out.push(Found {
                     id: id.clone(),
                     kind: UnitKind::Git,
+                    unsyncable,
                 });
             }
             walk(root, &id, level + 1, depth, in_repo || has_git, out);
@@ -244,9 +281,28 @@ pub fn excluded_name(name: &str, always_exclude: &[String]) -> bool {
 /// Files and bytes under `dir` (`.git` included), the always excluded
 /// directories left out, symlinks counted but not followed.
 pub fn size_of(dir: &Path, always_exclude: &[String]) -> (u64, u64) {
-    let (mut files, mut bytes) = (0, 0);
-    let mut stack = vec![dir.to_path_buf()];
-    while let Some(d) = stack.pop() {
+    let m = measure(dir, always_exclude, false);
+    (m.files, m.bytes)
+}
+
+/// What a directory weighs: what would travel, and what the always
+/// excluded directories inside keep home, by name.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Measured {
+    pub files: u64,
+    pub bytes: u64,
+    /// Excluded directory name → bytes under every directory of that name
+    /// (only when asked for).
+    pub excluded: BTreeMap<String, u64>,
+}
+
+/// Measures `dir`; with `excluded_too` the always excluded directories are
+/// walked as well and summed by name.
+pub fn measure(dir: &Path, always_exclude: &[String], excluded_too: bool) -> Measured {
+    let mut m = Measured::default();
+    // (directory, the excluded name it is under, if any)
+    let mut stack = vec![(dir.to_path_buf(), None::<String>)];
+    while let Some((d, under)) = stack.pop() {
         let Ok(entries) = fs::read_dir(&d) else {
             continue;
         };
@@ -256,16 +312,25 @@ pub fn size_of(dir: &Path, always_exclude: &[String]) -> (u64, u64) {
             };
             let name = entry.file_name().to_string_lossy().into_owned();
             if meta.is_dir() {
-                if !excluded_name(&name, always_exclude) {
-                    stack.push(entry.path());
+                if under.is_some() {
+                    stack.push((entry.path(), under.clone()));
+                } else if !excluded_name(&name, always_exclude) {
+                    stack.push((entry.path(), None));
+                } else if excluded_too {
+                    stack.push((entry.path(), Some(name)));
                 }
             } else {
-                files += 1;
-                bytes += meta.len();
+                match &under {
+                    Some(name) => *m.excluded.entry(name.clone()).or_insert(0) += meta.len(),
+                    None => {
+                        m.files += 1;
+                        m.bytes += meta.len();
+                    }
+                }
             }
         }
     }
-    (files, bytes)
+    m
 }
 
 /// A git operation in progress makes the unit unsafe to snapshot or
@@ -307,6 +372,7 @@ mod tests {
         fs::write(root.join("tsandrini/README"), "x").unwrap();
         fs::write(root.join("meteopress/tmp/x/f"), "0123").unwrap();
         let found = discover(&root, 2);
+        assert!(found.iter().all(|f| f.unsyncable.is_none()));
         let ids: Vec<(&str, UnitKind)> = found.iter().map(|f| (f.id.as_str(), f.kind)).collect();
         // NOTE: `.claude` and `notes` are part of the tsandrini root repository
         assert_eq!(
@@ -335,6 +401,14 @@ mod tests {
         fs::create_dir_all(root.join("wt")).unwrap();
         fs::write(root.join("wt/.git"), "gitdir: ../main/.git/worktrees/wt\n").unwrap();
         assert!(layout.git_dir("wt", UnitKind::Git).is_err());
+        let wt = discover(&root, 1)
+            .into_iter()
+            .find(|f| f.id == "wt")
+            .unwrap();
+        assert_eq!(
+            wt.unsyncable.as_deref(),
+            Some(format!("a linked worktree of {}", root.join("wt/../main").display()).as_str())
+        );
         fs::create_dir_all(root.join("main/.git/modules/sub")).unwrap();
         fs::create_dir_all(root.join("main/sub")).unwrap();
         fs::write(root.join("main/sub/.git"), "gitdir: ../.git/modules/sub\n").unwrap();
@@ -346,6 +420,17 @@ mod tests {
         assert_eq!((files, bytes), (0, 0));
         let (files, bytes) = size_of(&root.join("meteopress/tmp"), &["node_modules".into()]);
         assert_eq!((files, bytes), (1, 4));
+        fs::create_dir_all(root.join("meteopress/tmp/node_modules/pkg/node_modules")).unwrap();
+        fs::write(root.join("meteopress/tmp/node_modules/pkg/i.js"), "12345").unwrap();
+        fs::write(
+            root.join("meteopress/tmp/node_modules/pkg/node_modules/j.js"),
+            "12",
+        )
+        .unwrap();
+        let m = measure(&root.join("meteopress/tmp"), &["node_modules".into()], true);
+        assert_eq!((m.files, m.bytes), (1, 4));
+        // NOTE: a nested excluded directory counts under the outer name
+        assert_eq!(m.excluded, BTreeMap::from([("node_modules".to_owned(), 7)]));
         assert!(excluded_name("result-3", &["result-*".into()]));
         assert!(!excluded_name(
             "src",

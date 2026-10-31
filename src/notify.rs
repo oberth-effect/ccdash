@@ -12,9 +12,10 @@ use std::{
 };
 
 use anyhow::Result;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
 use tracing::warn;
+use ts_rs::TS;
 
 use crate::{
     config::Notify,
@@ -40,6 +41,62 @@ pub struct Note {
     pub content: Content,
 }
 
+/// What kind of thing a notification is about; a device mutes kinds
+/// (Settings › This device), the hub skips it for those.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
+#[ts(export_to = "types.ts")]
+#[serde(rename_all = "snake_case")]
+pub enum Category {
+    /// A tool call waiting for permission.
+    Permission,
+    /// `AskUserQuestion`.
+    Question,
+    /// A plan to approve.
+    Plan,
+    /// A finished turn.
+    Turn,
+    /// A held workspace snapshot.
+    WsHeld,
+    /// A workspace conflict.
+    WsConflict,
+    /// A new directory over the threshold.
+    WsNew,
+    /// A unit failing for a while.
+    WsFailing,
+}
+
+impl Category {
+    /// Every kind, in the order the settings list them.
+    pub const ALL: [Category; 8] = [
+        Self::Permission,
+        Self::Question,
+        Self::Plan,
+        Self::Turn,
+        Self::WsHeld,
+        Self::WsConflict,
+        Self::WsNew,
+        Self::WsFailing,
+    ];
+
+    /// The name a subscription's `categories` list uses.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Permission => "permission",
+            Self::Question => "question",
+            Self::Plan => "plan",
+            Self::Turn => "turn",
+            Self::WsHeld => "ws_held",
+            Self::WsConflict => "ws_conflict",
+            Self::WsNew => "ws_new",
+            Self::WsFailing => "ws_failing",
+        }
+    }
+
+    pub fn parse(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|c| c.name() == name)
+    }
+}
+
 /// What every backend shows.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Content {
@@ -57,6 +114,7 @@ pub struct Content {
     pub more: bool,
     /// A prompt, as opposed to a finished turn.
     pub urgent: bool,
+    pub category: Category,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -226,6 +284,11 @@ impl Composer {
             buttons,
             more,
             urgent: true,
+            category: match &ask.kind {
+                AskKind::Tool { .. } => Category::Permission,
+                AskKind::Question { .. } => Category::Question,
+                AskKind::Plan { .. } => Category::Plan,
+            },
         }
     }
 
@@ -250,6 +313,7 @@ impl Composer {
             buttons: Vec::new(),
             more: false,
             urgent: false,
+            category: Category::Turn,
         }
     }
 }
@@ -417,6 +481,13 @@ mod tests {
         Composer::new(Notify::default(), WEB.into(), 1_000)
     }
 
+    fn payload_category(c: &Content) -> String {
+        serde_json::to_value(c).unwrap()["category"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    }
+
     #[test]
     fn prompts_get_buttons_with_their_key() {
         let mut st = state_with_prompt(2_000);
@@ -433,6 +504,8 @@ mod tests {
         assert_eq!(c.url, format!("http://10.0.0.2:7837/sessions/{SID}"));
         assert_eq!((c.session.as_str(), c.key.as_deref()), (SID, Some("k3y")));
         assert!(c.urgent && !c.more);
+        assert_eq!(c.category, Category::Permission);
+        assert_eq!(payload_category(c), "permission");
         let actions: Vec<&str> = c.buttons.iter().map(|b| b.action.as_str()).collect();
         assert_eq!(actions, ["allow", "deny", "always"]);
 
@@ -521,6 +594,13 @@ mod tests {
         let notes = composer().notes(&st, &HashMap::new(), 5_000);
         assert_eq!(notes[0].seq, format!("turn-{SID}-4000"));
         assert_eq!(notes[0].content.body, "All done.");
+        assert_eq!(notes[0].content.category, Category::Turn);
+        assert_eq!(Category::parse("ws_held"), Some(Category::WsHeld));
+        assert!(
+            Category::ALL
+                .iter()
+                .all(|c| Category::parse(c.name()) == Some(*c))
+        );
         assert!(!notes[0].content.urgent && notes[0].content.buttons.is_empty());
 
         let elsewhere = Composer::new(

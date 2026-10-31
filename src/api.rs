@@ -52,6 +52,11 @@ mod tests {
         crate::hub::http::WorkspaceHeldBody::export_all(&cfg).unwrap();
         crate::hub::http::WorkspaceConflictBody::export_all(&cfg).unwrap();
         crate::hub::http::WorkspaceResyncBody::export_all(&cfg).unwrap();
+        crate::workspace::WorkspaceStats::export_all(&cfg).unwrap();
+        crate::workspace::Coverage::export_all(&cfg).unwrap();
+        crate::workspace::Preview::export_all(&cfg).unwrap();
+        crate::hub::http::PushPrefs::export_all(&cfg).unwrap();
+        crate::notify::Category::export_all(&cfg).unwrap();
     }
 
     #[test]

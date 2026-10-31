@@ -424,6 +424,9 @@ pub struct HostStatus {
     pub connected: bool,
     /// When the link last came up or went down.
     pub since: i64,
+    /// Round trip of the hub's last WebSocket ping to the collector.
+    #[serde(default)]
+    pub rtt_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]

@@ -194,6 +194,7 @@ dependencies = [
  "clap",
  "futures-util",
  "inotify",
+ "libc",
  "pulldown-cmark",
  "qrcode",
  "ring",

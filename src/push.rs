@@ -24,7 +24,7 @@ use ts_rs::TS;
 
 use crate::{
     config,
-    notify::{Note, Sink},
+    notify::{Category, Note, Sink},
     store::Store,
     util::{now_ms, truncate},
 };
@@ -40,10 +40,11 @@ CREATE TABLE IF NOT EXISTS push_subscriptions (
     last_success_at INTEGER,
     last_failure_at INTEGER,
     last_failure TEXT,
-    token_id INTEGER
+    token_id INTEGER,
+    categories TEXT
 );
 ";
-// NOTE: `token_id` is added to older databases by `store::ADDED_COLUMNS`
+// NOTE: `token_id` and `categories` are added to older databases by `store::ADDED_COLUMNS`
 
 /// One record of the default size: 4096 bytes less the tag and the
 /// delimiter; push services take about that much per message.
@@ -287,10 +288,22 @@ pub struct Subscription {
     /// The device token that registered it; revoking the token drops it.
     /// Null for devices on the bootstrap token.
     pub token_id: Option<i64>,
+    /// The notification kinds the device wants (`Category::name`); None
+    /// means every kind.
+    pub categories: Option<Vec<String>>,
+}
+
+impl Subscription {
+    /// Whether the device wants notifications of `category`.
+    pub fn wants(&self, category: Category) -> bool {
+        self.categories
+            .as_ref()
+            .is_none_or(|list| list.iter().any(|c| c == category.name()))
+    }
 }
 
 const COLUMNS: &str = "id, endpoint, p256dh, auth, user_agent, created_at, \
-    last_success_at, last_failure_at, last_failure, token_id";
+    last_success_at, last_failure_at, last_failure, token_id, categories";
 
 fn row(r: &rusqlite::Row) -> rusqlite::Result<Subscription> {
     Ok(Subscription {
@@ -304,7 +317,24 @@ fn row(r: &rusqlite::Row) -> rusqlite::Result<Subscription> {
         last_failure_at: r.get(7)?,
         last_failure: r.get(8)?,
         token_id: r.get(9)?,
+        categories: r
+            .get::<_, Option<String>>(10)?
+            .and_then(|j| serde_json::from_str(&j).ok()),
     })
+}
+
+/// Sets which kinds the device at `endpoint` wants (None: every kind);
+/// `false` when the endpoint is unknown.
+pub fn set_categories(
+    conn: &Connection,
+    endpoint: &str,
+    categories: Option<&[String]>,
+) -> Result<bool> {
+    let json = categories.map(serde_json::to_string).transpose()?;
+    Ok(conn.execute(
+        "UPDATE push_subscriptions SET categories = ?2 WHERE endpoint = ?1",
+        params![endpoint, json],
+    )? > 0)
 }
 
 pub fn subscriptions(conn: &Connection) -> Result<Vec<Subscription>> {
@@ -420,8 +450,20 @@ impl Push {
         urgent: bool,
         topic: &str,
     ) -> Result<Vec<(Subscription, Outcome)>> {
+        self.send_where(payload, urgent, topic, |_| true).await
+    }
+
+    /// `send_all` to the subscriptions `wanted` picks.
+    pub async fn send_where(
+        self: &Arc<Self>,
+        payload: &Value,
+        urgent: bool,
+        topic: &str,
+        wanted: impl Fn(&Subscription) -> bool,
+    ) -> Result<Vec<(Subscription, Outcome)>> {
         let store = self.store.clone();
         let subs = tokio::task::spawn_blocking(move || subscriptions(&store.reader()?)).await??;
+        let subs: Vec<Subscription> = subs.into_iter().filter(|s| wanted(s)).collect();
         let body = payload.to_string();
         let mut out = Vec::with_capacity(subs.len());
         for sub in subs {
@@ -521,9 +563,12 @@ impl Sink for Arc<Push> {
         payload["type"] = "show".into();
         payload["tag"] = note.seq.clone().into();
         payload["at"] = note.opened_at.into();
+        let category = note.content.category;
         summarize(
             &self
-                .send_all(&payload, note.content.urgent, &topic(&note.seq))
+                .send_where(&payload, note.content.urgent, &topic(&note.seq), |s| {
+                    s.wants(category)
+                })
                 .await?,
         )
     }
@@ -849,6 +894,18 @@ mod tests {
             ),
             (1, 1_000, Some("Chrome 2"), None)
         );
+        // every kind until the device chooses; the choice survives a re-subscribe
+        assert!(again.wants(Category::WsHeld) && again.wants(Category::Turn));
+        assert!(set_categories(&conn, &sub.endpoint, Some(&["permission".to_owned()])).unwrap());
+        assert!(!set_categories(&conn, "https://push.example.org/none", None).unwrap());
+        let chosen = subscribe(&conn, &sub, Some("Chrome 2"), None, 3_000).unwrap();
+        assert_eq!(
+            chosen.categories.as_deref(),
+            Some(&["permission".to_owned()][..])
+        );
+        assert!(chosen.wants(Category::Permission) && !chosen.wants(Category::Turn));
+        assert!(set_categories(&conn, &sub.endpoint, None).unwrap());
+        assert!(subscriptions(&conn).unwrap()[0].wants(Category::Turn));
         settle(
             &conn,
             1,

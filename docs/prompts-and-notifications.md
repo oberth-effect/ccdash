@@ -48,6 +48,15 @@ Settings → "Turn on push notifications", then "Send a test".
 - A button calls `POST /act/<key>/<action>` with a random key that belongs
   to that one prompt and dies with it; the access token never goes into a
   notification. The phone has to reach the hub (LAN or VPN).
+- Every notification has a kind: permission prompts, questions, plans,
+  finished turns, and the workspace sync's held snapshots, conflicts, new
+  directories over the threshold and failing units. Settings › This device
+  lists them as checkboxes under the push switch; a kind unticked there is
+  not sent to that device (the others keep their own choice), and a kind
+  the hub's configuration turns off (`notify.turns = false`) never notifies.
+  A device muted at the moment a notification is due does not get it later.
+- A push endpoint must be `https`; a loopback `http` endpoint (a push
+  service on the hub's own machine, for testing) is the one exception.
 
 ```nix
 services.ccdash-hub.settings.push.subject = "mailto:you@example.org";

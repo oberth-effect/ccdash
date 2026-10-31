@@ -148,7 +148,9 @@
 
 <div class="mx-auto flex max-w-5xl flex-col gap-5 p-3 sm:p-4">
 	<div class="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-		<a href="/workspace" class="text-sm text-muted-foreground hover:underline">Workspace</a>
+		<a href="/workspace/units" class="text-sm text-muted-foreground hover:underline"
+			>Workspace › Units</a
+		>
 		<h1 class="font-mono text-lg font-semibold">{unit}</h1>
 		{#if row}
 			<span class="text-xs text-muted-foreground">

@@ -111,6 +111,7 @@ const ADDED_COLUMNS: &[(&str, &str, &str)] = &[
     ("sessions", "branch", "TEXT"),
     ("sessions", "launched", "INTEGER"),
     ("sessions", "project", "TEXT"),
+    ("push_subscriptions", "categories", "TEXT"),
 ];
 
 const UPSERT_SESSION: &str = "
@@ -396,7 +397,11 @@ fn make_private(path: &Path) -> Result<()> {
 }
 
 fn migrate(conn: &Connection) -> Result<()> {
-    for (table, column, kind) in ADDED_COLUMNS.iter().chain(crate::sync::hub::ADDED_COLUMNS) {
+    for (table, column, kind) in ADDED_COLUMNS
+        .iter()
+        .chain(crate::sync::hub::ADDED_COLUMNS)
+        .chain(crate::workspace::hub::ADDED_COLUMNS)
+    {
         let exists: bool = conn.query_row(
             "SELECT EXISTS (SELECT 1 FROM pragma_table_info(?1) WHERE name = ?2)",
             [table, column],

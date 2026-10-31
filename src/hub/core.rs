@@ -26,7 +26,7 @@ use crate::{
         Activity, Ask, HostStatus, Launch, LaunchState, Message, RateLimits, ScopedLimit, Session,
         Snapshot, Update,
     },
-    notify::{Composer, Note},
+    notify::{Category, Composer, Note},
     paths,
     protocol::{Call, Injection, Reply, TelemetryRecord, ToCollector, Who},
     state::{AgentEntry, Effects, NiriEvent, PREVIEW_LEN, ProcPoll, State, StoreMsg},
@@ -35,15 +35,18 @@ use crate::{
     util::{self, now_ms},
     wire::Envelope,
     workspace::{
-        NewDir, SeenUnit, UnitStatus, WorkspaceConfig, WorkspaceHost, WorkspaceSetup,
-        WorkspaceStatus, Workspaces,
-        hub::{self as wshub, Reported, Repos},
+        Cost, HeldAction, NewDir, SeenUnit, Transfer, UnitStatus, WorkspaceConfig, WorkspaceHost,
+        WorkspaceSetup, WorkspaceStatus, Workspaces,
+        hub::{self as wshub, Reported, Repos, TRANSFER_MIN, TrafficDelta},
     },
     wrap_up,
 };
 
 /// A unit failing for this long notifies.
 const FAILING_MS: i64 = 600_000;
+/// Traffic and cost deltas go to the database this often.
+const FLUSH_MS: i64 = 60_000;
+const HOUR_MS: i64 = 3_600_000;
 
 const MAX_TITLE: usize = 100;
 const MAX_REPLY: usize = 20_000;
@@ -269,6 +272,38 @@ pub enum Cmd {
         host: String,
         bytes: u64,
     },
+    /// A smart HTTP request of `host` for `unit` finished.
+    WorkspaceTransfer {
+        host: String,
+        unit: String,
+        /// `push` or `fetch`.
+        kind: String,
+        bytes_in: u64,
+        bytes_out: u64,
+        ms: u64,
+        ok: bool,
+    },
+    /// Apply or drop a held snapshot on `host`; answered once the
+    /// collector took (or refused) it.
+    WorkspaceHeld {
+        host: String,
+        unit: String,
+        action: HeldAction,
+        commit: Option<String>,
+        reply: oneshot::Sender<Result<(), String>>,
+    },
+    /// What `host` made of a `WorkspaceHeld`.
+    WorkspaceHeldDone {
+        host: String,
+        unit: String,
+        error: Option<String>,
+    },
+    /// The hub's ping to `host`'s collector came back.
+    CollectorRtt {
+        host: String,
+        conn: u64,
+        ms: u64,
+    },
     /// `host`'s snapshot of `unit` moved on the hub: tell the others.
     WorkspaceMoved {
         unit: String,
@@ -311,6 +346,59 @@ struct WorkspaceCore {
     /// New directories over the threshold, for the notifications.
     waiting: Vec<NewDir>,
     started: i64,
+    /// (host, direction) → traffic since the last flush.
+    traffic: HashMap<(String, String), TrafficDelta>,
+    /// Host → the counters it reported last, to take deltas from.
+    cost_last: HashMap<String, Cost>,
+    /// Host → the deltas since the last flush (the gauges as last seen).
+    cost_acc: HashMap<String, Cost>,
+    last_flush: i64,
+    /// (host, unit) → who waits for the collector's answer to a held action.
+    held_waits: HashMap<(String, String), oneshot::Sender<Result<(), String>>>,
+}
+
+/// `new - last` for one counter, or `new` when the counter went down (a
+/// restarted collector).
+fn delta(new: u64, last: u64, restarted: bool) -> u64 {
+    if restarted {
+        new
+    } else {
+        new.saturating_sub(last)
+    }
+}
+
+impl WorkspaceCore {
+    /// Folds a host's cumulative counters into its deltas. The first
+    /// report after a hub start is the baseline only (it would count the
+    /// collector's whole run); a decrease means the collector restarted
+    /// and its counters are the delta.
+    fn take_cost(&mut self, host: &str, cost: &Cost) {
+        let Some(last) = self.cost_last.insert(host.to_owned(), cost.clone()) else {
+            return;
+        };
+        let restarted = last.since != cost.since
+            || cost.passes < last.passes
+            || cost.git_calls < last.git_calls
+            || cost.cpu_ms < last.cpu_ms;
+        let d = |new: u64, old: u64| delta(new, old, restarted);
+        let acc = self.cost_acc.entry(host.to_owned()).or_default();
+        acc.cpu_ms += d(cost.cpu_ms, last.cpu_ms);
+        acc.git_cpu_ms += d(cost.git_cpu_ms, last.git_cpu_ms);
+        acc.git_calls += d(cost.git_calls, last.git_calls);
+        acc.git_wall_ms += d(cost.git_wall_ms, last.git_wall_ms);
+        acc.io_read += d(cost.io_read, last.io_read);
+        acc.io_write += d(cost.io_write, last.io_write);
+        acc.passes += d(cost.passes, last.passes);
+        acc.snapshots += d(cost.snapshots, last.snapshots);
+        acc.pushes += d(cost.pushes, last.pushes);
+        acc.fetches += d(cost.fetches, last.fetches);
+        acc.push_ms += d(cost.push_ms, last.push_ms);
+        acc.fetch_ms += d(cost.fetch_ms, last.fetch_ms);
+        acc.failures += d(cost.failures, last.failures);
+        acc.max_rss_kb = acc.max_rss_kb.max(cost.max_rss_kb);
+        acc.rss_kb = acc.rss_kb.max(cost.rss_kb);
+        acc.watches = cost.watches;
+    }
 }
 
 /// A session to start, with the directory already resolved from a known
@@ -399,6 +487,11 @@ impl Hub {
                 reports: HashMap::new(),
                 waiting,
                 started: now_ms(),
+                traffic: HashMap::new(),
+                cost_last: HashMap::new(),
+                cost_acc: HashMap::new(),
+                last_flush: now_ms(),
+                held_waits: HashMap::new(),
             }
         });
         let core = Core {
@@ -589,6 +682,27 @@ impl Hub {
         rx.await.context("hub stopped")
     }
 
+    /// Asks `host`'s collector to apply or drop a held snapshot; the
+    /// answer is the collector's (taken, or why not).
+    pub async fn workspace_held(
+        &self,
+        host: &str,
+        unit: &str,
+        action: HeldAction,
+        commit: Option<String>,
+    ) -> Result<oneshot::Receiver<Result<(), String>>> {
+        let (reply, rx) = oneshot::channel();
+        self.send(Cmd::WorkspaceHeld {
+            host: host.to_owned(),
+            unit: unit.to_owned(),
+            action,
+            commit,
+            reply,
+        })
+        .await?;
+        Ok(rx)
+    }
+
     /// Asks `host`'s collector to compare everything again.
     pub async fn sync_resync(&self, host: &str) -> Result<Result<(), String>> {
         let (reply, rx) = oneshot::channel();
@@ -732,6 +846,7 @@ async fn run(mut core: Core, mut rx: mpsc::Receiver<Cmd>) {
             }
             Cmd::Tick(now) => {
                 core.expire_launches(now);
+                core.workspace_flush(now);
                 let hosts: Vec<String> = core.states.keys().cloned().collect();
                 for host in hosts {
                     let mut fx = Effects::default();
@@ -942,6 +1057,36 @@ async fn run(mut core: Core, mut rx: mpsc::Receiver<Cmd>) {
             Cmd::WorkspaceSeen { host, units } => core.workspace_seen(&host, units),
             Cmd::WorkspacePushed { unit, host, bytes } => {
                 core.workspace_pushed(&unit, &host, bytes)
+            }
+            Cmd::WorkspaceTransfer {
+                host,
+                unit,
+                kind,
+                bytes_in,
+                bytes_out,
+                ms,
+                ok,
+            } => core.workspace_transfer(&host, &unit, &kind, bytes_in, bytes_out, ms, ok),
+            Cmd::WorkspaceHeld {
+                host,
+                unit,
+                action,
+                commit,
+                reply,
+            } => core.workspace_held(host, unit, action, commit, reply),
+            Cmd::WorkspaceHeldDone { host, unit, error } => {
+                if let Some(ws) = &mut core.workspace
+                    && let Some(reply) = ws.held_waits.remove(&(host, unit))
+                {
+                    let _ = reply.send(error.map_or(Ok(()), Err));
+                }
+            }
+            Cmd::CollectorRtt { host, conn, ms } => {
+                if core.links.get(&host).is_some_and(|l| l.conn == conn)
+                    && let Some(status) = core.hosts.get_mut(&host)
+                {
+                    status.rtt_ms = Some(ms);
+                }
             }
             Cmd::WorkspaceMoved {
                 unit,
@@ -1208,6 +1353,7 @@ impl Core {
                 name: host.clone(),
                 connected: true,
                 since: now,
+                rtt_ms: None,
             },
         );
         let state = &self.states[&host];
@@ -1250,6 +1396,9 @@ impl Core {
         let Some(ws) = &mut self.workspace else {
             return;
         };
+        if let Some(cost) = &status.cost {
+            ws.take_cost(host, cost);
+        }
         let report = ws.reports.entry(host.to_owned()).or_default();
         report.status = status;
         report.at = now_ms();
@@ -1306,6 +1455,7 @@ impl Core {
         let Some(ws) = &self.workspace else {
             return;
         };
+        ws.repos.sizes_stale();
         let (repos, store, cmds) = (ws.repos.clone(), self.store.clone(), self.cmds.clone());
         let (unit, host) = (unit.to_owned(), host.to_owned());
         let new_unit = !ws.setup.units.contains_key(&unit);
@@ -1386,6 +1536,7 @@ impl Core {
             .into_iter()
             .map(|name| WorkspaceHost {
                 connected: self.hosts.get(&name).is_some_and(|h| h.connected),
+                rtt_ms: self.hosts.get(&name).and_then(|h| h.rtt_ms),
                 status: ws.reports.get(&name).map(|r| r.status.clone()),
                 host: name,
             })
@@ -1402,6 +1553,123 @@ impl Core {
         })
     }
 
+    /// Counts a smart HTTP request into the host's traffic; a large one
+    /// is kept on its own for the throughput view.
+    #[allow(clippy::too_many_arguments)]
+    fn workspace_transfer(
+        &mut self,
+        host: &str,
+        unit: &str,
+        kind: &str,
+        bytes_in: u64,
+        bytes_out: u64,
+        ms: u64,
+        ok: bool,
+    ) {
+        let Some(ws) = &mut self.workspace else {
+            return;
+        };
+        let d = ws
+            .traffic
+            .entry((host.to_owned(), kind.to_owned()))
+            .or_default();
+        d.requests += 1;
+        d.bytes_in += bytes_in;
+        d.bytes_out += bytes_out;
+        d.ms += ms;
+        if !ok {
+            d.failures += 1;
+        }
+        let bytes = bytes_in.max(bytes_out);
+        if ok && bytes >= TRANSFER_MIN {
+            let t = Transfer {
+                host: host.to_owned(),
+                unit: unit.to_owned(),
+                kind: kind.to_owned(),
+                bytes,
+                ms,
+                at: now_ms(),
+            };
+            let store = self.store.clone();
+            tokio::spawn(async move {
+                if let Err(e) = store
+                    .exec(move |conn| wshub::add_transfer(conn, &t))
+                    .await
+                    .and_then(|r| r)
+                {
+                    warn!("recording a workspace transfer: {e:#}");
+                }
+            });
+        }
+    }
+
+    /// Writes the traffic and cost deltas of the last minute to their
+    /// rows of the hour.
+    fn workspace_flush(&mut self, now: i64) {
+        let Some(ws) = &mut self.workspace else {
+            return;
+        };
+        if now - ws.last_flush < FLUSH_MS {
+            return;
+        }
+        ws.last_flush = now;
+        let traffic = std::mem::take(&mut ws.traffic);
+        let cost = std::mem::take(&mut ws.cost_acc);
+        if traffic.is_empty() && cost.is_empty() {
+            return;
+        }
+        let hour = now - now.rem_euclid(HOUR_MS);
+        let store = self.store.clone();
+        tokio::spawn(async move {
+            let result = store
+                .exec(move |conn| {
+                    for ((host, kind), d) in &traffic {
+                        wshub::add_traffic(conn, host, hour, kind, d)?;
+                    }
+                    for (host, c) in &cost {
+                        wshub::add_cost(conn, host, hour, c)?;
+                    }
+                    Ok(())
+                })
+                .await
+                .and_then(|r| r);
+            if let Err(e) = result {
+                warn!("recording workspace traffic and cost: {e:#}");
+            }
+        });
+    }
+
+    /// Hands a held action to `host` and keeps the asker until the
+    /// collector answers (`WorkspaceHeldDone`).
+    fn workspace_held(
+        &mut self,
+        host: String,
+        unit: String,
+        action: HeldAction,
+        commit: Option<String>,
+        reply: oneshot::Sender<Result<(), String>>,
+    ) {
+        let Some(ws) = &mut self.workspace else {
+            let _ = reply.send(Err("the workspace sync is off".into()));
+            return;
+        };
+        if !self.links.contains_key(&host) {
+            let _ = reply.send(Err(format!("{host} is not connected")));
+            return;
+        }
+        if let Some(previous) = ws.held_waits.insert((host.clone(), unit.clone()), reply) {
+            let _ = previous.send(Err("superseded by a later choice".into()));
+        }
+        self.tell(
+            &host,
+            ToCollector::WorkspaceHeld {
+                unit,
+                action,
+                commit,
+            },
+        );
+    }
+
     /// Notification candidates of the workspace sync: held snapshots,
     /// conflicts, new directories over the threshold, units failing for a
     /// while.
@@ -1409,22 +1677,26 @@ impl Core {
         let Some(ws) = &self.workspace else {
             return Vec::new();
         };
-        let page = format!("{}/workspace", self.public_url);
-        let note = |seq: String, at: i64, title: String, body: String, unit: &str| Note {
-            seq,
-            opened_at: at,
-            focused: false,
-            content: crate::notify::Content {
-                title,
-                body,
-                session: String::new(),
-                url: format!("{page}/{unit}"),
-                key: None,
-                buttons: Vec::new(),
-                more: false,
-                urgent: true,
-            },
-        };
+        let page = format!("{}/workspace/unit", self.public_url);
+        let note =
+            |seq: String, at: i64, title: String, body: String, unit: &str, category: Category| {
+                Note {
+                    seq,
+                    opened_at: at,
+                    focused: false,
+                    content: crate::notify::Content {
+                        title,
+                        body,
+                        session: String::new(),
+                        url: format!("{page}/{unit}"),
+                        key: None,
+                        buttons: Vec::new(),
+                        more: false,
+                        urgent: true,
+                        category,
+                    },
+                }
+            };
         let mut out = Vec::new();
         for (host, report) in &ws.reports {
             for (unit, u) in &report.units {
@@ -1440,6 +1712,7 @@ impl Core {
                         ),
                         "The snapshot is held: apply or drop it on the Workspace page.".into(),
                         unit,
+                        Category::WsHeld,
                     ));
                 }
                 for c in &u.conflicts {
@@ -1453,6 +1726,7 @@ impl Core {
                                 c.other_host
                             ),
                             unit,
+                            Category::WsConflict,
                         ));
                     }
                 }
@@ -1468,6 +1742,7 @@ impl Core {
                             .clone()
                             .unwrap_or_else(|| "see the Workspace page".into()),
                         unit,
+                        Category::WsFailing,
                     ));
                 }
             }
@@ -1480,6 +1755,7 @@ impl Core {
                     format!("New directory {} ({} MB)", n.unit, n.size >> 20),
                     "Larger than the auto-include threshold: include or ignore it on the Workspace page.".into(),
                     &n.unit,
+                    Category::WsNew,
                 ));
             }
         }
@@ -3057,6 +3333,51 @@ mod tests {
             branch: Some("main".into()),
             payload,
         }
+    }
+
+    #[test]
+    fn cost_counters_fold_into_deltas_and_survive_restarts() {
+        let dir = std::env::temp_dir().join(format!("ccdash-wscost-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let repos = Arc::new(Repos::open(&dir).unwrap());
+        let mut ws = WorkspaceCore {
+            repos,
+            setup: WorkspaceSetup::default(),
+            reports: HashMap::new(),
+            waiting: Vec::new(),
+            started: 0,
+            traffic: HashMap::new(),
+            cost_last: HashMap::new(),
+            cost_acc: HashMap::new(),
+            last_flush: 0,
+            held_waits: HashMap::new(),
+        };
+        let at = |cpu: u64, passes: u64, since: i64| Cost {
+            since,
+            cpu_ms: cpu,
+            git_cpu_ms: cpu * 2,
+            passes,
+            rss_kb: 1000 + cpu,
+            watches: 7,
+            ..Cost::default()
+        };
+        // the first report is the baseline only
+        ws.take_cost("navi", &at(1000, 50, 1));
+        assert!(ws.cost_acc.is_empty());
+        ws.take_cost("navi", &at(1300, 53, 1));
+        let acc = &ws.cost_acc["navi"];
+        assert_eq!((acc.cpu_ms, acc.git_cpu_ms, acc.passes), (300, 600, 3));
+        assert_eq!((acc.rss_kb, acc.watches), (2300, 7));
+        // the collector restarted: its counters are the delta
+        ws.take_cost("navi", &at(40, 2, 2));
+        let acc = &ws.cost_acc["navi"];
+        assert_eq!((acc.cpu_ms, acc.passes), (340, 5));
+        // another host keeps its own
+        ws.take_cost("flat", &at(10, 1, 9));
+        ws.take_cost("flat", &at(15, 1, 9));
+        assert_eq!(ws.cost_acc["flat"].cpu_ms, 5);
+        assert_eq!(ws.cost_acc["navi"].cpu_ms, 340);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// The next message of a kind the test waits for, skipping the rest.

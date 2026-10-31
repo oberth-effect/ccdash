@@ -1,10 +1,12 @@
 <script lang="ts">
-	// Workspace › Machines: each host's collector (units, in step, pending,
-	// a seed or adoption in progress, errors) and Resync.
+	// Workspace › Overview › Machines: each host's collector in a line
+	// (units, in step, pending, a seed or adoption in progress, the link's
+	// round trip, errors) and Resync; the Machines section has the detail.
 	import { workspaceResync, type WorkspaceHost } from '#lib/api/index.js';
 	import Meter from '#lib/components/app/Meter.svelte';
 	import { Button } from '#lib/components/ui/button/index.js';
 	import { fmtDuration } from '#lib/format.js';
+	import { fmtRtt } from '#lib/workspace.js';
 	import { live } from '#lib/live/store.svelte.js';
 
 	let { hosts, onchange }: { hosts: WorkspaceHost[]; onchange: () => void } = $props();
@@ -42,7 +44,12 @@
 </script>
 
 <section class="flex flex-col gap-2">
-	<h2 class="text-base font-semibold">Machines</h2>
+	<div class="flex items-baseline gap-2">
+		<h2 class="text-base font-semibold">Machines</h2>
+		<a href="/workspace/machines" class="text-xs text-muted-foreground hover:underline"
+			>traffic and cost</a
+		>
+	</div>
 	<ul class="flex flex-col gap-1.5">
 		{#each hosts as h (h.host)}
 			<li class="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-md border px-2.5 py-1.5">
@@ -57,6 +64,11 @@
 						<span class="font-medium">{h.host}</span>
 						{#if h.status}
 							<span class="truncate font-mono text-xs text-muted-foreground">{h.status.root}</span>
+						{/if}
+						{#if h.rtt_ms !== null && h.connected}
+							<span class="ml-auto text-xs text-muted-foreground tabular-nums"
+								>{fmtRtt(h.rtt_ms)}</span
+							>
 						{/if}
 					</div>
 					<div class="text-xs text-muted-foreground">{summary(h)}</div>

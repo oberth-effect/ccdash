@@ -15,7 +15,7 @@ run by hand.
 4. [What stays home](#4-what-stays-home)
 5. [Conflicts, held snapshots, diverged branches](#5-conflicts-held-snapshots-diverged-branches)
 6. [A new machine, an existing copy](#6-a-new-machine-an-existing-copy)
-7. [The Workspace page](#7-the-workspace-page)
+7. [The Workspace area](#7-the-workspace-area)
 8. [On the hub](#8-on-the-hub)
 9. [Costs](#9-costs)
 
@@ -202,24 +202,59 @@ ccdash workspace init                     # create what the hub has and this mac
 ccdash workspace adopt [unit] [--prefer mine|hub]   # copies that exist on both sides: merge, or one side wins
 ```
 
-## 7. The Workspace page
+## 7. The Workspace area
 
-- **Machines**: each collector (units, in step, moving, a seed or adoption
-  as progress, errors) with **Resync**.
+Sections, as tabs:
+
+- **Overview**: the tiles (units and how many are in step everywhere,
+  machines connected and the slowest link's round trip, what needs you,
+  what the hub holds and what landed today, the last day's traffic and
+  CPU), what needs you (held snapshots with Apply and Drop, conflicts
+  with both versions and Keep mine / Take theirs / Dismiss, new
+  directories over the threshold with Include and Ignore — or one quiet
+  line), the machines in a line each with **Resync**, the last 24 hours
+  of traffic per machine, the units that changed last.
 - **Units**: the grid of units × machines, grouped by bundle, a chip per
   cell (in step, sending, receiving, conflict, held, waiting, failing, to
   adopt, creating, missing, paused), filters (changed today, needs you,
-  conflicts, held, paused) and a search. A unit opens its page: the state
-  on every machine with the snapshot id and the last pass, diverged
-  branches, its conflicts, the ignored directories present with a switch
-  each, overrides (size limit, conflict shape, pause, exclude) and the
-  snapshot history (host, time, files changed, branch, merges).
-- **New directories** with Include and Ignore; **Held snapshots** with
-  Apply and Drop; **Conflicts** with the two versions side by side and
-  Keep mine / Take theirs / Dismiss; **Configuration** (globs, the lists,
-  limits, conflict shape, per-bundle thresholds).
+  conflicts, held, paused) and a search; the new directories; the held
+  snapshots; the conflicts. A unit opens its page (`/workspace/unit/<unit>`):
+  the state on every machine with the snapshot id and the last pass,
+  diverged branches, its conflicts, the ignored directories present with a
+  switch each, overrides (size limit, conflict shape, pause, exclude) and
+  the snapshot history (host, time, files changed, branch, merges).
+- **Machines**: a card per collector — the link (connected since, the
+  round trip of the hub's WebSocket ping), the collector (root, units, in
+  step, moving, a seed's progress, errors), traffic today and over seven
+  days (bytes up and down, requests, the mean push time, failures), the
+  large transfers' throughput (median and best rate of transfers over
+  64 kB: the uplink question), today's cost (CPU seconds and the share of
+  one core, passes, git calls, disk I/O), what is resident now and how many
+  watches are held. Below, bytes per hour per machine and every large
+  transfer of the week with its rate.
+- **Statistics** (24 hours, 7, 30 or 90 days): a per-machine table (pushes,
+  fetches, bytes, CPU, share of one core, disk I/O, peak resident set,
+  failures), traffic and pushes per bucket stacked by machine, CPU seconds
+  per bucket, the collectors' peak resident set, the hub's largest
+  repositories, conflicts per bucket. Hourly buckets up to three days,
+  daily beyond.
+- **Configuration**: the rules, open: include and exclude globs as rows
+  with a match count each ("8 units", "matches nothing"); the
+  never-travelling names with what each keeps home ("node_modules: 12 GB in
+  31 units"); the paths that travel although ignored with the quiescent
+  flag; depth, the size caps, the conflict shape, the per-bundle
+  thresholds. The hub previews a draft as you type (the decision shown for
+  every directory is the hub's own), and says how many units would start
+  or stop travelling before you save. Then **Coverage**: per machine, what
+  the root holds, what travels and what stays home; the never-travelling
+  names by what they keep home; every directory at unit depth that does
+  not travel with its size and why (excluded by `*_bkp`, matched by no
+  include glob, over the threshold, ignored by you, a linked worktree that
+  cannot travel), with Include and Ignore; the gitignored directories
+  inside travelling units, largest first.
 - Push notifications: a held snapshot, a conflict, a new directory over the
-  threshold, a unit failing for more than 10 minutes.
+  threshold, a unit failing for more than 10 minutes — each a kind a
+  device can mute in Settings ([notifications](prompts-and-notifications.md#2-notifications-web-push)).
 
 ## 8. On the hub
 
@@ -245,9 +280,20 @@ Tables: `workspace_units` (unit, bundle, kind, state, size, version),
 `workspace_refs` (host → snapshot per unit), `workspace_conflicts`,
 `workspace_events` (pushes with their bytes, the growth), `workspace_config`
 (the one configuration, versioned), `workspace_seen` (what each host sees at
-unit depth). `ccdash gc` runs `git gc --quiet` over every repository; the
-module's timer runs it nightly at 03:30. Snapshot history is kept whole for
-now; retention is a later knob.
+unit depth, with the bytes under each never-travelling name and why a
+directory cannot be a unit), `workspace_traffic` (per host, hour and
+direction: requests, bytes in and out, time, failures), `workspace_cost`
+(per host and hour: the sync's CPU, git's CPU, calls, disk I/O, passes,
+snapshots, pushes, fetches, failures, the peak resident set, the watches),
+`workspace_transfers` (the last 300 transfers over 64 kB). `ccdash gc` runs
+`git gc --quiet` over every repository; the module's timer runs it nightly
+at 03:30. Snapshot history is kept whole for now; retention is a later knob;
+traffic and cost rows are kept for a year.
+
+The collector resolves the hub's name once per link (and again five
+minutes later, or after a reconnect) and hands every git call the address
+as `http.curloptResolve`, so an adopt burst makes no DNS lookups and pushes
+keep working while the resolver is unhappy (the last answer stands).
 
 ```toml
 # hub config
@@ -268,6 +314,17 @@ root = "~/ProjectBundle"
 ```
 
 ## 9. Costs
+
+Every collector counts what the sync costs it: the CPU time of its own
+threads (`RUSAGE_THREAD` per job) and of every git process it ran (reaped
+with `wait4`: CPU, block I/O, peak resident set), the passes, snapshots,
+pushes and fetches with their wall time, failures, plus its resident set
+and the inotify watches it holds. The hub folds the deltas into hourly
+rows per machine (a restarted collector's counters are the delta); the
+smart HTTP route records every request's bytes, time and outcome per
+machine and hour, and the transfers over 64 kB on their own. The Machines
+and Statistics sections show them; `ccdash workspace status --json` prints
+the live counters under `cost`.
 
 Measured on the real fleet (`meta/plans/workspace-sync/research.md` in the
 owner's workspace) with the collector's unit at `CPUWeight=20`,

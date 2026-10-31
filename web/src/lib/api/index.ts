@@ -5,10 +5,13 @@ import type {
 	Analytics,
 	Answer,
 	Conversation,
+	Coverage,
 	HeldAction,
 	HistoryEntry,
+	Preview,
 	Side,
 	WorkspaceConfig,
+	WorkspaceStats,
 	WorkspaceUnitBody,
 	WorkspaceView,
 	Graph,
@@ -131,6 +134,17 @@ export const fetchWorkspace = () => getJson<WorkspaceView>('workspace');
 export const putWorkspaceConfig = (config: WorkspaceConfig) =>
 	putJson<{ version: number }>('workspace/config', { config });
 
+/** What a configuration would decide for every directory the hub knows. */
+export const previewWorkspaceConfig = (config: WorkspaceConfig) =>
+	postJson<Preview>('workspace/config/preview', { config });
+
+/** Traffic, cost, transfers and growth over the last `days`. */
+export const fetchWorkspaceStats = (days: number) =>
+	getJson<WorkspaceStats>(`workspace/stats${query({ days })}`);
+
+/** What travels and what stays home, per machine and per directory. */
+export const fetchWorkspaceCoverage = () => getJson<Coverage>('workspace/coverage');
+
 /** Include, exclude, ignore, pause or resume a unit, set its overrides, or
  * make a host adopt its copy. */
 export const workspaceUnitOp = (unit: string, body: WorkspaceUnitBody) =>
@@ -239,3 +253,7 @@ export type PushTestResult = PushOutcome & {
 	user_agent: string | null;
 };
 export const testPush = () => postJson<{ results: PushTestResult[] }>('push/test', {});
+
+/** Which kinds of notification a subscribed device gets (null: every kind). */
+export const setPushPrefs = (endpoint: string, categories: string[] | null) =>
+	putJson<{ ok: boolean }>('push/prefs', { endpoint, categories });
