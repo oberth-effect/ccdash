@@ -140,16 +140,17 @@ ccdash workspace status     # the workspace sync: where every unit stands here
 
 In the panel:
 
-| Page      | For                                                                                                                                          |
-| --------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| Now       | what needs you, with the answer inline; what is working; limits                                                                              |
-| Sessions  | every session; its page has the chat, the shell and the details                                                                              |
-| Projects  | each project's board, sessions, progress, documents, memories, graph                                                                         |
-| History   | sessions over time as lanes, time per project, tools, the 5-hour limit                                                                       |
-| Analytics | waits, parallel work, limits, turns, context, tokens, permissions                                                                            |
-| State     | each machine's copy of `~/.claude`, conflicts, sizes and growth                                                                              |
-| Workspace | the workspace root on every machine: overview, units × machines, each machine's link and cost, statistics, the rules and what they leave out |
-| Settings  | devices, push, theme, quick replies and templates                                                                                            |
+| Page         | For                                                                                                                                          |
+| ------------ | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| Now          | what needs you, with the answer inline; what is working; limits                                                                              |
+| Sessions     | every session; its page has the chat, the shell and the details                                                                              |
+| Projects     | each project's board, sessions, progress, documents, memories, graph                                                                         |
+| History      | sessions over time as lanes, time per project, tools, the 5-hour limit                                                                       |
+| Analytics    | waits, parallel work, limits, turns, context, tokens, permissions                                                                            |
+| Machines     | every machine: its link, sessions, Claude state and workspace sync                                                                           |
+| Claude state | each machine's copy of `~/.claude`, conflicts, sizes and growth                                                                              |
+| Workspace    | the workspace root on every machine: overview, units × machines, each machine's link and cost, statistics, the rules and what they leave out |
+| Settings     | devices, push, theme, quick replies and templates                                                                                            |
 
 The panel in detail: [panel](docs/panel.md).
 

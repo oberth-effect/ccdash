@@ -44,7 +44,10 @@
 
 	async function loadStats() {
 		try {
-			[day, week] = await Promise.all([fetchWorkspaceStats(1), fetchWorkspaceStats(7)]);
+			[day, week] = await Promise.all([
+				fetchWorkspaceStats({ since: live.now - DAY_MS }),
+				fetchWorkspaceStats({ since: live.now - 7 * DAY_MS })
+			]);
 		} catch (e) {
 			if (e instanceof Unauthorized) live.needToken = true;
 			else error = (e as Error).message;
@@ -140,7 +143,9 @@
 						style:background={h.connected ? hostColor(hosts, h.host) : 'var(--critical)'}
 						aria-hidden="true"
 					></i>
-					<span class="font-semibold">{h.host}</span>
+					<a href="/machines/{encodeURIComponent(h.host)}" class="font-semibold hover:underline"
+						>{h.host}</a
+					>
 					<span class="text-xs text-muted-foreground">{linkLine(h)}</span>
 					<Button
 						variant="outline"

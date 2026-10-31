@@ -24,6 +24,8 @@ use crate::util::now_ms;
 
 /// Below this many tracked files the share rule of the held guard is off.
 const HELD_MIN_TRACKED: u64 = 100;
+/// The refs a snapshot carries and an apply sets.
+pub const REF_PREFIXES: [&str; 3] = ["refs/heads/", "refs/tags/", "refs/remotes/"];
 /// Oversize files excluded from one `add` at most (argv has limits).
 const MAX_OVERSIZE_EXCLUDES: usize = 500;
 const MESSAGE_HEAD: &str = "ccdash snapshot";
@@ -37,7 +39,8 @@ pub struct Meta {
     pub branch: Option<String>,
     /// The staged state.
     pub index: String,
-    /// Every `refs/heads/*` and `refs/tags/*`.
+    /// Every `refs/heads/*`, `refs/tags/*` and `refs/remotes/*` (the
+    /// remote-tracking state: what `git status` compares against).
     pub refs: BTreeMap<String, String>,
     /// Stash entries, newest first (`stash@{n}`).
     pub stash: Vec<(u32, String)>,
@@ -324,11 +327,11 @@ pub fn take(t: &Take) -> Result<Report> {
         .records()
         .len() as u64;
 
-    // HEAD, branches, tags, stashes
+    // HEAD, branches, tags, remote-tracking refs, stashes
     let head = t.git.rev(t.repo, "HEAD")?;
     let branch = t.git.head_branch(t.repo)?;
     let mut refs = BTreeMap::new();
-    for prefix in ["refs/heads/", "refs/tags/"] {
+    for prefix in REF_PREFIXES {
         refs.extend(t.git.refs(t.repo, prefix)?);
     }
     let stash_list = match t.git.rev(t.repo, "refs/stash")? {

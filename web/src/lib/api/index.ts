@@ -138,9 +138,9 @@ export const putWorkspaceConfig = (config: WorkspaceConfig) =>
 export const previewWorkspaceConfig = (config: WorkspaceConfig) =>
 	postJson<Preview>('workspace/config/preview', { config });
 
-/** Traffic, cost, transfers and growth over the last `days`. */
-export const fetchWorkspaceStats = (days: number) =>
-	getJson<WorkspaceStats>(`workspace/stats${query({ days })}`);
+/** Traffic, cost, transfers and growth over a span (`until` left out reaches now). */
+export const fetchWorkspaceStats = (params: { since: number; until?: number }) =>
+	getJson<WorkspaceStats>(`workspace/stats${query(params)}`);
 
 /** What travels and what stays home, per machine and per directory. */
 export const fetchWorkspaceCoverage = () => getJson<Coverage>('workspace/coverage');

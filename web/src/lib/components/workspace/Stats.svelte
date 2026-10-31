@@ -17,9 +17,11 @@
 	import Tiles from '#lib/components/charts/Tiles.svelte';
 	import TimeLines from '#lib/components/charts/TimeLines.svelte';
 	import { COLOR, dayFmt, fmtCount, type SortColumn } from '#lib/charts.js';
-	import { fmtBytes, fmtDuration, fmtTime, plural } from '#lib/format.js';
+	import { fmtBytes, fmtDuration, fmtStamp, fmtTime, plural } from '#lib/format.js';
+	import { untrack } from 'svelte';
 	import { live } from '#lib/live/store.svelte.js';
-	import { cn } from '#lib/utils.js';
+	import { rangeLabel, reachesNow } from '#lib/range.js';
+	import { rangeState } from '#lib/range.svelte.js';
 	import {
 		bucketStarts,
 		corePct,
@@ -33,33 +35,32 @@
 
 	let { view }: { view: WorkspaceView } = $props();
 
-	const RANGES = [
-		[1, '24 hours'],
-		[7, '7 days'],
-		[30, '30 days'],
-		[90, '90 days']
-	] as const;
-
-	let days = $state<number>(7);
 	let stats = $state<WorkspaceStats | null>(null);
 	let error = $state('');
+	let loading = $state(false);
 
-	async function load(d: number) {
+	async function load(params: { since: number; until?: number }) {
+		loading = true;
 		try {
-			const next = await fetchWorkspaceStats(d);
-			if (d === days) stats = next;
+			const next = await fetchWorkspaceStats(params);
+			// NOTE: a reply for a range the reader has left is dropped
+			if (params.since === rangeState.params().since) stats = next;
 			error = '';
 		} catch (e) {
 			if (e instanceof Unauthorized) live.needToken = true;
 			else error = (e as Error).message;
+		} finally {
+			loading = false;
 		}
 	}
 
 	$effect(() => {
 		if (!live.ready) return;
-		const d = days;
-		load(d);
-		const timer = setInterval(() => load(d), 120_000);
+		const range = rangeState.current;
+		const params = rangeState.params();
+		untrack(() => load(params));
+		if (!reachesNow(range, rangeState.now())) return;
+		const timer = setInterval(() => load(rangeState.params()), 120_000);
 		return () => clearInterval(timer);
 	});
 
@@ -125,7 +126,7 @@
 
 	const traffic = $derived(stats ? trafficByHost(stats.traffic) : {});
 	const cost = $derived(stats ? costByHost(stats.cost) : {});
-	const spanMs = $derived(stats ? Math.min(stats.days * 86_400_000, live.now - stats.since) : 1);
+	const spanMs = $derived(stats ? Math.max(1, stats.until - stats.since) : 1);
 	const totalBytes = $derived(
 		Object.values(traffic).reduce((n, t) => n + t.bytes_in + t.bytes_out, 0)
 	);
@@ -189,165 +190,161 @@
 </script>
 
 <div class="flex flex-col gap-5">
-	<div class="flex flex-wrap items-center gap-2">
-		<p class="text-sm text-muted-foreground">
-			What the sync moved and cost, per machine, and what the hub holds. Hourly buckets up to three
-			days, daily beyond; the cost is the collectors' sync threads plus the git processes they ran.
-		</p>
-		<div class="ml-auto inline-flex gap-0.5 rounded-lg bg-muted p-[3px] text-xs">
-			{#each RANGES as [d, label] (d)}
-				<button
-					type="button"
-					class={cn(
-						'rounded-md px-2.5 py-1',
-						days === d ? 'bg-background font-medium shadow-sm' : 'text-foreground/60'
-					)}
-					aria-pressed={days === d}
-					onclick={() => {
-						days = d;
-						stats = null;
-					}}>{label}</button
-				>
-			{/each}
-		</div>
-	</div>
+	<p class="text-sm text-muted-foreground">
+		What the sync moved and cost, per machine, and what the hub holds, over the range in the bar ({rangeLabel(
+			rangeState.current
+		)}). Hourly buckets up to three days, daily beyond; the cost is the collectors' sync threads
+		plus the git processes they ran.
+	</p>
 	{#if error}<p class="text-sm text-critical" role="alert">{error}</p>{/if}
 	{#if !stats}
 		<p class="text-sm text-muted-foreground">Loading…</p>
 	{:else}
-		<Tiles>
-			<StatTile name="Moved" value={fmtBytes(totalBytes)} sub="between the machines and the hub" />
-			<StatTile
-				name="CPU"
-				value="{(totalCpuMs / 1000).toFixed(0)} s"
-				sub="{fmtPct(
-					corePct(totalCpuMs, spanMs * Math.max(1, hosts.length))
-				)} of one core per machine"
-			/>
-			<StatTile name="Pushes" value={totalPushes} sub="snapshots that reached the hub" />
-			<StatTile
-				name="On the hub"
-				value={fmtBytes(stats.hub_bytes)}
-				sub={plural(stats.repos.length, 'repository', 'repositories')}
-			/>
-		</Tiles>
-
-		<Figure
-			title="Per machine"
-			sub="Over the range"
-			empty={!hostRows.length && 'No machine reported yet.'}
-		>
-			<SortableTable columns={hostColumns} rows={hostRows} sortKey="cpu_s" />
-		</Figure>
-
-		<div class="grid gap-3 lg:grid-cols-2">
-			<Figure
-				title="Traffic"
-				sub="Bytes per {daily ? 'day' : 'hour'}, stacked by machine"
-				legend={hosts.map((h) => ({ label: h, color: hostColor(hosts, h) }))}
-				empty={!stats.traffic.length && 'No transfer recorded in the range.'}
-			>
-				<TrafficChart {stats} {hosts} />
-			</Figure>
-			<Figure
-				title="Pushes"
-				sub="Snapshots that reached the hub per {daily ? 'day' : 'hour'}"
-				legend={hosts.map((h) => ({ label: h, color: hostColor(hosts, h) }))}
-				empty={!stats.pushes.length && 'No push in the range.'}
-			>
-				<Columns
-					data={pushCols}
-					series={hostSeries((h) => (d) => d.by[h] ?? 0)}
-					fmtY={fmtCount}
-					tip={(d) => [
-						plural(total(d), 'push', 'pushes'),
-						when(d.at),
-						...hosts.filter((h) => d.by[h]).map((h) => `${h} ${d.by[h]}`)
-					]}
+		<div class="flex flex-col gap-3 transition-opacity" class:opacity-60={loading}>
+			<Tiles>
+				<StatTile
+					name="Moved"
+					value={fmtBytes(totalBytes)}
+					sub="between the machines and the hub"
 				/>
-			</Figure>
+				<StatTile
+					name="CPU"
+					value="{(totalCpuMs / 1000).toFixed(0)} s"
+					sub="{fmtPct(
+						corePct(totalCpuMs, spanMs * Math.max(1, hosts.length))
+					)} of one core per machine"
+				/>
+				<StatTile name="Pushes" value={totalPushes} sub="snapshots that reached the hub" />
+				<StatTile
+					name="On the hub"
+					value={fmtBytes(stats.hub_bytes)}
+					sub={plural(stats.repos.length, 'repository', 'repositories')}
+				/>
+			</Tiles>
+
 			<Figure
-				title="CPU"
-				sub="Seconds per {daily ? 'day' : 'hour'}, the sync's threads and its git processes"
-				legend={hosts.map((h) => ({ label: h, color: hostColor(hosts, h) }))}
-				empty={!stats.cost.length && 'No cost recorded in the range.'}
+				title="Per machine"
+				sub="Over the range"
+				empty={!hostRows.length && 'No machine reported yet.'}
 			>
-				<Columns
-					data={cpuCols}
-					series={hostSeries((h) => (d) => d.by[h] ?? 0)}
-					fmtY={(v) => `${Number(v.toFixed(1))} s`}
-					tip={(d) => [
-						`${total(d).toFixed(1)} s CPU`,
-						when(d.at),
-						`${fmtPct(corePct(total(d) * 1000, stats?.bucket_ms ?? 1))} of one core, all machines`,
-						...hosts
-							.filter((h) => d.by[h])
-							.map(
-								(h) =>
-									`${h} ${d.by[h].toFixed(1)} s (${fmtPct(corePct(d.by[h] * 1000, stats?.bucket_ms ?? 1))})`
+				<SortableTable columns={hostColumns} rows={hostRows} sortKey="cpu_s" />
+			</Figure>
+
+			<div class="grid gap-3 lg:grid-cols-2">
+				<Figure
+					title="Traffic"
+					sub="Bytes per {daily ? 'day' : 'hour'}, stacked by machine"
+					legend={hosts.map((h) => ({ label: h, color: hostColor(hosts, h) }))}
+					empty={!stats.traffic.length && 'No transfer recorded in the range.'}
+				>
+					<TrafficChart {stats} {hosts} />
+				</Figure>
+				<Figure
+					title="Pushes"
+					sub="Snapshots that reached the hub per {daily ? 'day' : 'hour'}"
+					legend={hosts.map((h) => ({ label: h, color: hostColor(hosts, h) }))}
+					empty={!stats.pushes.length && 'No push in the range.'}
+				>
+					<Columns
+						data={pushCols}
+						series={hostSeries((h) => (d) => d.by[h] ?? 0)}
+						fmtY={fmtCount}
+						tip={(d) => [
+							plural(total(d), 'push', 'pushes'),
+							when(d.at),
+							...hosts.filter((h) => d.by[h]).map((h) => `${h} ${d.by[h]}`)
+						]}
+					/>
+				</Figure>
+				<Figure
+					title="CPU"
+					sub="Seconds per {daily ? 'day' : 'hour'}, the sync's threads and its git processes"
+					legend={hosts.map((h) => ({ label: h, color: hostColor(hosts, h) }))}
+					empty={!stats.cost.length && 'No cost recorded in the range.'}
+				>
+					<Columns
+						data={cpuCols}
+						series={hostSeries((h) => (d) => d.by[h] ?? 0)}
+						fmtY={(v) => `${Number(v.toFixed(1))} s`}
+						tip={(d) => [
+							`${total(d).toFixed(1)} s CPU`,
+							when(d.at),
+							`${fmtPct(corePct(total(d) * 1000, stats?.bucket_ms ?? 1))} of one core, all machines`,
+							...hosts
+								.filter((h) => d.by[h])
+								.map(
+									(h) =>
+										`${h} ${d.by[h].toFixed(1)} s (${fmtPct(corePct(d.by[h] * 1000, stats?.bucket_ms ?? 1))})`
+								)
+						]}
+					/>
+				</Figure>
+				<Figure
+					title="Memory"
+					sub="The collector's peak resident set per {daily ? 'day' : 'hour'} (the whole process)"
+					legend={hosts.map((h) => ({ label: h, color: hostColor(hosts, h), line: true }))}
+					empty={!memSeries.some((s) => s.points.length) && 'No reading in the range.'}
+				>
+					<TimeLines
+						series={memSeries}
+						since={stats.since}
+						until={live.now}
+						fmt={(v) => `${Math.round(v)} MB`}
+						height={160}
+						tip={(ts) => [
+							when(ts),
+							...(memByTs[ts] ?? []).map(
+								(r) => `${r.host} ${fmtBytes(r.rss_kb * 1024)} resident, ${r.watches} watches`
 							)
-					]}
-				/>
-			</Figure>
-			<Figure
-				title="Memory"
-				sub="The collector's peak resident set per {daily ? 'day' : 'hour'} (the whole process)"
-				legend={hosts.map((h) => ({ label: h, color: hostColor(hosts, h), line: true }))}
-				empty={!memSeries.some((s) => s.points.length) && 'No reading in the range.'}
-			>
-				<TimeLines
-					series={memSeries}
-					since={stats.since}
-					until={live.now}
-					fmt={(v) => `${Math.round(v)} MB`}
-					height={160}
-					tip={(ts) => [
-						when(ts),
-						...(memByTs[ts] ?? []).map(
-							(r) => `${r.host} ${fmtBytes(r.rss_kb * 1024)} resident, ${r.watches} watches`
-						)
-					]}
-				/>
-			</Figure>
-			<Figure
-				title="The hub's repositories"
-				sub="The largest units; every unit in the table"
-				empty={!stats.repos.length && 'No repository yet.'}
-				table={{
-					headers: ['Unit', 'Size'],
-					rows: repoTable.map((r) => [String(r.unit), fmtBytes(Number(r.bytes))])
-				}}
-			>
-				<BarRows
-					rows={repoRows}
-					valueText={(row) => fmtBytes(row.total)}
-					tip={(row) => [fmtBytes(row.total), row.unit]}
-				/>
-				<p class="text-xs text-muted-foreground">
-					A unit's page shows its snapshots: <a
-						href={unitHref(repoRows[0]?.unit ?? '')}
-						class="hover:underline">the largest</a
-					>
-					is {repoRows[0]?.unit ?? '—'}.
-				</p>
-			</Figure>
-			<Figure
-				title="Conflicts"
-				sub="Recorded per {daily ? 'day' : 'hour'}"
-				empty={!stats.conflicts.length && 'No conflict in the range.'}
-			>
-				<Columns
-					data={conflictCols}
-					series={[
-						{ key: 'all', label: 'conflicts', color: COLOR.permission, value: (d) => d.by.all ?? 0 }
-					]}
-					fmtY={fmtCount}
-					tip={(d) => [plural(d.by.all ?? 0, 'conflict'), when(d.at)]}
-				/>
-			</Figure>
+						]}
+					/>
+				</Figure>
+				<Figure
+					title="The hub's repositories"
+					sub="The largest units; every unit in the table"
+					empty={!stats.repos.length && 'No repository yet.'}
+					table={{
+						headers: ['Unit', 'Size'],
+						rows: repoTable.map((r) => [String(r.unit), fmtBytes(Number(r.bytes))])
+					}}
+				>
+					<BarRows
+						rows={repoRows}
+						valueText={(row) => fmtBytes(row.total)}
+						tip={(row) => [fmtBytes(row.total), row.unit]}
+					/>
+					<p class="text-xs text-muted-foreground">
+						A unit's page shows its snapshots: <a
+							href={unitHref(repoRows[0]?.unit ?? '')}
+							class="hover:underline">the largest</a
+						>
+						is {repoRows[0]?.unit ?? '—'}.
+					</p>
+				</Figure>
+				<Figure
+					title="Conflicts"
+					sub="Recorded per {daily ? 'day' : 'hour'}"
+					empty={!stats.conflicts.length && 'No conflict in the range.'}
+				>
+					<Columns
+						data={conflictCols}
+						series={[
+							{
+								key: 'all',
+								label: 'conflicts',
+								color: COLOR.permission,
+								value: (d) => d.by.all ?? 0
+							}
+						]}
+						fmtY={fmtCount}
+						tip={(d) => [plural(d.by.all ?? 0, 'conflict'), when(d.at)]}
+					/>
+				</Figure>
+			</div>
+			<p class="text-xs text-muted-foreground">
+				{fmtDuration(stats.until - stats.since)} ending {fmtStamp(stats.until)}; rows are kept for a
+				year.
+			</p>
 		</div>
-		<p class="text-xs text-muted-foreground">
-			Range from {fmtDuration(live.now - stats.since)} ago; rows are kept for a year.
-		</p>
 	{/if}
 </div>

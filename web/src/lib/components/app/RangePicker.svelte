@@ -107,7 +107,7 @@
 			class="size-8"
 			aria-label="Zoom out"
 			title="Zoom out (twice as long)"
-			onclick={() => rangeState.set(zoomOut(value, rangeState.now()))}
+			onclick={() => rangeState.set(zoomOut(value, rangeState.now(), rangeState.maxMinutes))}
 		>
 			<ZoomOutIcon />
 		</Button>

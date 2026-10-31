@@ -175,13 +175,14 @@
 								: 'bg-critical'}"
 							aria-hidden="true"
 						></i>
-						{h.name}
+						<a href="/machines/{encodeURIComponent(h.name)}" class="hover:underline">{h.name}</a>
 					</span>
 					<span class="text-xs text-muted-foreground"
 						>{h.connected ? 'connected' : 'offline'} for {fmtDuration(live.now - h.since)} · {plural(
 							hostCounts[h.name] ?? 0,
 							'session'
-						)}</span
+						)}{#if h.rtt_ms !== null && h.connected}
+							· {h.rtt_ms < 1 ? '<1' : h.rtt_ms} ms{/if}</span
 					>
 				</div>
 			{/each}

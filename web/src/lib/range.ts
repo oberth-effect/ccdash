@@ -11,6 +11,8 @@ export const MINUTE = 60_000;
 const DAY = 86_400_000;
 /** Retention is 30 days; the API serves 31. */
 export const MAX_RANGE_MINUTES = 31 * 1440;
+/** The workspace sync's traffic and cost rows are kept for a year. */
+export const YEAR_RANGE_MINUTES = 366 * 1440;
 
 export const HISTORY_QUICK: Range[] = [
 	{ kind: 'relative', minutes: 60 },
@@ -33,12 +35,39 @@ export const ANALYTICS_QUICK: Range[] = [
 	{ kind: 'days', days: 30 }
 ];
 
-/** The page's quick ranges and its range when the URL names none. */
-export function rangeSetup(path: string): { quick: Range[]; fallback: Range } | null {
-	if (path === '/history' || path.startsWith('/history/'))
-		return { quick: HISTORY_QUICK, fallback: { kind: 'days', days: 1 } };
-	if (path === '/analytics' || path.startsWith('/analytics/'))
-		return { quick: ANALYTICS_QUICK, fallback: { kind: 'days', days: 7 } };
+export const WORKSPACE_QUICK: Range[] = [
+	{ kind: 'relative', minutes: 1440 },
+	{ kind: 'days', days: 1 },
+	{ kind: 'days', days: 7 },
+	{ kind: 'days', days: 30 },
+	{ kind: 'days', days: 90 },
+	{ kind: 'days', days: 365 }
+];
+
+export type RangeSetup = { quick: Range[]; fallback: Range; maxMinutes: number };
+
+/** The page's quick ranges, its range when the URL names none, and how
+ * far back its data goes. */
+export function rangeSetup(path: string): RangeSetup | null {
+	const under = (prefix: string) => path === prefix || path.startsWith(`${prefix}/`);
+	if (under('/history'))
+		return {
+			quick: HISTORY_QUICK,
+			fallback: { kind: 'days', days: 1 },
+			maxMinutes: MAX_RANGE_MINUTES
+		};
+	if (under('/analytics') || under('/machines'))
+		return {
+			quick: ANALYTICS_QUICK,
+			fallback: { kind: 'days', days: 7 },
+			maxMinutes: MAX_RANGE_MINUTES
+		};
+	if (under('/workspace/stats'))
+		return {
+			quick: WORKSPACE_QUICK,
+			fallback: { kind: 'days', days: 7 },
+			maxMinutes: YEAR_RANGE_MINUTES
+		};
 	return null;
 }
 
@@ -70,9 +99,9 @@ export function shiftRange(range: Range, direction: 1 | -1, t: number): Range | 
 }
 
 /** Twice the span around the same middle, never past now or retention. */
-export function zoomOut(range: Range, t: number): Range {
+export function zoomOut(range: Range, t: number, maxMinutes = MAX_RANGE_MINUTES): Range {
 	const { from, to } = resolveRange(range, t);
-	const span = Math.min((to - from) * 2, MAX_RANGE_MINUTES * MINUTE);
+	const span = Math.min((to - from) * 2, maxMinutes * MINUTE);
 	const end = Math.min(t, (from + to) / 2 + span / 2);
 	return { kind: 'absolute', from: end - span, to: end };
 }
@@ -109,21 +138,26 @@ export type RangeProblem = 'incomplete' | 'backwards' | 'future' | 'too_old';
 export function rangeProblem(
 	from: number | null,
 	to: number | null,
-	t: number
+	t: number,
+	maxMinutes = MAX_RANGE_MINUTES
 ): RangeProblem | null {
 	if (from === null || to === null) return 'incomplete';
 	if (from >= to) return 'backwards';
 	if (from > t) return 'future';
-	if (from < t - MAX_RANGE_MINUTES * MINUTE) return 'too_old';
+	if (from < t - maxMinutes * MINUTE) return 'too_old';
 	return null;
 }
 
-export const PROBLEM_TEXT: Record<RangeProblem, string> = {
-	incomplete: 'Fill in both times.',
-	backwards: 'The start has to be before the end.',
-	future: 'The range starts in the future.',
-	too_old: 'ccdash keeps 30 days of history.'
-};
+export const problemText = (problem: RangeProblem, maxMinutes = MAX_RANGE_MINUTES): string =>
+	({
+		incomplete: 'Fill in both times.',
+		backwards: 'The start has to be before the end.',
+		future: 'The range starts in the future.',
+		too_old:
+			maxMinutes > MAX_RANGE_MINUTES
+				? 'ccdash keeps a year of these.'
+				: 'ccdash keeps 30 days of history.'
+	})[problem];
 
 export function spanText(from: number, to: number): string {
 	const start = toInputValue(from).replace('T', ' ');

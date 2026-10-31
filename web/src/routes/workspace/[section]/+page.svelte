@@ -12,7 +12,8 @@
 	import Stats from '#lib/components/workspace/Stats.svelte';
 	import UnitsSection from '#lib/components/workspace/UnitsSection.svelte';
 	import { live } from '#lib/live/store.svelte.js';
-	import { SECTIONS, type Section } from '#lib/workspace.js';
+	import { scope } from '#lib/scope.svelte.js';
+	import { SECTIONS, bundleOf, type Section } from '#lib/workspace.js';
 
 	const POLL_MS = 3000;
 
@@ -65,11 +66,27 @@
 		requestAnimationFrame(measure);
 	});
 
+	/** The view narrowed to the bar's workspaces (a workspace is a bundle
+	 * here) and host; the configuration stays whole. */
+	const scoped = $derived.by((): WorkspaceView | null => {
+		if (!view) return null;
+		const { ws, host } = scope.current;
+		const inWs = (unit: string) => !ws.length || ws.includes(bundleOf(unit));
+		return {
+			...view,
+			hosts: view.hosts.filter((h) => !host || h.host === host),
+			units: view.units.filter((u) => inWs(u.unit)),
+			new_dirs: view.new_dirs.filter((d) => inWs(d.unit)),
+			held: view.held.filter((h) => inWs(h.unit) && (!host || h.host === host)),
+			conflicts: view.conflicts.filter((c) => inWs(c.unit) && (!host || c.host === host))
+		};
+	});
+	const narrowed = $derived(scope.current.ws.length > 0 || scope.current.host !== '');
 	const needs = $derived(
-		view
-			? view.conflicts.length +
-					view.held.length +
-					view.new_dirs.filter((d) => d.state === 'waiting').length
+		scoped
+			? scoped.conflicts.length +
+					scoped.held.length +
+					scoped.new_dirs.filter((d) => d.state === 'waiting').length
 			: 0
 	);
 </script>
@@ -109,12 +126,19 @@
 		</p>
 	{:else if error && !view}
 		<p class="text-sm text-critical" role="alert">{error}</p>
-	{:else if view}
+	{:else if scoped}
 		{#if error}<p class="text-xs text-critical" role="alert">{error}</p>{/if}
+		{#if narrowed}
+			<p class="text-xs text-muted-foreground">
+				Narrowed by the bar to {scope.current.ws.length
+					? scope.current.ws.join(', ')
+					: 'every workspace'}{scope.current.host ? ` on ${scope.current.host}` : ''}.
+			</p>
+		{/if}
 		{#if section === 'stats'}
-			<Stats {view} />
+			<Stats view={scoped} />
 		{:else}
-			<View {view} onchange={load} />
+			<View view={scoped} onchange={load} />
 		{/if}
 	{:else}
 		<p class="text-sm text-muted-foreground">Loading…</p>

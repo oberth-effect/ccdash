@@ -936,14 +936,15 @@ pub struct RepoSize {
     pub bytes: u64,
 }
 
-/// `GET /api/v1/workspace/stats?days=N`: traffic, cost and growth over
-/// the last `days`, in hourly buckets up to three days, else daily.
+/// `GET /api/v1/workspace/stats?since=&until=`: traffic, cost and growth
+/// over the span, in hourly buckets up to three days, else daily (local
+/// midnights of the hub).
 #[derive(Debug, Clone, Serialize, TS)]
 #[ts(export_to = "types.ts")]
 pub struct WorkspaceStats {
-    pub days: i64,
-    pub bucket_ms: i64,
     pub since: i64,
+    pub until: i64,
+    pub bucket_ms: i64,
     pub traffic: Vec<TrafficRow>,
     pub cost: Vec<CostRow>,
     pub transfers: Vec<Transfer>,

@@ -1669,22 +1669,34 @@ async fn workspace_view(State(app): State<App>) -> Result<Json<WorkspaceView>, A
 
 #[derive(Deserialize)]
 struct StatsQuery {
+    /// Milliseconds; the last 30 days when missing.
     #[serde(default)]
-    days: Option<i64>,
+    since: Option<i64>,
+    /// Milliseconds; now when missing.
+    #[serde(default)]
+    until: Option<i64>,
 }
 
-/// Traffic, cost and growth of the workspace sync over the last `days`
-/// (30 by default).
+/// Traffic, cost and growth of the workspace sync over a span (the last
+/// 30 days by default, a year at most).
 async fn workspace_stats(
     State(app): State<App>,
     Query(query): Query<StatsQuery>,
 ) -> Result<Json<WorkspaceStats>, ApiError> {
     let git = app.git()?.clone();
     let store = app.store.clone();
-    let days = query.days.unwrap_or(30);
+    let now = now_ms();
+    let until = query.until.unwrap_or(now);
+    let since = query.since.unwrap_or(until - 30 * 86_400_000);
+    if since >= until {
+        return Err(ApiError(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "since must be before until".into(),
+        ));
+    }
     let stats = tokio::task::spawn_blocking(move || -> Result<_> {
         let repos = git.repos.sizes();
-        wshub::stats(&store.reader()?, days, repos, now_ms())
+        wshub::stats(&store.reader()?, since, until, repos, now)
     })
     .await
     .context("workspace stats")??;

@@ -5,7 +5,14 @@
 import { goto } from '$app/navigation';
 import { page } from '$app/state';
 import { live } from './live/store.svelte';
-import { decodeRange, encodeRange, rangeParams, rangeSetup, type Range } from './range';
+import {
+	MAX_RANGE_MINUTES,
+	decodeRange,
+	encodeRange,
+	rangeParams,
+	rangeSetup,
+	type Range
+} from './range';
 
 /** The page's URL as a plain one (`page.url` is read-only). */
 const pageUrl = () => new URL(page.url.href);
@@ -22,6 +29,10 @@ export const rangeState = {
 	},
 	get quick(): Range[] {
 		return rangeSetup(page.url.pathname)?.quick ?? [];
+	},
+	/** How far back the page's data goes. */
+	get maxMinutes(): number {
+		return rangeSetup(page.url.pathname)?.maxMinutes ?? MAX_RANGE_MINUTES;
 	},
 	/** Hub time. */
 	now(): number {

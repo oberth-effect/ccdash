@@ -529,13 +529,14 @@ impl Git {
         Ok(())
     }
 
-    /// Refs under `prefix` with their objects.
+    /// Refs under `prefix` with their objects; symbolic refs
+    /// (`refs/remotes/origin/HEAD`) are left out, they follow their target.
     pub fn refs(&self, repo: &Repo, prefix: &str) -> Result<Vec<(String, String)>> {
         let out = self.ok(
             Some(repo),
             &[
                 "for-each-ref",
-                "--format=%(refname)%00%(objectname)",
+                "--format=%(refname)%00%(objectname)%00%(symref)",
                 prefix,
             ],
             &Opts::default(),
@@ -544,8 +545,11 @@ impl Git {
             .text()
             .lines()
             .filter_map(|l| {
-                let (name, sha) = l.split_once('\0')?;
-                Some((name.to_owned(), sha.to_owned()))
+                let mut parts = l.split('\0');
+                let name = parts.next()?;
+                let sha = parts.next()?;
+                let symref = parts.next().unwrap_or_default();
+                symref.is_empty().then(|| (name.to_owned(), sha.to_owned()))
             })
             .collect())
     }

@@ -78,8 +78,10 @@ four worker threads (a unit is in one pass at a time):
   copy of the real index gives the **index tree** (the staged state). A
   commit whose tree holds both (`work/`, `index/`) is made on this host's
   chain (`refs/sync/<host>`, the first one off HEAD) with a message
-  carrying HEAD, the branch, every branch and tag, the stashes and the
-  empty directories. Nothing changed → no commit. The real index is never
+  carrying HEAD, the branch, every branch, tag and remote-tracking ref
+  (`refs/remotes/*`: what `git status` compares against, so "ahead by 3"
+  reads the same on every machine), the stashes and the empty
+  directories. Nothing changed → no commit. The real index is never
   written by a snapshot.
 - **Push.** `refs/sync/<host>` goes to the hub's bare repository of the
   unit over git smart HTTP with the collector token, together with the
@@ -102,8 +104,14 @@ four worker threads (a unit is in one pass at a time):
   snapshot (rewinds included); every other branch and tag is set to the
   snapshot's value; a branch moved on both sides since the base stays as
   it is here and the other tip is kept under
-  `refs/sync/diverged/<host>/<branch>`. Stashes from the snapshot are
-  recreated when missing (`git stash store`).
+  `refs/sync/diverged/<host>/<branch>`. Remote-tracking refs follow the
+  machine that fetched further; one that moved apart on both sides (the
+  remote was rewritten between two fetches) stays as it is here and is
+  never shown as diverged, the next `git fetch` settles it. The remotes
+  themselves (`.git/config`) do not travel: a unit created from the hub
+  on a new machine carries the refs but needs its `origin` added by hand
+  before it can push. Stashes from the snapshot are recreated when
+  missing (`git stash store`).
 
 Every git call the collector makes runs with `core.excludesFile` set to
 the never-travelling list, `core.hooksPath` pointing at an empty directory
@@ -214,11 +222,12 @@ Sections, as tabs:
   directories over the threshold with Include and Ignore — or one quiet
   line), the machines in a line each with **Resync**, the last 24 hours
   of traffic per machine, the units that changed last.
-- **Units**: the grid of units × machines, grouped by bundle, a chip per
-  cell (in step, sending, receiving, conflict, held, waiting, failing, to
-  adopt, creating, missing, paused), filters (changed today, needs you,
-  conflicts, held, paused) and a search; the new directories; the held
-  snapshots; the conflicts. A unit opens its page (`/workspace/unit/<unit>`):
+- **Units**: a table that sorts by its columns (unit, kind, state, size,
+  pushes, last push), a search over unit ids, states and details, filters
+  (needs you, conflicts, held, failing, to adopt, moving, paused, changed
+  today), and one compact chip per machine with the state as its colour
+  (the full state when the bar picks one machine); the new directories;
+  the held snapshots; the conflicts. A unit opens its page (`/workspace/unit/<unit>`):
   the state on every machine with the snapshot id and the last pass,
   diverged branches, its conflicts, the ignored directories present with a
   switch each, overrides (size limit, conflict shape, pause, exclude) and
@@ -232,7 +241,8 @@ Sections, as tabs:
   one core, passes, git calls, disk I/O), what is resident now and how many
   watches are held. Below, bytes per hour per machine and every large
   transfer of the week with its rate.
-- **Statistics** (24 hours, 7, 30 or 90 days): a per-machine table (pushes,
+- **Statistics** (the range in the bar, a year back at most): a
+  per-machine table (pushes,
   fetches, bytes, CPU, share of one core, disk I/O, peak resident set,
   failures), traffic and pushes per bucket stacked by machine, CPU seconds
   per bucket, the collectors' peak resident set, the hub's largest
@@ -252,6 +262,9 @@ Sections, as tabs:
   include glob, over the threshold, ignored by you, a linked worktree that
   cannot travel), with Include and Ignore; the gitignored directories
   inside travelling units, largest first.
+- The bar's workspace and host filters apply: a workspace is a bundle
+  here, so picking one shows that bundle's units, new directories, held
+  snapshots and conflicts; picking a machine shows its column alone.
 - Push notifications: a held snapshot, a conflict, a new directory over the
   threshold, a unit failing for more than 10 minutes — each a kind a
   device can mute in Settings ([notifications](prompts-and-notifications.md#2-notifications-web-push)).

@@ -10,7 +10,7 @@ links can be shared and the back button works.
 2. [A session's page](#2-a-sessions-page)
 3. [Projects](#3-projects)
 4. [History and Analytics](#4-history-and-analytics)
-5. [State and Workspace](#5-state-and-workspace)
+5. [Machines, Claude state and Workspace](#5-machines-claude-state-and-workspace)
 6. [Desktop (DankMaterialShell)](#6-desktop-dankmaterialshell)
 
 ## 1. Now and Sessions
@@ -103,23 +103,32 @@ sets the `OTEL_*` variables and starts a receiver in the collector on
 `127.0.0.1:7839`. It keeps counts and timings only; prompt text stays
 redacted, as Claude Code sends it by default.
 
-## 5. State and Workspace
+## 5. Machines, Claude state and Workspace
 
-**State** is each machine's copy of `~/.claude` (the [state
+**Machines** lists every host with a collector (its link and round trip,
+the sessions on it, its copy of Claude's state, its share of the workspace
+sync); a machine's page gathers what the other areas know about it: the
+sessions on it now, Claude's usage there over the range in the bar
+(sessions, working time, cost, lines, CPU, activity by state), its copy of
+Claude's state, and its workspace sync (units in step, what moved and what
+it cost in the range, the units not in step there, its large transfers).
+Host names on the Now page and in the Workspace area open it.
+
+**Claude state** is each machine's copy of `~/.claude` (the [state
 sync](state-sync.md)): machines with Resync, conflicts with their
 resolutions, sizes and growth.
 
 **Workspace** is the workspace root on every machine (the [workspace
 sync](workspace.md#7-the-workspace-area)), in sections: **Overview** (the
 tiles, what needs you with the buttons at hand, the machines in a line
-each, the last day's traffic, the units that changed last), **Units** (the
-grid of units × machines grouped by bundle with a chip per cell and
-filters, new directories, held snapshots, conflicts; a unit's page with
+each, the last day's traffic, the units that changed last), **Units** (a
+sortable table with a search, state filters and a chip per machine, new
+directories, held snapshots, conflicts; a unit's page with
 its state on every machine, diverged branches, conflicts, the ignored
 directories with a switch each, overrides and the snapshot history),
 **Machines** (a card per collector: the link's round trip, what it moved
 today and this week, the rate of its large transfers, what the sync cost
-in CPU, I/O and memory), **Statistics** (24 hours to 90 days: traffic,
+in CPU, I/O and memory), **Statistics** (the range in the bar, a year back: traffic,
 pushes, CPU and memory per machine, the hub's repositories, conflicts) and
 **Configuration** (the rules with live match counts and what each never-
 travelling name keeps home, previewed by the hub as you type; then the

@@ -1827,6 +1827,7 @@ fn push_refspecs(shared: &Shared, local: &Local) -> Vec<String> {
         format!("+{SYNC_REFS}/{me}:{SYNC_REFS}/{me}"),
         format!("+refs/heads/*:{TIPS_REFS}/{me}/heads/*"),
         format!("+refs/tags/*:{TIPS_REFS}/{me}/tags/*"),
+        format!("+refs/remotes/*:{TIPS_REFS}/{me}/remotes/*"),
     ];
     for (n, sha) in &local.meta.stash {
         specs.push(format!("+{sha}:{TIPS_REFS}/{me}/stash/{n}"));

@@ -393,7 +393,7 @@ pub fn apply(a: &Apply) -> Result<Report> {
     }
 
     // refs, HEAD, stashes
-    let current: BTreeMap<String, String> = ["refs/heads/", "refs/tags/"]
+    let current: BTreeMap<String, String> = super::snapshot::REF_PREFIXES
         .into_iter()
         .map(|p| a.git.refs(a.repo, p))
         .collect::<Result<Vec<_>>>()?
@@ -474,8 +474,8 @@ pub fn apply(a: &Apply) -> Result<Report> {
         };
     } else {
         let tree = a.git.wrap(a.repo, &target_work, &target_index)?;
-        let same_as_theirs = tree == remote.tree && target_meta == remote.meta;
-        let same_as_ours = tree == local.tree && target_meta == local.meta;
+        let same_as_theirs = tree == remote.tree && meta_matches(&target_meta, &remote.meta);
+        let same_as_ours = tree == local.tree && meta_matches(&target_meta, &local.meta);
         if same_as_theirs && (!same_as_ours || a.remote < local.commit.as_str()) {
             // NOTE: their snapshot holds everything of ours: take it as this
             // host's instead of minting a merge commit the others would merge
@@ -749,12 +749,18 @@ fn merge_refs(
                     } else if is_ancestor(a, r, l)? {
                         Some(l.clone())
                     } else {
-                        diverged.push(Diverged {
-                            branch: name.clone(),
-                            local: l.clone(),
-                            remote: r.clone(),
-                            host: a.other.to_owned(),
-                        });
+                        // NOTE: a remote-tracking ref that moved apart (the
+                        // remote was rewritten between two fetches) is not
+                        // the owner's to merge: the local one stays, the
+                        // next fetch settles it
+                        if !name.starts_with("refs/remotes/") {
+                            diverged.push(Diverged {
+                                branch: name.clone(),
+                                local: l.clone(),
+                                remote: r.clone(),
+                                host: a.other.to_owned(),
+                            });
+                        }
                         Some(l.clone())
                     }
                 }
@@ -773,6 +779,29 @@ fn merge_refs(
         }
     }
     Ok((out, diverged, notes))
+}
+
+/// Whether two snapshots' metadata agree, remote-tracking refs that only
+/// one side has left aside: a clone carries `refs/remotes/origin/*`, a unit
+/// created from the hub does not, and the difference must not keep one
+/// host from taking the other's snapshot over (the merge would never
+/// settle).
+fn meta_matches(a: &Meta, b: &Meta) -> bool {
+    let shared = |m: &Meta, other: &Meta| -> BTreeMap<String, String> {
+        m.refs
+            .iter()
+            .filter(|(name, _)| {
+                !name.starts_with("refs/remotes/") || other.refs.contains_key(*name)
+            })
+            .map(|(n, s)| (n.clone(), s.clone()))
+            .collect()
+    };
+    a.head == b.head
+        && a.branch == b.branch
+        && a.index == b.index
+        && a.stash == b.stash
+        && a.dirs == b.dirs
+        && shared(a, b) == shared(b, a)
 }
 
 fn is_ancestor(a: &Apply, ancestor: &str, descendant: &str) -> Result<bool> {
@@ -1150,6 +1179,11 @@ mod tests {
             &Opts::default(),
         )
         .unwrap();
+        // NOTE: the tests model two copies of one repository, not a clone of
+        // the other: remote-tracking refs travel now, and a clone's
+        // `origin/*` (which the source lacks) would be one more round
+        git.ok(Some(&to), &["remote", "remove", "origin"], &Opts::default())
+            .unwrap();
         let mut g = git.clone();
         g.host = host.to_owned();
         (g, to)
@@ -1673,13 +1707,34 @@ mod tests {
             let cm = git.commit_tree(repo, &t, &[&c], name).unwrap();
             git.update_ref(repo, "refs/heads/main", &cm).unwrap();
         }
+        // navi fetched origin further than flat: the remote-tracking ref
+        // follows it (an ancestor rule, never a diverged entry)
+        navi_git
+            .update_ref(
+                &navi,
+                "refs/remotes/origin/main",
+                &navi_git.rev(&navi, "refs/heads/main").unwrap().unwrap(),
+            )
+            .unwrap();
+        flat_git
+            .update_ref(&flat, "refs/remotes/origin/main", &c)
+            .unwrap();
         let n3 = snapshot(&navi_git, &navi, &ns, Some(&n2));
+        assert!(n3.meta.refs.contains_key("refs/remotes/origin/main"));
         let f3 = snapshot(&flat_git, &flat, &fsx, Some(&f2));
         carry(&navi, &flat, &flat_git, "navi");
         let r = apply_from(&flat_git, &flat, &fsx, &f3, "navi", &n3.commit);
         assert!(matches!(r.outcome, Outcome::Merged { .. }), "{r:?}");
         assert_eq!(r.diverged.len(), 1, "{r:?}");
         assert_eq!(r.diverged[0].branch, "refs/heads/main");
+        assert_eq!(
+            flat_git
+                .rev(&flat, "refs/remotes/origin/main")
+                .unwrap()
+                .as_deref(),
+            Some(n3.meta.refs["refs/remotes/origin/main"].as_str()),
+            "the remote-tracking ref followed the host that fetched further"
+        );
         assert_eq!(
             flat_git.rev(&flat, "refs/heads/main").unwrap().as_deref(),
             Some(f3.meta.refs["refs/heads/main"].as_str())

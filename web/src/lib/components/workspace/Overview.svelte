@@ -32,7 +32,7 @@
 
 	async function loadStats() {
 		try {
-			stats = await fetchWorkspaceStats(1);
+			stats = await fetchWorkspaceStats({ since: live.now - DAY_MS });
 		} catch (e) {
 			if (e instanceof Unauthorized) live.needToken = true;
 		}

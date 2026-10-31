@@ -1654,10 +1654,11 @@ total: number, };
 export type WorkspaceResyncBody = { unit: string | null, };
 
 /**
- * `GET /api/v1/workspace/stats?days=N`: traffic, cost and growth over
- * the last `days`, in hourly buckets up to three days, else daily.
+ * `GET /api/v1/workspace/stats?since=&until=`: traffic, cost and growth
+ * over the span, in hourly buckets up to three days, else daily (local
+ * midnights of the hub).
  */
-export type WorkspaceStats = { days: number, bucket_ms: number, since: number, traffic: Array<TrafficRow>, cost: Array<CostRow>, transfers: Array<Transfer>, pushes: Array<PushRow>, 
+export type WorkspaceStats = { since: number, until: number, bucket_ms: number, traffic: Array<TrafficRow>, cost: Array<CostRow>, transfers: Array<Transfer>, pushes: Array<PushRow>, 
 /**
  * Conflicts recorded per bucket.
  */

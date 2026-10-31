@@ -26,6 +26,7 @@
 	import { Input } from '#lib/components/ui/input/index.js';
 	import { fmtBytes, plural } from '#lib/format.js';
 	import { live } from '#lib/live/store.svelte.js';
+	import { scope } from '#lib/scope.svelte.js';
 	import { cn } from '#lib/utils.js';
 	import { bundleOf, COVERAGE_STATUS, decisionText, unitHref } from '#lib/workspace.js';
 
@@ -212,16 +213,20 @@
 		u.status !== 'ignored' &&
 		(u.decision.kind === 'selected' || u.decision.kind === 'forced_in');
 
-	/** The current decisions, with the draft's where it differs. */
+	/** The current decisions, with the draft's where it differs; narrowed to
+	 * the bar's workspaces. */
 	const units = $derived.by(() => {
 		if (!coverage) return [];
+		const { ws } = scope.current;
 		const drafted = Object.fromEntries((preview?.units ?? []).map((u) => [u.unit, u]));
-		return coverage.units.map((u) => {
-			const d = drafted[u.unit];
-			const now = u.status === 'travels';
-			const then = d ? draftTravels(d) : now;
-			return { ...u, draft: d ?? null, change: dirty && then !== now ? then : null };
-		});
+		return coverage.units
+			.filter((u) => !ws.length || ws.includes(bundleOf(u.unit)))
+			.map((u) => {
+				const d = drafted[u.unit];
+				const now = u.status === 'travels';
+				const then = d ? draftTravels(d) : now;
+				return { ...u, draft: d ?? null, change: dirty && then !== now ? then : null };
+			});
 	});
 	const notTravelling = $derived(
 		units

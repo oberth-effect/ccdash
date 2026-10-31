@@ -61,7 +61,9 @@
 								: 'bg-critical'}"
 							aria-hidden="true"
 						></i>
-						<span class="font-medium">{h.host}</span>
+						<a href="/machines/{encodeURIComponent(h.host)}" class="font-medium hover:underline"
+							>{h.host}</a
+						>
 						{#if h.status}
 							<span class="truncate font-mono text-xs text-muted-foreground">{h.status.root}</span>
 						{/if}

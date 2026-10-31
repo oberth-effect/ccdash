@@ -1564,23 +1564,25 @@ fn bucket_sql(col: &str, daily: bool) -> String {
     }
 }
 
-/// Traffic, cost, transfers, pushes and conflicts over the last `days`.
+/// Traffic, cost, transfers, pushes and conflicts between `since` and
+/// `until` (clamped to a year, hourly buckets up to three days).
 pub fn stats(
     conn: &Connection,
-    days: i64,
+    since: i64,
+    until: i64,
     repos: Vec<RepoSize>,
     now: i64,
 ) -> Result<WorkspaceStats> {
-    let days = days.clamp(1, 366);
-    let daily = days > 3;
-    let since = now - days * DAY_MS;
+    let until = until.min(now);
+    let since = since.clamp(until - 366 * DAY_MS, until - HOUR_MS);
+    let daily = until - since > 3 * DAY_MS;
     let bucket = bucket_sql("hour", daily);
     let traffic = conn
         .prepare(&format!(
             "SELECT host, {bucket} AS b, kind, SUM(requests), SUM(bytes_in), SUM(bytes_out), SUM(ms), SUM(failures)
-            FROM workspace_traffic WHERE hour >= ?1 GROUP BY host, b, kind ORDER BY b, host, kind"
+            FROM workspace_traffic WHERE hour >= ?1 AND hour < ?2 GROUP BY host, b, kind ORDER BY b, host, kind"
         ))?
-        .query_map([since], |r| {
+        .query_map([since, until], |r| {
             Ok(TrafficRow {
                 host: r.get(0)?,
                 at: r.get(1)?,
@@ -1598,9 +1600,9 @@ pub fn stats(
             "SELECT host, {bucket} AS b, SUM(cpu_ms), SUM(git_cpu_ms), SUM(git_calls), SUM(git_wall_ms),
                 SUM(io_read), SUM(io_write), SUM(passes), SUM(snapshots), SUM(pushes), SUM(fetches),
                 SUM(push_ms), SUM(fetch_ms), SUM(failures), MAX(rss_kb), MAX(watches)
-            FROM workspace_cost WHERE hour >= ?1 GROUP BY host, b ORDER BY b, host"
+            FROM workspace_cost WHERE hour >= ?1 AND hour < ?2 GROUP BY host, b ORDER BY b, host"
         ))?
-        .query_map([since], |r| {
+        .query_map([since, until], |r| {
             let g = |i: usize| -> rusqlite::Result<u64> { Ok(r.get::<_, i64>(i)? as u64) };
             Ok(CostRow {
                 host: r.get(0)?,
@@ -1624,8 +1626,8 @@ pub fn stats(
         })?
         .collect::<rusqlite::Result<_>>()?;
     let transfers = conn
-        .prepare("SELECT host, unit, kind, bytes, ms, at FROM workspace_transfers WHERE at >= ?1 ORDER BY at DESC LIMIT 100")?
-        .query_map([since], |r| {
+        .prepare("SELECT host, unit, kind, bytes, ms, at FROM workspace_transfers WHERE at >= ?1 AND at < ?2 ORDER BY at DESC LIMIT 100")?
+        .query_map([since, until], |r| {
             Ok(Transfer {
                 host: r.get(0)?,
                 unit: r.get(1)?,
@@ -1640,9 +1642,9 @@ pub fn stats(
     let pushes = conn
         .prepare(&format!(
             "SELECT host, {event_bucket} AS b, COUNT(*), SUM(bytes) FROM workspace_events
-            WHERE at >= ?1 GROUP BY host, b ORDER BY b, host"
+            WHERE at >= ?1 AND at < ?2 GROUP BY host, b ORDER BY b, host"
         ))?
-        .query_map([since], |r| {
+        .query_map([since, until], |r| {
             Ok(PushRow {
                 host: r.get(0)?,
                 at: r.get(1)?,
@@ -1653,14 +1655,14 @@ pub fn stats(
         .collect::<rusqlite::Result<_>>()?;
     let conflicts = conn
         .prepare(&format!(
-            "SELECT {event_bucket} AS b, COUNT(*) FROM workspace_conflicts WHERE at >= ?1 GROUP BY b ORDER BY b"
+            "SELECT {event_bucket} AS b, COUNT(*) FROM workspace_conflicts WHERE at >= ?1 AND at < ?2 GROUP BY b ORDER BY b"
         ))?
-        .query_map([since], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)? as u64)))?
+        .query_map([since, until], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)? as u64)))?
         .collect::<rusqlite::Result<_>>()?;
     Ok(WorkspaceStats {
-        days,
-        bucket_ms: if daily { DAY_MS } else { HOUR_MS },
         since,
+        until,
+        bucket_ms: if daily { DAY_MS } else { HOUR_MS },
         traffic,
         cost,
         transfers,
@@ -2209,7 +2211,8 @@ mod tests {
         let now = hour + 2 * HOUR_MS;
         let s = stats(
             &c,
-            1,
+            now - DAY_MS,
+            now,
             vec![RepoSize {
                 unit: "ts/u".into(),
                 bytes: 42,
@@ -2247,7 +2250,7 @@ mod tests {
         assert_eq!(s.transfers.len(), 1);
         assert_eq!((s.transfers[0].bytes, s.transfers[0].ms), (5 << 20, 500));
         // daily buckets beyond three days land on a local midnight
-        let week = stats(&c, 7, Vec::new(), now).unwrap();
+        let week = stats(&c, now - 7 * DAY_MS, now, Vec::new(), now).unwrap();
         assert_eq!(week.bucket_ms, DAY_MS);
         assert_eq!(week.traffic.len(), 2);
         assert!(
@@ -2257,7 +2260,8 @@ mod tests {
         );
         // old rows go
         add_traffic(&c, "navi", hour + STATS_KEEP_MS + HOUR_MS, "push", &d).unwrap();
-        let later = stats(&c, 1, Vec::new(), hour + STATS_KEEP_MS + 2 * HOUR_MS).unwrap();
+        let later_now = hour + STATS_KEEP_MS + 2 * HOUR_MS;
+        let later = stats(&c, later_now - DAY_MS, later_now, Vec::new(), later_now).unwrap();
         assert_eq!(later.traffic.len(), 1);
         let old: i64 = c
             .query_row(

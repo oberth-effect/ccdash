@@ -6,7 +6,7 @@
 	import {
 		fromInputValue,
 		MINUTE,
-		PROBLEM_TEXT,
+		problemText,
 		quickLabel,
 		rangeProblem,
 		resolveRange,
@@ -33,9 +33,9 @@
 		const now = rangeState.now();
 		const f = fromInputValue(from);
 		const t = fromInputValue(to);
-		const problem = rangeProblem(f, t, now);
+		const problem = rangeProblem(f, t, now, rangeState.maxMinutes);
 		if (problem || f === null || t === null) {
-			error = PROBLEM_TEXT[problem ?? 'incomplete'];
+			error = problemText(problem ?? 'incomplete', rangeState.maxMinutes);
 			return;
 		}
 		onapply(

@@ -4,6 +4,7 @@
 import type { Component } from 'svelte';
 import ActivityIcon from '@lucide/svelte/icons/activity';
 import BarChart3Icon from '@lucide/svelte/icons/bar-chart-3';
+import ComputerIcon from '@lucide/svelte/icons/computer';
 import FolderKanbanIcon from '@lucide/svelte/icons/folder-kanban';
 import FolderSyncIcon from '@lucide/svelte/icons/folder-sync';
 import HardDriveIcon from '@lucide/svelte/icons/hard-drive';
@@ -55,7 +56,8 @@ export const areas: Area[] = [
 		icon: BarChart3Icon,
 		match: under('/analytics')
 	},
-	{ href: '/state', label: 'State', icon: HardDriveIcon, match: under('/state') },
+	{ href: '/machines', label: 'Machines', icon: ComputerIcon, match: under('/machines') },
+	{ href: '/state', label: 'Claude state', icon: HardDriveIcon, match: under('/state') },
 	{ href: '/workspace', label: 'Workspace', icon: FolderSyncIcon, match: under('/workspace') },
 	{ href: '/settings', label: 'Settings', icon: SettingsIcon, match: under('/settings') }
 ];
