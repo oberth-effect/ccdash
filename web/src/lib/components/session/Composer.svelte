@@ -103,6 +103,8 @@
 		{prompts}
 		historyNote="This session's prompts, then the workspace's."
 		session={s.id}
+		host={s.host}
+		workspace={s.workspace}
 		placeholder={s.asleep
 			? 'Message Claude… (wakes the session)'
 			: canReply

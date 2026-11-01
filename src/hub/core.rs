@@ -235,6 +235,16 @@ pub enum Cmd {
     },
     /// The connected hosts with their directories.
     HostDirs(oneshot::Sender<Vec<(String, Dirs)>>),
+    /// The skills a collector found on its host.
+    Skills {
+        host: String,
+        skills: Vec<crate::model::Skill>,
+    },
+    /// One host's skills (none for a host never heard from).
+    HostSkills {
+        host: String,
+        reply: oneshot::Sender<Vec<crate::model::Skill>>,
+    },
     /// How a collector's copy of Claude Code's state stands.
     SyncStatus {
         host: String,
@@ -532,6 +542,7 @@ impl Hub {
             stops: HashMap::new(),
             refused_projects: HashMap::new(),
             dirs: HashMap::new(),
+            skills: HashMap::new(),
             workspace,
         };
         tokio::spawn(run(core, rx));
@@ -658,6 +669,17 @@ impl Hub {
         rx.await.context("hub stopped")
     }
 
+    /// The skills `host`'s collector reported, as the composer offers them.
+    pub async fn host_skills(&self, host: &str) -> Result<Vec<crate::model::Skill>> {
+        let (reply, rx) = oneshot::channel();
+        self.send(Cmd::HostSkills {
+            host: host.to_owned(),
+            reply,
+        })
+        .await?;
+        rx.await.context("hub stopped")
+    }
+
     pub async fn launch_of(&self, id: &str) -> Result<Option<Launch>> {
         let (tx, rx) = oneshot::channel();
         self.send(Cmd::LaunchOf(id.to_owned(), tx)).await?;
@@ -779,6 +801,8 @@ struct Core {
     refused_projects: HashMap<String, String>,
     /// The project directories each host reported.
     dirs: HashMap<String, Dirs>,
+    /// The skills each host reported.
+    skills: HashMap<String, Vec<crate::model::Skill>>,
     /// The workspace sync, when it is on.
     workspace: Option<WorkspaceCore>,
 }
@@ -1015,6 +1039,12 @@ async fn run(mut core: Core, mut rx: mpsc::Receiver<Cmd>) {
             }
             Cmd::Dirs { host, dirs } => {
                 core.dirs.insert(host, dirs);
+            }
+            Cmd::Skills { host, skills } => {
+                core.skills.insert(host, skills);
+            }
+            Cmd::HostSkills { host, reply } => {
+                let _ = reply.send(core.skills.get(&host).cloned().unwrap_or_default());
             }
             Cmd::SyncStatus { host, status } => {
                 core.sync.insert(host, status);

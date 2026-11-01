@@ -1152,6 +1152,27 @@ other: boolean, cost_usd: number, };
  */
 export type Side = "mine" | "theirs";
 
+/**
+ * A slash command a session on a host can run: a skill or command Claude
+ * Code loads from the user's, a plugin's or a workspace's directories, as
+ * the collector found it (`collector::skills`). The composer offers them
+ * after a `/`.
+ */
+export type Skill = { 
+/**
+ * What follows the slash: `name`, or `plugin:name`.
+ */
+command: string, description: string, scope: SkillScope, 
+/**
+ * The workspace, for `Workspace` scope.
+ */
+workspace: string | null, };
+
+/**
+ * Where a skill comes from.
+ */
+export type SkillScope = "user" | "plugin" | "workspace";
+
 export type SlowCall = { ts: number, session: string, label: string, host: string, cwd: string, tool: string, summary: string, ms: number, ok: boolean, };
 
 export type Snapshot = { 

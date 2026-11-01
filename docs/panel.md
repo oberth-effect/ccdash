@@ -71,7 +71,10 @@ Open prompts are pinned above a composer that sends a turn through the
 channel or leaves a note for the next prompt; while Claude works, **Stop**
 interrupts the turn, so what you type next is what Claude reads
 ([sessions](sessions.md#4-interrupt)). The composer walks the prompt
-history, inserts `[[note]]` links and keeps drafts. The title renames in
+history, inserts `[[note]]` links, keeps drafts, and when a message starts
+with `/` offers the skills Claude Code loads for that session (the
+machine's, the plugins', the workspace's), as the terminal does. The title
+renames in
 place; **Open on** and **Resolved** sit beside it, the other actions in its
 **Actions** menu, **Continue** at the foot once it ended
 ([sessions](sessions.md)).

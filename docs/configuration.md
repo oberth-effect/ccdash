@@ -90,6 +90,7 @@ channel plugin in Claude Code's managed settings.
 | `hub.url`, `hub.token_file`                 | —                                               | the hub's `/collect` endpoint, this machine's token                                      |
 | `agents.command`, `.interval_secs`          | `["claude","agents","--json","--all"]`, `5`     | the liveness poll                                                                        |
 | `usage.command`, `.interval_secs`           | `["claude"]`, `600`                             | the `/usage` poll (`[]` is off)                                                          |
+| `skills.plugin_dirs`                        | `[]` (the ccdash plugin when the channel is on) | plugin directories sessions start with; their skills join the composer's `/` menu        |
 | `launch.command`                            | `["claude"]`                                    | starts sessions from the panel (`[]` is off)                                             |
 | `launch.stop`, `.remove`                    | `claude stop {id}`, `claude rm {id}`            | stop a background session; remove one nothing runs                                       |
 | `launch.direnv`, `.env`                     | `[]`, `[]`                                      | `direnv export json` in the launch dir; the globs of the variables launched sessions get |

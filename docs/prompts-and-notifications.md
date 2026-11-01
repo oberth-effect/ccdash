@@ -92,6 +92,10 @@ connected to the collector.
 installed`: it only counts marketplace plugins; the channel works anyway.
 - Team and Enterprise accounts need an admin to enable channels.
 - Sessions started before (or without the wrapper) show how to restart them.
+- `/` at the start of the box lists the skills of the session's machine and
+  workspace, with their descriptions; the arrows and Enter, Tab or a tap
+  pick one. Built-in commands (`/compact`, `/clear`, …) are not offered: a
+  channel message reaches Claude as text, not Claude Code's input line.
 
 ## 4. Renaming
 

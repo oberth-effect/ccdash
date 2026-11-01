@@ -13,7 +13,7 @@ use crate::state::Window;
 use crate::{
     ask::Answer,
     knowledge::{Hit, Note, NoteOp, NoteView, Query, Upsert, Written},
-    model::{Claim, Kind, RateLimits, ScopedLimit, Session, Update},
+    model::{Claim, Kind, RateLimits, ScopedLimit, Session, Skill, Update},
     state::{AgentEntry, NiriEvent, ProcPoll},
     sync::{Keep, SyncStatus},
     wire::Envelope,
@@ -39,7 +39,7 @@ use crate::{
 /// `Stop`, `Open` down; `Launched`, `Stopped` up), `branch` and `launched`
 /// on sessions, `branch` on agents entries and envelopes, `launch` on
 /// envelopes.
-pub const VERSION: u32 = 10;
+pub const VERSION: u32 = 11;
 
 /// Collector → hub.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -135,6 +135,12 @@ pub enum ToHub {
     /// each welcome and when it changes.
     Dirs {
         dirs: BTreeMap<String, Vec<String>>,
+    },
+    /// The skills and commands Claude Code loads on this host: the user's,
+    /// the plugins', each workspace's. Sent after each welcome and when
+    /// they change.
+    Skills {
+        skills: Vec<Skill>,
     },
     /// How this machine's copy of Claude Code's state stands.
     Sync {
@@ -495,6 +501,20 @@ mod tests {
         assert!(matches!(
             serde_json::from_str(&text).unwrap(),
             ToHub::Hello { v: VERSION, .. }
+        ));
+        let skills = ToHub::Skills {
+            skills: vec![Skill {
+                command: "ccdash:wrap-up".into(),
+                description: "wrap a session up".into(),
+                scope: crate::model::SkillScope::Plugin,
+                workspace: None,
+            }],
+        };
+        let text = serde_json::to_string(&skills).unwrap();
+        assert!(text.contains(r#""scope":"plugin""#), "{text}");
+        assert!(matches!(
+            serde_json::from_str(&text).unwrap(),
+            ToHub::Skills { ref skills } if skills.len() == 1
         ));
         let call = ToHub::Call {
             id: 3,

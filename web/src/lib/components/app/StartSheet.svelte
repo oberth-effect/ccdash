@@ -275,6 +275,8 @@
 				bind:text
 				{prompts}
 				historyNote="The workspace's prompts."
+				{host}
+				workspace={ws || null}
 				placeholder={resume ? 'What next?' : 'What should Claude do?'}
 				label="Prompt"
 				rows={3}

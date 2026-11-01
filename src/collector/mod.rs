@@ -8,6 +8,7 @@
 mod api;
 mod link;
 mod queue;
+mod skills;
 
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
@@ -34,7 +35,7 @@ use crate::{
     config::{CollectorConfig, Launch},
     git,
     knowledge::{self, Note, Query},
-    model::{HostStatus, RateLimits, ScopedLimit, Session, Snapshot, Update},
+    model::{HostStatus, RateLimits, ScopedLimit, Session, Skill, Snapshot, Update},
     niri, otlp, paths, procs,
     protocol::{Call, Injection, Reply, TelemetryRecord, ToCollector, ToHub, Who, WorkspaceDir},
     state::{AgentEntry, NiriEvent, ProcPoll, StoreMsg, Window},
@@ -191,6 +192,8 @@ const STOP_FLUSH_WAIT: Duration = Duration::from_secs(12);
 /// How long a launch that continues a session waits for its transcript.
 const LAUNCH_FLUSH_WAIT: Duration = Duration::from_secs(60);
 const DIRS_EVERY_MS: i64 = 60_000;
+/// How often the skills on this machine are re-read.
+const SKILLS_EVERY_MS: i64 = 300_000;
 /// A pending interrupt that no tool hook took within this (a turn of text
 /// alone, a lost hook) is dropped; the hub's mark went with the turn.
 const INTERRUPT_KEEP_MS: i64 = 10 * 60_000;
@@ -238,6 +241,7 @@ async fn serve(cfg: Arc<CollectorConfig>) -> Result<()> {
             paths::notes_cache(),
         )
         .with_commands(cfg.launch.clone(), cfg.attach.command.clone())
+        .with_skills(cfg.skills.plugin_dirs.clone())
         .with_sync(sync.clone())
         .with_workspace(workspace.clone()),
         rx,
@@ -489,6 +493,11 @@ struct Actor {
     /// they were last read.
     dirs: BTreeMap<String, Vec<String>>,
     dirs_at: i64,
+    /// The skills last reported (`ToHub::Skills`), when they were read, and
+    /// the plugin directories sessions start with (`[skills] plugin_dirs`).
+    skills: Vec<Skill>,
+    skills_at: i64,
+    plugin_dirs: Vec<PathBuf>,
     /// The sync thread, when `[sync]` is on.
     sync: Option<SyncHandle>,
     /// The workspace thread, when `[workspace]` is on.
@@ -549,6 +558,9 @@ impl Actor {
             attach: Vec::new(),
             dirs: BTreeMap::new(),
             dirs_at: 0,
+            skills: Vec::new(),
+            skills_at: 0,
+            plugin_dirs: Vec::new(),
             sync: None,
             workspace: None,
             interrupts: HashMap::new(),
@@ -602,9 +614,33 @@ impl Actor {
         }
     }
 
+    /// Tells the hub which skills Claude Code loads here: always after a
+    /// welcome, else when they changed, read at most every five minutes.
+    fn report_skills(&mut self, force: bool) {
+        let now = now_ms();
+        if !force && now - self.skills_at < SKILLS_EVERY_MS {
+            return;
+        }
+        self.skills_at = now;
+        let skills = skills::list(
+            &crate::sync::collector::default_root(),
+            &self.workspaces,
+            &self.plugin_dirs,
+        );
+        if force || skills != self.skills {
+            self.skills = skills.clone();
+            self.to_hub(ToHub::Skills { skills });
+        }
+    }
+
     fn with_commands(mut self, launch: Launch, attach: Vec<String>) -> Self {
         self.launch = launch;
         self.attach = attach;
+        self
+    }
+
+    fn with_skills(mut self, plugin_dirs: Vec<PathBuf>) -> Self {
+        self.plugin_dirs = plugin_dirs;
         self
     }
 
@@ -900,6 +936,7 @@ impl Actor {
                 self.web_url = web_url;
                 self.workspaces = Workspaces::from_entries(&workspaces);
                 self.report_dirs(true);
+                self.report_skills(true);
             }
             ToCollector::Notes { workspace, notes } => {
                 self.notes.insert(
@@ -1132,6 +1169,7 @@ async fn run_actor(mut a: Actor, mut rx: mpsc::Receiver<LocalCmd>) {
                     .collect();
                 if a.connected {
                     a.report_dirs(false);
+                    a.report_skills(false);
                 }
                 let dead: Vec<u32> = a
                     .sessions

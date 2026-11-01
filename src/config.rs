@@ -42,6 +42,7 @@ pub struct CollectorConfig {
     pub launch: Launch,
     pub telemetry: Telemetry,
     pub usage: Usage,
+    pub skills: Skills,
     pub queue: Queue,
     pub inject: Inject,
     pub sync: Sync,
@@ -327,6 +328,16 @@ pub struct Usage {
     /// `-p /usage` ones. Empty turns the poll off.
     pub command: Vec<String>,
     pub interval_secs: u64,
+}
+
+/// What the panel's composer offers after a `/`: the collector reports the
+/// skills Claude Code loads on this machine.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Skills {
+    /// Plugin directories sessions are started with (`--plugin-dir`), whose
+    /// `skills/*/SKILL.md` count as `<plugin>:<skill>`.
+    pub plugin_dirs: Vec<PathBuf>,
 }
 
 /// Which prompts and turns notify the phone (through Web Push, `[push]`),

@@ -50,6 +50,9 @@ lines; the transcript format is never parsed.
   sessions, and `claude -p /usage` every 10 minutes for the per-model
   weekly limits the statusline lacks (safe mode: no model request, no
   hooks, nothing saved; about a second of CPU).
+- Reads which skills Claude Code loads on the machine (the user's, the
+  plugins', each workspace's) every five minutes and tells the hub when
+  they change, for the composer's `/` menu.
 - Reads each session's git branch from `.git/HEAD` (worktrees included)
   without running git, and its process tree's CPU and memory (PSS) from
   `/proc` every 5 s.
@@ -88,4 +91,5 @@ collectors are upgraded together. The state sync uses plain HTTP routes
 under `/sync/` with the collector's token; the workspace sync uses git
 smart HTTP under `/git/` with the same token (`git http-backend` behind
 the hub) and carries its configuration, unit states and conflict
-resolutions over the WebSocket (protocol 8).
+resolutions over the WebSocket (protocol 8). The collectors' skill reports
+came with protocol 11.

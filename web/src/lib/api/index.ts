@@ -35,7 +35,8 @@ import type {
 	SyncStats,
 	SyncView,
 	Token,
-	Written
+	Written,
+	Skill
 } from './types';
 
 export type { Unauthorized } from './client';
@@ -81,6 +82,10 @@ export const startLaunch = (body: LaunchBody) => postJson<{ launch: Launch }>('l
 
 /** Connected hosts, their workspaces and the projects with notes and a directory there. */
 export const fetchTargets = () => getJson<{ hosts: LaunchTarget[] }>('launch-targets');
+
+/** The skills a composer offers after `/`: the host's and the workspace's. */
+export const fetchSkills = (host: string, workspace: string | null) =>
+	getJson<{ skills: Skill[] }>(`skills${query({ host, workspace })}`);
 
 export const fetchLaunch = (id: string) =>
 	getJson<{ launch: Launch }>(`launches/${encodeURIComponent(id)}`);

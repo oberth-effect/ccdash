@@ -148,6 +148,7 @@ pub async fn serve(
         .route("/sessions/{id}/open", post(open))
         .route("/launches", post(launch))
         .route("/launch-targets", get(launch_targets))
+        .route("/skills", get(skills))
         .route("/launches/{id}", get(launch_of))
         .route("/prompts", get(prompts))
         .route("/history", get(history))
@@ -629,6 +630,38 @@ async fn launch(
 /// directory they have, and the projects with notes and a directory there.
 async fn launch_targets(State(app): State<App>) -> Result<Json<Value>, ApiError> {
     Ok(Json(json!({ "hosts": targets_of(&app).await? })))
+}
+
+#[derive(Deserialize)]
+struct SkillsQuery {
+    host: String,
+    /// The session's workspace; without one only the host's own skills.
+    workspace: Option<String>,
+}
+
+/// What `/` offers in a composer writing to a session on `host` in
+/// `workspace`: the host's user and plugin skills plus that workspace's.
+async fn skills(
+    State(app): State<App>,
+    Query(query): Query<SkillsQuery>,
+) -> Result<Json<Value>, ApiError> {
+    let all = app.hub.host_skills(&query.host).await?;
+    let workspace = query.workspace.as_deref().filter(|w| !w.is_empty());
+    Ok(Json(json!({ "skills": skills_for(all, workspace) })))
+}
+
+/// The host's skills for one workspace: other workspaces' drop, the rest
+/// stays, sorted by command.
+fn skills_for(all: Vec<crate::model::Skill>, workspace: Option<&str>) -> Vec<crate::model::Skill> {
+    let mut skills: Vec<_> = all
+        .into_iter()
+        .filter(|s| match s.scope {
+            crate::model::SkillScope::Workspace => s.workspace.as_deref() == workspace,
+            crate::model::SkillScope::User | crate::model::SkillScope::Plugin => true,
+        })
+        .collect();
+    skills.sort();
+    skills
 }
 
 async fn targets_of(app: &App) -> Result<Vec<LaunchTarget>, ApiError> {
@@ -2182,5 +2215,41 @@ mod tests {
         assert_eq!(who(addr, Some(secret)).await.0, 401);
         drop(store);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod skills_tests {
+    use super::skills_for;
+    use crate::model::{Skill, SkillScope};
+
+    fn skill(command: &str, scope: SkillScope, workspace: Option<&str>) -> Skill {
+        Skill {
+            command: command.into(),
+            description: String::new(),
+            scope,
+            workspace: workspace.map(str::to_owned),
+        }
+    }
+
+    #[test]
+    fn a_composer_sees_its_workspace_s_skills_only() {
+        let all = vec![
+            skill("sys-operativa", SkillScope::Workspace, Some("meteopress")),
+            skill("retro", SkillScope::User, None),
+            skill("ccdash:wrap-up", SkillScope::Plugin, None),
+            skill("nixvim", SkillScope::Workspace, Some("tsandrini")),
+        ];
+        let names = |ws: Option<&str>| -> Vec<String> {
+            skills_for(all.clone(), ws)
+                .into_iter()
+                .map(|s| s.command)
+                .collect()
+        };
+        assert_eq!(
+            names(Some("meteopress")),
+            ["ccdash:wrap-up", "retro", "sys-operativa"]
+        );
+        assert_eq!(names(None), ["ccdash:wrap-up", "retro"]);
     }
 }

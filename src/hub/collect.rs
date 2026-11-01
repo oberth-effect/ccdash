@@ -229,6 +229,7 @@ fn command(host: &str, msg: ToHub) -> Option<Cmd> {
         },
         ToHub::Interrupted { session, at } => Cmd::Interrupted { host, session, at },
         ToHub::Dirs { dirs } => Cmd::Dirs { host, dirs },
+        ToHub::Skills { skills } => Cmd::Skills { host, skills },
         ToHub::Sync { status } => Cmd::SyncStatus { host, status },
         ToHub::SyncResolved { id, error, copy } => Cmd::SyncResolved {
             host,

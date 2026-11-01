@@ -1,10 +1,22 @@
+<script module lang="ts">
+	import type { Skill } from '#lib/api/index.js';
+
+	/** Skills per host and workspace, shared by every field, kept five minutes. */
+	const skillCache: Record<string, { at: number; skills: Skill[] }> = {};
+	const SKILLS_TTL = 5 * 60_000;
+	/** How many skills the `/` menu shows at once. */
+	const SLASH_ROWS = 8;
+</script>
+
 <script lang="ts">
 	// A prompt: the textarea and its toolbar, shared by the session
 	// composer and the start sheet. Enter submits on the desktop
 	// (Shift+Enter breaks); on touch Enter is a newline and the buttons
 	// submit. Up and down walk the prompt history; the clock button opens
 	// it with search. Templates, `[[` for a note link, a code fence around
-	// the selection, a markdown preview.
+	// the selection, a markdown preview. A message that starts with `/`
+	// opens the skills of the field's host and workspace, as the terminal
+	// does; arrows, Enter, Tab or a tap complete one.
 	import type { Snippet } from 'svelte';
 	import ChevronDownIcon from '@lucide/svelte/icons/chevron-down';
 	import CodeIcon from '@lucide/svelte/icons/code';
@@ -13,7 +25,7 @@
 	import LinkIcon from '@lucide/svelte/icons/link';
 	import { marked } from 'marked';
 	import { Unauthorized } from '#lib/api/client.js';
-	import type { Prompt } from '#lib/api/index.js';
+	import { fetchSkills, type Prompt } from '#lib/api/index.js';
 	import { Button } from '#lib/components/ui/button/index.js';
 	import * as DropdownMenu from '#lib/components/ui/dropdown-menu/index.js';
 	import * as Sheet from '#lib/components/ui/sheet/index.js';
@@ -28,6 +40,8 @@
 		prompts,
 		historyNote,
 		session,
+		host,
+		workspace = null,
 		placeholder,
 		label = 'Prompt',
 		disabled = false,
@@ -41,6 +55,9 @@
 		historyNote: string;
 		/** The session the field writes to: other sessions' prompts are marked. */
 		session?: string;
+		/** Whose skills `/` offers: the machine the session runs on, its workspace. */
+		host?: string;
+		workspace?: string | null;
 		placeholder: string;
 		label?: string;
 		disabled?: boolean;
@@ -60,7 +77,30 @@
 	let cursor = $state(-1);
 	let stash = '';
 
+	let skills = $state<Skill[] | null>(null);
+	/** Escape closed the menu; typing opens it again. */
+	let dismissed = $state(false);
+	let pick = $state(0);
+
 	const touch = () => matchMedia('(pointer: coarse)').matches;
+	/** What follows a leading slash while nothing else was typed; else null. */
+	const slash = $derived(/^\/(\S*)$/.exec(text)?.[1] ?? null);
+	const choices = $derived.by(() => {
+		if (slash === null || dismissed || !skills) return [];
+		const q = slash.toLowerCase();
+		const starts = skills.filter((s) => s.command.toLowerCase().startsWith(q));
+		const within = skills.filter(
+			(s) => !s.command.toLowerCase().startsWith(q) && s.command.toLowerCase().includes(q)
+		);
+		return [...starts, ...within].slice(0, SLASH_ROWS);
+	});
+	$effect(() => {
+		if (slash !== null && host) loadSkills();
+	});
+	$effect(() => {
+		void choices.length;
+		pick = 0;
+	});
 	const filtered = $derived(
 		history.filter(
 			(p) => !historyQuery.trim() || p.text.toLowerCase().includes(historyQuery.toLowerCase())
@@ -102,6 +142,33 @@
 			historyLoaded = false;
 			if (e instanceof Unauthorized) live.needToken = true;
 		}
+	}
+
+	async function loadSkills() {
+		if (!host) return;
+		const key = `${host}\n${workspace ?? ''}`;
+		const hit = skillCache[key];
+		if (hit && Date.now() - hit.at < SKILLS_TTL) {
+			skills = hit.skills;
+			return;
+		}
+		try {
+			const { skills: list } = await fetchSkills(host, workspace ?? null);
+			skillCache[key] = { at: Date.now(), skills: list };
+			skills = list;
+		} catch (e) {
+			if (e instanceof Unauthorized) live.needToken = true;
+		}
+	}
+
+	function useSkill(s: Skill) {
+		text = `/${s.command} `;
+		dismissed = true;
+		requestAnimationFrame(() => {
+			area?.focus();
+			area?.setSelectionRange(text.length, text.length);
+			grow();
+		});
 	}
 
 	function insert(snippet: string, select?: [number, number]) {
@@ -153,6 +220,26 @@
 
 	function onkeydown(event: KeyboardEvent) {
 		if (event.isComposing) return;
+		if (choices.length) {
+			if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+				event.preventDefault();
+				const step = event.key === 'ArrowDown' ? 1 : choices.length - 1;
+				pick = (pick + step) % choices.length;
+				return;
+			}
+			if (event.key === 'Enter' || event.key === 'Tab') {
+				event.preventDefault();
+				useSkill(choices[pick]);
+				return;
+			}
+			if (event.key === 'Escape') {
+				// NOTE: a dialog around the field closes on a document-level Escape
+				event.preventDefault();
+				event.stopPropagation();
+				dismissed = true;
+				return;
+			}
+		}
 		if (event.key === 'Enter' && !event.shiftKey) {
 			if (touch() && !event.ctrlKey && !event.metaKey) return;
 			event.preventDefault();
@@ -209,6 +296,7 @@
 		bind:value={text}
 		oninput={() => {
 			cursor = -1;
+			dismissed = false;
 			grow();
 		}}
 		{onkeydown}
@@ -220,6 +308,38 @@
 		class="min-h-9 w-full resize-none rounded-md border bg-background px-3 py-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring/50 {preview
 			? 'hidden'
 			: ''}"></textarea>
+	{#if choices.length}
+		<ul
+			role="listbox"
+			aria-label="Skills"
+			class="max-h-64 overflow-auto rounded-md border bg-popover text-sm shadow-md"
+		>
+			{#each choices as s, i (s.command + (s.workspace ?? ''))}
+				<li role="option" aria-selected={i === pick}>
+					<button
+						type="button"
+						tabindex="-1"
+						class="flex w-full flex-col items-start gap-0.5 px-3 py-1.5 text-left hover:bg-accent {i ===
+						pick
+							? 'bg-accent'
+							: ''}"
+						onmousedown={(e) => e.preventDefault()}
+						onclick={() => useSkill(s)}
+					>
+						<span class="flex w-full items-baseline gap-2">
+							<span class="font-medium">/{s.command}</span>
+							{#if s.scope !== 'user'}
+								<span class="ml-auto text-xs text-muted-foreground">{s.scope}</span>
+							{/if}
+						</span>
+						{#if s.description}
+							<span class="line-clamp-1 text-xs text-muted-foreground">{s.description}</span>
+						{/if}
+					</button>
+				</li>
+			{/each}
+		</ul>
+	{/if}
 	<div class="flex flex-wrap items-center gap-1">
 		<Button
 			variant="ghost"

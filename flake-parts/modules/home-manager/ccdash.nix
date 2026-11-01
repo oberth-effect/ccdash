@@ -487,6 +487,8 @@ in
         ];
         # NOTE: the real binary, not the channel wrapper; ccdash adds `-p /usage`
         usage.command = mkDefault [ (getExe claudeCode.package) ];
+        # NOTE: the composer's `/` menu lists the plugin's skills only through this
+        skills.plugin_dirs = mkDefault (optionals channel.enable [ pluginDir ]);
         # NOTE: the wrapper passes `--bg` through without the plugin; ccdash adds `--channels`
         launch = {
           command = mkDefault (

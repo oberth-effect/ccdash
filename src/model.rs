@@ -507,6 +507,35 @@ pub struct TargetWorkspace {
     pub projects: Vec<String>,
 }
 
+/// A slash command a session on a host can run: a skill or command Claude
+/// Code loads from the user's, a plugin's or a workspace's directories, as
+/// the collector found it (`collector::skills`). The composer offers them
+/// after a `/`.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, TS)]
+#[ts(export_to = "types.ts")]
+pub struct Skill {
+    /// What follows the slash: `name`, or `plugin:name`.
+    pub command: String,
+    pub description: String,
+    pub scope: SkillScope,
+    /// The workspace, for `Workspace` scope.
+    pub workspace: Option<String>,
+}
+
+/// Where a skill comes from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, TS)]
+#[ts(export_to = "types.ts")]
+#[serde(rename_all = "snake_case")]
+pub enum SkillScope {
+    /// `~/.claude/skills`, `~/.claude/commands`.
+    User,
+    /// A plugin Claude Code loads: inline (`--plugin-dir`), a skills
+    /// directory, a marketplace, the account's synced skills.
+    Plugin,
+    /// `<workspace>/.claude/skills`, `<workspace>/.claude/commands`.
+    Workspace,
+}
+
 /// A session the panel asked a host to start (or continue).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export_to = "types.ts")]
