@@ -6,7 +6,7 @@
 	import type { Lane, Session } from '#lib/api/types.js';
 	import { fmtBytes, fmtDuration, fmtUsd, known, plain, plural, toolTitle } from '#lib/format.js';
 	import { live } from '#lib/live/store.svelte.js';
-	import { children, claimPaths, isAgent, label, shown } from '#lib/session.js';
+	import { children, claimPaths, isAgent, label, quietFor, shown } from '#lib/session.js';
 	import Clock from './Clock.svelte';
 	import Meter from './Meter.svelte';
 	import SessionActions from './SessionActions.svelte';
@@ -22,6 +22,7 @@
 
 	const parent = $derived(s.parent ? live.sessions.get(s.parent) : undefined);
 	const working = $derived(s.activity === 'working');
+	const quiet = $derived(quietFor(s, live.now));
 	const said = $derived.by((): [string, string] | null => {
 		const [who, text] =
 			working && s.message
@@ -67,7 +68,12 @@
 	>
 		<span class="flex items-center justify-between gap-2 pr-7">
 			<StateBadge activity={shown(s)} />
-			<Clock since={s.activity_since} class="text-xs" />
+			{#if quiet !== null}
+				<span class="text-xs font-medium text-warning" title="No hook for this long"
+					>quiet {fmtDuration(quiet).split(' ')[0]}</span
+				>
+			{/if}
+			<Clock since={s.activity_since} class="ml-auto text-xs" />
 		</span>
 		<span class="truncate font-medium">{label(s)}</span>
 		<Where session={s} />

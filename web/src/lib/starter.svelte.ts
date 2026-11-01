@@ -1,5 +1,6 @@
 // The start sheet's state: opened from Now (the scope's workspace), a
-// project page (its project) or an ended session's page (continuing it).
+// project page (its project), an ended session's page (continuing it) or
+// an open issue (a session to work on it).
 
 import type { Session } from './api/types';
 
@@ -9,6 +10,8 @@ export type StartPreset = {
 	project?: string | null;
 	/** The ended session to continue: its host, workspace and project. */
 	resume?: Session;
+	/** The open issue the session is for: it claims it when it reports. */
+	issue?: { slug: string; title: string };
 };
 
 class Starter {

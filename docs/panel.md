@@ -22,7 +22,9 @@ links can be shared and the back button works.
   reply) and **Resolved** and **Kill** at hand. Every session that needs you
   or is working shows what you asked, what Claude last said, its last steps
   with the running one under them (failures in red with their error), tasks,
-  subagents, the files of the turn and its numbers. The other open sessions
+  subagents, the files of the turn and its numbers. A working session that
+  has sent no hook for 10 minutes (30 while a tool runs) says "quiet" with how
+  long: most likely a hung command or a dead process. The other open sessions
   follow in a line each. On wide screens a column beside them holds the
   [limits](#limits-on-now), the system (machines and their link, open issues,
   the workspace sync, Claude's state) and the last progress across projects
@@ -105,6 +107,20 @@ place; **Open on** and **Resolved** sit beside it, the other actions in its
 Each workspace's projects with their board (open issues), live sessions,
 progress, documents, memories and the note graph, and a reader and editor
 for every note ([knowledge](knowledge.md)).
+
+**Search** is one thing everywhere: the box on Projects and `Ctrl K`, from any
+page. It looks through every note's title, summary and body by word prefix,
+ranked across workspaces (those in the scope), with the matching text shown.
+Narrow it by kind (or `kind:issue` in the text), order it by best match,
+newest or most recalled, and leave out retired notes, which otherwise come
+after the live ones. `Ctrl K` finds sessions and pages too, and a note opens
+beside the page you are on. Typing `[[` in the composer searches the same way
+and inserts the link.
+
+**Work on this**, on an open issue's card and in the issue itself, opens the
+start sheet with its workspace and project picked and a prompt written, to
+edit. The session claims the issue as soon as it reports, so the card moves
+to In progress with the session on it.
 
 **Progress** is a timeline, newest day first (with its entries, issues and
 sessions counted): each entry with its time, title and first lines, the

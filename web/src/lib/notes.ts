@@ -65,6 +65,10 @@ export const validSlug = (slug: string) => /^[a-z0-9][a-z0-9._-]*$/.test(slug) &
 /** The one line a list shows under the title. */
 export const line = (c: Card) => c.summary || c.excerpt;
 
+/** What a session started for an issue is told; the sheet shows it to edit. */
+export const issuePrompt = (slug: string, title: string) =>
+	`Work on the issue [[${slug}]] ("${title}"). Read it first with \`recall\`, and the notes it links to. It is already claimed for this session; if you claim it again, pass \`issue\` so the board keeps it. If it needs a decision from me, ask before implementing. Log progress on the issue as you go, and close it with \`issue_update\` once the work is done and verified.`;
+
 /** Day key for grouping, local time. */
 export const dayKey = (ts: number) => new Date(ts).toDateString();
 

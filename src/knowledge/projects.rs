@@ -373,9 +373,14 @@ fn working(s: &Session, claimed: bool) -> Working {
 }
 
 /// When an issue was closed: `issue_update` records it; an archive from
-/// the editor leaves the update time.
+/// the editor leaves the update time. A box first imported as already
+/// ticked has no such moment: its update time is the plan file's, which
+/// would fill the board's Done column.
 fn closed_at(n: &Note) -> i64 {
-    n.extra["closed_at"].as_i64().unwrap_or(n.updated_at)
+    let imported_closed = n.version == 1 && n.updated_by.as_deref() == Some("import");
+    n.extra["closed_at"]
+        .as_i64()
+        .unwrap_or(if imported_closed { 0 } else { n.updated_at })
 }
 
 fn notes(conn: &Connection, workspace: &str, statuses: &[Status]) -> Result<Vec<Note>> {
@@ -557,6 +562,7 @@ mod tests {
                 body: None,
                 priority: None,
                 comment: None,
+                project: None,
             },
             now - 500,
         )
@@ -637,6 +643,7 @@ mod tests {
                     body: None,
                     priority: None,
                     comment: Some("a note".into()),
+                    project: None,
                 },
                 at,
             )
@@ -646,6 +653,21 @@ mod tests {
         comment(&panel, Some("panel"), now - 3_600_000, None);
         comment(&done, Some("s1"), now - DAY_MS, Some("closed"));
         comment(&old_done, Some("s1"), now - 8 * DAY_MS, Some("closed"));
+        let ticked = crate::knowledge::Upsert {
+            slug: "ticked".into(),
+            kind: NoteKind::Issue,
+            project: Some("repo".into()),
+            title: "A box already ticked in the plan".into(),
+            summary: None,
+            status: Status::Archived,
+            extra: json!({}),
+            body: "done long ago".into(),
+            links: Vec::new(),
+            created_at: Some(now - DAY_MS),
+            updated_at: Some(now - DAY_MS),
+            verified: false,
+        };
+        crate::knowledge::upsert(&conn, "ws", &ticked, Some("import"), now - DAY_MS).unwrap();
         apply(
             &conn,
             "ws",
@@ -712,7 +734,7 @@ mod tests {
             !by_slug[panel.as_str()].in_progress,
             "the owner's edits do not count"
         );
-        assert_eq!(repo.closed.len(), 1);
+        assert_eq!(repo.closed.len(), 1, "not the box imported as ticked");
         assert_eq!(repo.closed[0].card.slug, done);
         assert_eq!(repo.closed[0].closed_at, Some(now - DAY_MS));
         assert!(!repo.closed[0].in_progress);
@@ -743,7 +765,7 @@ mod tests {
         assert_eq!(graph.edges.len(), 2, "progress relates to its issue");
         assert!(graph.edges.iter().all(|e| e.kind == LinkKind::Relates));
         let all = graph_all(&conn);
-        assert_eq!(all.nodes.len(), 11);
+        assert_eq!(all.nodes.len(), 12);
         assert_eq!(all.nodes[0].slug, "plan", "oldest first");
         assert!(all.nodes.iter().any(|n| n.slug == old_done));
     }

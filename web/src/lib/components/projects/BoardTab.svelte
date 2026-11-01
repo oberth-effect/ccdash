@@ -1,7 +1,7 @@
 <script lang="ts">
 	// The board: Open (by priority), In progress, Done (last 7 days). No
-	// drag and drop: the state derives from what sessions do; only Close
-	// and Reopen are the owner's.
+	// drag and drop: the state derives from what sessions do; Close, Reopen
+	// and starting a session on an issue are the owner's.
 	import type { Issue } from '#lib/api/types.js';
 	import { Unauthorized } from '#lib/api/client.js';
 	import { noteOp } from '#lib/api/index.js';
@@ -11,6 +11,7 @@
 	import { PRIORITY_RANK } from '#lib/notes.js';
 	import { notePanel } from '#lib/notepanel.svelte.js';
 	import { projects } from '#lib/projects.svelte.js';
+	import WorkOnIssue from './WorkOnIssue.svelte';
 
 	let {
 		ws,
@@ -104,6 +105,8 @@
 									: ''}</span
 							>
 						</a>
+					{:else if issue.status !== 'archived'}
+						<WorkOnIssue {ws} {issue} />
 					{/if}
 					<Button
 						variant="ghost"

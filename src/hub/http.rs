@@ -35,13 +35,13 @@ use axum::{
 use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::{net::TcpListener, sync::broadcast};
-use tokio_stream::{Stream, StreamExt, wrappers::BroadcastStream};
+use tokio_stream::{StreamExt, wrappers::BroadcastStream};
 use tracing::warn;
 use ts_rs::TS;
 
 use super::{
     collect::{self, Tokens},
-    core::{Cmd, Dirs, Hub, LaunchReq},
+    core::{Cmd, Dirs, Hub, LaunchIssue, LaunchReq},
     web,
 };
 use crate::{
@@ -516,6 +516,11 @@ pub(crate) struct LaunchBody {
     #[serde(default)]
     #[ts(optional)]
     resume: Option<String>,
+    /// An open issue of the workspace the session is started for: it
+    /// claims it as soon as it reports, so the board shows it working.
+    #[serde(default)]
+    #[ts(optional)]
+    issue: Option<String>,
 }
 
 /// Starts a background session at the workspace's directory under a known
@@ -610,6 +615,10 @@ async fn launch(
             }
         }
     };
+    let issue = match &body.issue {
+        Some(slug) => Some(open_issue(&app, &body.workspace, slug).await?),
+        None => None,
+    };
     let launch = app
         .hub
         .launch(LaunchReq {
@@ -621,6 +630,7 @@ async fn launch(
             model,
             permission_mode,
             resume,
+            issue,
         })
         .await?
         .map_err(|e| ApiError(StatusCode::CONFLICT, e))?;
@@ -937,6 +947,28 @@ async fn revoke(State(app): State<App>, Path(id): Path<i64>) -> Result<Json<Valu
     ))
 }
 
+/// The open issue a launch names; anything else is refused before the
+/// session starts, which would cost a run.
+async fn open_issue(app: &App, workspace: &str, slug: &str) -> Result<LaunchIssue, ApiError> {
+    let store = app.store.clone();
+    let (ws, wanted) = (workspace.to_owned(), slug.to_owned());
+    let note = tokio::task::spawn_blocking(move || knowledge::get(&store.reader()?, &ws, &wanted))
+        .await
+        .map_err(anyhow::Error::from)??
+        .filter(|n| n.kind == NoteKind::Issue)
+        .ok_or_else(|| ApiError(StatusCode::NOT_FOUND, format!("no issue {slug}")))?;
+    if !matches!(note.status, Status::Active | Status::Stale) {
+        return Err(ApiError(
+            StatusCode::CONFLICT,
+            format!("{slug} is already closed"),
+        ));
+    }
+    Ok(LaunchIssue {
+        slug: note.slug,
+        title: note.title,
+    })
+}
+
 /// Time range and workspace of a history or analytics request.
 #[derive(Deserialize)]
 struct RangeQuery {
@@ -1037,10 +1069,7 @@ async fn limits(State(app): State<App>) -> Result<Json<LimitTracks>, ApiError> {
     Ok(Json(tracks))
 }
 
-async fn stream(
-    State(app): State<App>,
-    Extension(who): Extension<Auth>,
-) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+async fn stream(State(app): State<App>, Extension(who): Extension<Auth>) -> impl IntoResponse {
     let updates = BroadcastStream::new(app.hub.subscribe());
     let first = app
         .hub
@@ -1052,7 +1081,9 @@ async fn stream(
         Ok(update) => Event::default().event("update").json_data(update).ok(),
         Err(_) => Some(Event::default().event("lagged").data("")),
     });
-    let events = tokio_stream::iter(first).chain(updates).map(Ok);
+    let events = tokio_stream::iter(first)
+        .chain(updates)
+        .map(Ok::<_, Infallible>);
     let mut revoked = app.revoked.subscribe();
     let signed_out = async move {
         if let Auth::Device(id) = who {
@@ -1067,8 +1098,12 @@ async fn stream(
         }
         std::future::pending().await
     };
-    Sse::new(futures_util::StreamExt::take_until(events, signed_out))
-        .keep_alive(KeepAlive::new().interval(Duration::from_secs(20)))
+    // NOTE: Sse says `no-cache`, which leaves it in the HTTP cache: see `store.svelte.ts`
+    (
+        [(header::CACHE_CONTROL, "no-store")],
+        Sse::new(futures_util::StreamExt::take_until(events, signed_out))
+            .keep_alive(KeepAlive::new().interval(Duration::from_secs(20))),
+    )
 }
 
 // --- knowledge --------------------------------------------------------------
@@ -1187,42 +1222,41 @@ async fn notes(
     let store = app.store.clone();
     let hits = tokio::task::spawn_blocking(move || -> Result<Vec<knowledge::Hit>> {
         let conn = store.reader()?;
+        if let Some(text) = query.q.as_deref().filter(|q| !q.trim().is_empty()) {
+            return knowledge::search_all(
+                &conn,
+                &names,
+                &statuses,
+                &knowledge::Query {
+                    text: Some(text.to_owned()),
+                    kinds,
+                    project: query.project.clone(),
+                    limit: Some(limit),
+                    slug: None,
+                },
+            );
+        }
         let mut hits = Vec::new();
         for ws in &names {
-            match query.q.as_deref().filter(|q| !q.trim().is_empty()) {
-                Some(text) => hits.extend(knowledge::search(
+            hits.extend(
+                knowledge::list(
                     &conn,
                     ws,
-                    &knowledge::Query {
-                        text: Some(text.to_owned()),
-                        kinds: kinds.clone(),
-                        project: query.project.clone(),
-                        limit: Some(limit.min(50)),
-                        slug: None,
+                    &Filter {
+                        kinds: &kinds,
+                        statuses: &statuses,
+                        project: query.project.as_deref(),
+                        limit,
                     },
-                )?),
-                None => hits.extend(
-                    knowledge::list(
-                        &conn,
-                        ws,
-                        &Filter {
-                            kinds: &kinds,
-                            statuses: &statuses,
-                            project: query.project.as_deref(),
-                            limit,
-                        },
-                    )?
-                    .into_iter()
-                    .map(|card| knowledge::Hit {
-                        snippet: card.excerpt.clone(),
-                        card,
-                    }),
-                ),
-            }
+                )?
+                .into_iter()
+                .map(|card| knowledge::Hit {
+                    snippet: card.excerpt.clone(),
+                    card,
+                }),
+            );
         }
-        if query.q.is_none() {
-            hits.sort_by_key(|a| std::cmp::Reverse(a.card.updated_at));
-        }
+        hits.sort_by_key(|a| std::cmp::Reverse(a.card.updated_at));
         hits.truncate(limit);
         Ok(hits)
     })

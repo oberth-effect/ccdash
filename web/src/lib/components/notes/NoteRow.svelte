@@ -1,6 +1,7 @@
 <script lang="ts">
 	// A note in a list: kind, title, where, status, one line. A button when
-	// it opens the panel, a link otherwise.
+	// it opens the panel, a link with `href`, plain content inside a list
+	// item that handles the picking itself (the palette's).
 	import type { Card } from '#lib/api/types.js';
 	import { fmtStamp } from '#lib/format.js';
 	import { line } from '#lib/notes.js';
@@ -65,7 +66,9 @@
 	{/if}
 {/snippet}
 
-{#if onclick}
+{#if !onclick && !href}
+	<span class="flex w-full min-w-0 flex-col gap-0.5 text-left text-sm">{@render inner()}</span>
+{:else if onclick}
 	<button
 		type="button"
 		class="flex w-full flex-col gap-0.5 px-3 py-2 text-left text-sm hover:bg-accent/40"

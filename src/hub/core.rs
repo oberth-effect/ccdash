@@ -440,12 +440,25 @@ pub struct LaunchReq {
     pub model: Option<String>,
     pub permission_mode: Option<String>,
     pub resume: Option<String>,
+    pub issue: Option<LaunchIssue>,
 }
+
+/// The open issue a session is started for.
+#[derive(Debug, Clone)]
+pub struct LaunchIssue {
+    pub slug: String,
+    pub title: String,
+}
+
+/// Room for an issue's title in a claim's `what`.
+const MAX_CLAIM_TITLE: usize = 150;
 
 /// A launch and what the hub needs to finish it.
 struct Slot {
     launch: Launch,
     cwd: String,
+    /// What the session claims when it reports.
+    issue: Option<LaunchIssue>,
     /// The id `claude --bg` printed, until the session shows up.
     short: Option<String>,
     /// The sleeping session this launch wakes: a failure lands on it.
@@ -2419,8 +2432,8 @@ impl Core {
                 }
                 Some((id, host))
             }
-            None if replayed => None,
-            None => return answer(Err(format!("no session matches {to:?}"))),
+            // NOTE: right after a hub restart a live session is only in the store
+            None => None,
         };
         let out = Stored {
             workspace: c.workspace.clone(),
@@ -2434,18 +2447,23 @@ impl Core {
             (to.to_owned(), self.workspaces.clone(), c.workspace.clone());
         let find = move |conn: &Connection| -> Result<(String, String)> {
             let mut stmt = conn.prepare(
-                "SELECT id, host, cwd FROM sessions WHERE id = ?1 OR id LIKE ?1 || '%' LIMIT 2",
+                "SELECT id, host, cwd, ended_at FROM sessions
+                    WHERE id = ?1 OR id LIKE ?1 || '%' LIMIT 2",
             )?;
-            let rows: Vec<(String, String, String)> = stmt
-                .query_map([&to], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+            type Row = (String, String, String, Option<i64>);
+            let rows: Vec<Row> = stmt
+                .query_map([&to], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?
                 .collect::<rusqlite::Result<_>>()?;
-            let (id, host, cwd) = match rows.as_slice() {
+            let (id, host, cwd, ended) = match rows.as_slice() {
                 [one] => one.clone(),
                 [] => bail!("no session matches {to:?}"),
                 _ => bail!("{to:?} matches more than one session"),
             };
             if workspaces.of(&cwd).as_deref() != Some(workspace.as_str()) {
                 bail!("that session works in another workspace");
+            }
+            if ended.is_some() && !replayed {
+                bail!("that session has ended");
             }
             Ok((id, host))
         };
@@ -2676,6 +2694,7 @@ impl Core {
             Slot {
                 launch: launch.clone(),
                 cwd: req.cwd,
+                issue: req.issue,
                 short: None,
                 wakes: None,
             },
@@ -2729,11 +2748,20 @@ impl Core {
         let woken = slot
             .and_then(|s| s.wakes.clone())
             .filter(|old| old != session);
+        let claim = slot.and_then(|s| s.issue.as_ref()).and_then(|issue| {
+            let what = util::truncate(&issue.title, MAX_CLAIM_TITLE);
+            claims::new(&what, &[], None, Some(&issue.slug), "", "", now_ms())
+                .inspect_err(|e| warn!("claiming {} for {session}: {e}", issue.slug))
+                .ok()
+        });
         let mut fx = Effects::default();
         let known = self.states.get_mut(host).is_some_and(|st| {
             let known = st.set_launched(session, project.as_deref(), &mut fx);
             if let Some(old) = woken.as_deref().filter(|_| known) {
                 st.replaced(old, now_ms(), &mut fx);
+            }
+            if known && claim.is_some() {
+                st.set_claim(session, claim, &mut fx);
             }
             known
         });
@@ -2826,6 +2854,7 @@ impl Core {
             model: None,
             permission_mode: None,
             resume: Some(id.clone()),
+            issue: None,
         })?;
         if let Some(slot) = self.launches.get_mut(&launch.id) {
             slot.wakes = Some(id.clone());
@@ -4057,6 +4086,64 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_launch_for_an_issue_claims_it_when_the_session_reports() {
+        let dir = std::env::temp_dir().join(format!("ccdash-issue-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let store = Store::open(&dir.join("t.db"), 30).unwrap();
+        let hub = Hub::spawn(
+            "hub".into(),
+            "http://hub".into(),
+            Workspaces::new(&["/w".into()], "/home"),
+            store,
+            None,
+            KnowledgeCfg::default(),
+            0,
+            None,
+        );
+        let (tx, _rx) = mpsc::channel(64);
+        hub.send(Cmd::CollectorOpen {
+            host: "navi".into(),
+            conn: 1,
+            terminals: Vec::new(),
+            tx,
+        })
+        .await
+        .unwrap();
+        let launch = hub
+            .launch(LaunchReq {
+                host: "navi".into(),
+                workspace: "w".into(),
+                project: None,
+                cwd: "/w".into(),
+                prompt: "go".into(),
+                model: None,
+                permission_mode: None,
+                resume: None,
+                issue: Some(LaunchIssue {
+                    slug: "w--fix-it".into(),
+                    title: "Fix it".into(),
+                }),
+            })
+            .await
+            .unwrap()
+            .unwrap();
+        let sid = "1c4719e5-9508-461b-b1f4-e7b5a4c26f9d";
+        let start = envelope(
+            Source::Hook,
+            Some(&launch.id),
+            json!({"session_id": sid, "cwd": "/w", "hook_event_name": "SessionStart"}),
+        );
+        hub.send(Cmd::Input("navi".into(), Input::Envelope(start)))
+            .await
+            .unwrap();
+        let claim = hub.resolve(sid).await.unwrap().unwrap().claim.unwrap();
+        assert_eq!(claim.what, "Fix it");
+        assert_eq!(claim.issue.as_deref(), Some("w--fix-it"));
+        assert!(claim.paths.is_empty());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[tokio::test]
     async fn launches_link_their_session_and_stops_answer() {
         let dir = std::env::temp_dir().join(format!("ccdash-launch-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -4080,6 +4167,7 @@ mod tests {
             model: None,
             permission_mode: Some("plan".into()),
             resume: resume.map(str::to_owned),
+            issue: None,
         };
         assert!(
             hub.launch(req(None)).await.unwrap().is_err(),
@@ -4304,6 +4392,89 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(forgotten.activity, Activity::Gone);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_message_finds_a_session_only_the_store_knows_unless_it_ended() {
+        let dir = std::env::temp_dir().join(format!("ccdash-tell-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let store = Store::open(&dir.join("t.db"), 30).unwrap();
+        let rows = store.clone();
+        let hub = Hub::spawn(
+            "hub".into(),
+            "http://hub".into(),
+            Workspaces::new(&["/w".into()], "/home"),
+            store,
+            None,
+            KnowledgeCfg::default(),
+            0,
+            None,
+        );
+        // as after a hub restart: in the table, not yet in the live state
+        let now = now_ms();
+        rows.exec(move |conn: &mut Connection| {
+            conn.execute(
+                "INSERT INTO sessions (id, host, cwd, kind, started_at, ended_at) VALUES
+                    ('2aaa', 'navi', '/w', 'interactive', ?1, NULL),
+                    ('2bbb', 'navi', '/w', 'interactive', ?1, ?1)",
+                [now],
+            )
+        })
+        .await
+        .unwrap()
+        .unwrap();
+        let (tx, mut rx) = mpsc::channel(64);
+        hub.send(Cmd::CollectorOpen {
+            host: "navi".into(),
+            conn: 1,
+            terminals: Vec::new(),
+            tx,
+        })
+        .await
+        .unwrap();
+        let sid = "6c4719e5-9508-461b-b1f4-e7b5a4c26f9d";
+        let start = envelope(
+            Source::Hook,
+            None,
+            json!({"session_id": sid, "cwd": "/w", "hook_event_name": "SessionStart"}),
+        );
+        hub.send(Cmd::Input("navi".into(), Input::Envelope(start)))
+            .await
+            .unwrap();
+        let tell = |id: u64, to: &str| Cmd::Call {
+            host: "navi".into(),
+            id,
+            call: Call::Tell {
+                who: Who {
+                    session: Some(sid.into()),
+                    pid: None,
+                    cwd: None,
+                },
+                to: to.into(),
+                text: "hello".into(),
+            },
+        };
+        let mut answer = async |id: u64, to: &str| {
+            hub.send(tell(id, to)).await.unwrap();
+            match next(
+                &mut rx,
+                |m| matches!(m, ToCollector::Result { id: got, .. } if *got == id),
+            )
+            .await
+            {
+                ToCollector::Result { result, .. } => result,
+                _ => unreachable!(),
+            }
+        };
+        let first = answer(1, "2aaa").await;
+        assert!(matches!(first, Ok(Reply::Sent)), "{first:?}");
+        assert_eq!(
+            answer(2, "2bbb").await.unwrap_err(),
+            "that session has ended"
+        );
+        let unknown = answer(3, "2ccc").await.unwrap_err();
+        assert!(unknown.contains("no session matches"), "{unknown}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

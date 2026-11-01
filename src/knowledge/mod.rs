@@ -448,6 +448,10 @@ pub enum NoteOp {
         /// Appended to the body with a date.
         #[serde(default)]
         comment: Option<String>,
+        /// Moves it to this project; empty makes it workspace-wide.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        project: Option<String>,
     },
     Progress {
         text: String,
@@ -490,7 +494,8 @@ impl NoteOp {
         match self {
             NoteOp::Remember { project, .. }
             | NoteOp::IssueAdd { project, .. }
-            | NoteOp::Progress { project, .. } => project.as_deref(),
+            | NoteOp::IssueUpdate { project, .. }
+            | NoteOp::Progress { project, .. } => project.as_deref().filter(|p| !p.is_empty()),
             _ => None,
         }
     }
@@ -830,7 +835,11 @@ pub fn apply(
             let mut up = Upsert {
                 slug,
                 kind: NoteKind::Memory,
-                project: given.clone().or_else(|| project.map(str::to_owned)),
+                project: match given.as_deref() {
+                    Some("") => None,
+                    Some(p) => Some(p.to_owned()),
+                    None => project.map(str::to_owned),
+                },
                 title: title.trim().to_owned(),
                 summary: summary.clone().map(|s| s.trim().to_owned()),
                 status: status.unwrap_or(Status::Active),
@@ -932,6 +941,7 @@ pub fn apply(
             body,
             priority,
             comment,
+            project: moved,
         } => {
             let old = get(conn, workspace, slug)?
                 .with_context(|| format!("no issue {slug:?} in this workspace"))?;
@@ -967,7 +977,11 @@ pub fn apply(
             let up = Upsert {
                 slug: slug.clone(),
                 kind: NoteKind::Issue,
-                project: old.project.clone(),
+                project: match moved.as_deref() {
+                    None => old.project.clone(),
+                    Some("") => None,
+                    Some(p) => Some(p.to_owned()),
+                },
                 title: title.clone().unwrap_or(old.title.clone()),
                 summary: old.summary.clone(),
                 status,
@@ -1211,9 +1225,8 @@ fn fts_query(text: &str) -> Option<String> {
 /// Full-text search in a workspace, best first; stale notes rank as they
 /// match but say so, retired ones are left out.
 pub fn search(conn: &Connection, workspace: &str, query: &Query) -> Result<Vec<Hit>> {
-    let limit = query.limit.unwrap_or(10).clamp(1, 50) as i64;
-    let kinds = serde_json::to_string(&query.kinds.iter().map(|k| k.name()).collect::<Vec<_>>())?;
-    let Some(match_expr) = query.text.as_deref().and_then(fts_query) else {
+    let limit = query.limit.unwrap_or(10).clamp(1, 50);
+    if query.text.as_deref().and_then(fts_query).is_none() {
         let cards = list(
             conn,
             workspace,
@@ -1221,7 +1234,7 @@ pub fn search(conn: &Connection, workspace: &str, query: &Query) -> Result<Vec<H
                 kinds: &query.kinds,
                 statuses: &[Status::Active, Status::Stale],
                 project: query.project.as_deref(),
-                limit: limit as usize,
+                limit,
             },
         )?;
         return Ok(cards
@@ -1231,22 +1244,51 @@ pub fn search(conn: &Connection, workspace: &str, query: &Query) -> Result<Vec<H
                 card,
             })
             .collect());
+    }
+    let query = Query {
+        limit: Some(limit),
+        ..query.clone()
     };
+    search_all(
+        conn,
+        &[workspace.to_owned()],
+        &[Status::Active, Status::Stale],
+        &query,
+    )
+}
+
+/// Full-text hits over several workspaces and statuses in one ranking, the
+/// live notes ahead of the retired ones. No searchable word, no hits.
+pub fn search_all(
+    conn: &Connection,
+    workspaces: &[String],
+    statuses: &[Status],
+    query: &Query,
+) -> Result<Vec<Hit>> {
+    let Some(match_expr) = query.text.as_deref().and_then(fts_query) else {
+        return Ok(Vec::new());
+    };
+    let limit = query.limit.unwrap_or(10) as i64;
+    let kinds = serde_json::to_string(&query.kinds.iter().map(|k| k.name()).collect::<Vec<_>>())?;
+    let statuses = serde_json::to_string(&statuses.iter().map(|s| s.name()).collect::<Vec<_>>())?;
     let sql = format!(
         "SELECT {cols}, snippet(notes_fts, 2, '[', ']', '…', 20)
             FROM notes_fts JOIN notes ON notes.id = notes_fts.rowid
-            WHERE notes_fts MATCH :q AND notes.workspace = :ws
-            AND notes.status IN ('active', 'stale')
+            WHERE notes_fts MATCH :q
+            AND notes.workspace IN (SELECT value FROM json_each(:workspaces))
+            AND notes.status IN (SELECT value FROM json_each(:statuses))
             AND (:kinds = '[]' OR notes.kind IN (SELECT value FROM json_each(:kinds)))
             AND (:project IS NULL OR notes.project IS :project)
-            ORDER BY bm25(notes_fts, 5.0, 3.0, 1.0) LIMIT :limit",
+            ORDER BY notes.status IN ('archived', 'superseded'), bm25(notes_fts, 5.0, 3.0, 1.0)
+            LIMIT :limit",
         cols = columns("notes")
     );
     let mut stmt = conn.prepare_cached(&sql)?;
     let rows = stmt.query_map(
         rusqlite::named_params! {
             ":q": match_expr,
-            ":ws": workspace,
+            ":workspaces": serde_json::to_string(workspaces)?,
+            ":statuses": statuses,
             ":kinds": kinds,
             ":project": query.project,
             ":limit": limit,
@@ -1938,6 +1980,7 @@ mod tests {
             body: None,
             priority: None,
             comment: Some("done in abc123".into()),
+            project: None,
         };
         let c = apply(&conn, "ws", None, Some("s2"), &close, now + 2000).unwrap();
         assert_eq!(c.status, Status::Archived);
@@ -1951,6 +1994,7 @@ mod tests {
             body: None,
             priority: Some(Priority::Low),
             comment: None,
+            project: None,
         };
         apply(&conn, "ws", None, None, &reopen, now + 3000).unwrap();
         let note = get(&conn, "ws", &w.slug).unwrap().unwrap();
@@ -1971,7 +2015,8 @@ mod tests {
                     title: None,
                     body: None,
                     priority: None,
-                    comment: None
+                    comment: None,
+                    project: None,
                 },
                 now
             )
@@ -2126,6 +2171,118 @@ mod tests {
         assert_eq!(hits.len(), 3, "stale notes stay searchable");
         let ctx = session_start(&cards_of(&conn, "ws"), "ws", None, now).unwrap();
         assert!(ctx.contains("`fresh`") && !ctx.contains("`old`"), "{ctx}");
+    }
+
+    #[test]
+    fn an_empty_project_makes_a_note_workspace_wide() {
+        let conn = db();
+        let remember_in = |project: Option<&str>| NoteOp::Remember {
+            title: "Quirk".into(),
+            body: "text".into(),
+            slug: Some("quirk".into()),
+            project: project.map(str::to_owned),
+            summary: None,
+            supersedes: None,
+            status: None,
+        };
+        let project_of = |slug: &str| get(&conn, "ws", slug).unwrap().unwrap().project;
+        apply(&conn, "ws", None, None, &remember_in(Some("repo")), 1).unwrap();
+        assert_eq!(project_of("quirk").as_deref(), Some("repo"));
+        apply(&conn, "ws", Some("other"), None, &remember_in(None), 2).unwrap();
+        assert_eq!(
+            project_of("quirk").as_deref(),
+            Some("repo"),
+            "a rewrite keeps it"
+        );
+        apply(&conn, "ws", Some("other"), None, &remember_in(Some("")), 3).unwrap();
+        assert_eq!(project_of("quirk"), None, "not even the session's");
+
+        let add = NoteOp::IssueAdd {
+            title: "Bug".into(),
+            body: None,
+            project: Some("repo".into()),
+            priority: None,
+        };
+        let issue = apply(&conn, "ws", None, None, &add, 4).unwrap().slug;
+        let moved = |project: Option<&str>| NoteOp::IssueUpdate {
+            slug: issue.clone(),
+            status: None,
+            title: None,
+            body: None,
+            priority: None,
+            comment: None,
+            project: project.map(str::to_owned),
+        };
+        apply(&conn, "ws", None, None, &moved(None), 5).unwrap();
+        assert_eq!(project_of(&issue).as_deref(), Some("repo"));
+        apply(&conn, "ws", None, None, &moved(Some("other")), 6).unwrap();
+        assert_eq!(project_of(&issue).as_deref(), Some("other"));
+        apply(&conn, "ws", None, None, &moved(Some("")), 7).unwrap();
+        assert_eq!(project_of(&issue), None);
+    }
+
+    #[test]
+    fn a_search_ranks_across_workspaces_and_keeps_retired_notes_last() {
+        let conn = db();
+        let note = |ws: &str, slug: &str, title: &str, body: &str, status: Status| {
+            let up = Upsert {
+                slug: slug.into(),
+                kind: NoteKind::Memory,
+                project: None,
+                title: title.into(),
+                summary: None,
+                status,
+                extra: json!({}),
+                body: body.into(),
+                links: Vec::new(),
+                created_at: None,
+                updated_at: None,
+                verified: false,
+            };
+            upsert(&conn, ws, &up, None, 1).unwrap();
+        };
+        // the title weighs most, so the second workspace holds the best match
+        note("one", "weak", "Other", "smiage once", Status::Active);
+        note("two", "strong", "Smiage", "smiage smiage", Status::Active);
+        note("one", "old", "Smiage notes", "smiage", Status::Archived);
+        let all = ["one".to_owned(), "two".to_owned()];
+        let query = |limit| Query {
+            text: Some("smiage".into()),
+            limit: Some(limit),
+            ..Default::default()
+        };
+        let slugs = |hits: Vec<Hit>| hits.into_iter().map(|h| h.card.slug).collect::<Vec<_>>();
+
+        let live = [Status::Active, Status::Stale];
+        assert_eq!(
+            slugs(search_all(&conn, &all, &live, &query(10)).unwrap()),
+            ["strong", "weak"],
+            "one ranking; archived notes stay out unless asked for"
+        );
+        let every = [Status::Active, Status::Stale, Status::Archived];
+        assert_eq!(
+            slugs(search_all(&conn, &all, &every, &query(10)).unwrap()),
+            ["strong", "weak", "old"],
+            "retired notes come last, however well they match"
+        );
+        assert_eq!(
+            slugs(search_all(&conn, &all, &every, &query(1)).unwrap()),
+            ["strong"],
+            "the limit is on the whole ranking"
+        );
+        assert_eq!(
+            slugs(search_all(&conn, &all[..1], &live, &query(10)).unwrap()),
+            ["weak"]
+        );
+        let punctuation = Query {
+            text: Some("!!".into()),
+            ..query(10)
+        };
+        assert!(
+            search_all(&conn, &all, &every, &punctuation)
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]

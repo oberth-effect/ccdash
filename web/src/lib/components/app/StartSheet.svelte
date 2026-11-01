@@ -3,8 +3,8 @@
 	// the workspace's root, under a project with notes and a directory on
 	// that host) or continues an ended one, on the host it ran on or
 	// another that syncs it: host, workspace and project, the model, the
-	// permission mode, the prompt. Waits for the session to report and
-	// opens its page.
+	// permission mode, the prompt. For an issue the prompt is written
+	// already, to edit. Waits for the session to report and opens its page.
 	import { untrack } from 'svelte';
 	import { goto } from '$app/navigation';
 	import LoaderCircleIcon from '@lucide/svelte/icons/loader-circle';
@@ -23,6 +23,7 @@
 	import PromptField from '#lib/components/session/PromptField.svelte';
 	import { place } from '#lib/format.js';
 	import { live } from '#lib/live/store.svelte.js';
+	import { issuePrompt } from '#lib/notes.js';
 	import { prefs } from '#lib/prefs.svelte.js';
 	import { scope } from '#lib/scope.svelte.js';
 	import { label } from '#lib/session.js';
@@ -58,7 +59,10 @@
 	let error = $state('');
 
 	const resume = $derived(starter.preset.resume);
-	const draftKey = $derived(resume ? `resume:${resume.id}` : 'start');
+	const issue = $derived(starter.preset.issue);
+	const draftKey = $derived(
+		resume ? `resume:${resume.id}` : issue ? `issue:${issue.slug}` : 'start'
+	);
 	const connected = $derived((targets ?? []).map((t) => t.host));
 	const workspacesHere = $derived(targets?.find((t) => t.host === host)?.workspaces ?? []);
 	const names = $derived(workspacesHere.find((w) => w.name === ws)?.projects);
@@ -119,7 +123,8 @@
 	}
 
 	$effect(() => {
-		if (starter.open) text = prefs.draft(draftKey);
+		if (!starter.open) return;
+		text = prefs.draft(draftKey) || (issue ? issuePrompt(issue.slug, issue.title) : '');
 	});
 
 	$effect(() => {
@@ -172,7 +177,8 @@
 				prompt: body,
 				model: model || undefined,
 				permission_mode: mode || undefined,
-				resume: resume?.id
+				resume: resume?.id,
+				issue: issue?.slug
 			});
 			prefs.setStart({ host, model, mode });
 			field?.remember(body);
@@ -197,9 +203,18 @@
 		class="flex max-h-[92vh] flex-col gap-3 overflow-y-auto p-4 sm:max-w-lg"
 	>
 		<Sheet.Header class="p-0 pr-8">
-			<Sheet.Title>{resume ? 'Continue the session' : 'Start a session'}</Sheet.Title>
+			<Sheet.Title
+				>{resume
+					? 'Continue the session'
+					: issue
+						? 'Work on this issue'
+						: 'Start a session'}</Sheet.Title
+			>
 			<Sheet.Description>
-				{#if resume}
+				{#if issue}
+					Starts a session on “{issue.title}”. It claims the issue when it reports, so the board
+					shows it in progress.
+				{:else if resume}
 					Continues “{label(resume)}” in the background on {host || resume.host}, in
 					{place(resume.cwd)}.
 				{:else}

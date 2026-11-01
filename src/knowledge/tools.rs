@@ -66,7 +66,7 @@ pub fn definitions() -> Vec<Value> {
                     "body": string("Markdown. Say what is true, why it matters and how to apply it. Link other notes as [[slug]]."),
                     "summary": string("One line used in indexes and session-start injections; when to recall this."),
                     "slug": slug("Identifier; derived from the title when omitted. Convention: <scope>--<topic>."),
-                    "project": string("Repo directory name this applies to; omit for workspace-wide facts (default: the current project)."),
+                    "project": string("Repo directory name this applies to; omit for workspace-wide facts (default: the current project). An empty string makes an existing memory workspace-wide."),
                     "supersedes": slug("A memory this one replaces; it is retired with a supersedes link."),
                     "status": { "type": "string", "enum": ["active", "archived"], "description": "Use archived to retire a memory that turned out wrong." }
                 }
@@ -100,7 +100,7 @@ pub fn definitions() -> Vec<Value> {
         }),
         json!({
             "name": "issue_update",
-            "description": "Update an issue: close or reopen it, change its title, body or priority, or add a dated comment.",
+            "description": "Update an issue: close or reopen it, change its title, body, priority or project, or add a dated comment.",
             "inputSchema": {
                 "type": "object",
                 "required": ["slug"],
@@ -110,7 +110,8 @@ pub fn definitions() -> Vec<Value> {
                     "title": string("New title."),
                     "body": string("Replacement body (markdown)."),
                     "priority": { "type": "string", "enum": ["low", "normal", "high"] },
-                    "comment": string("Appended to the body with today's date, e.g. what was done or found.")
+                    "comment": string("Appended to the body with today's date, e.g. what was done or found."),
+                    "project": string("Moves it to this project (a repo directory name); an empty string makes it workspace-wide.")
                 }
             }
         }),
@@ -199,6 +200,12 @@ pub fn call(name: &str, args: &Value, who: Who) -> Result<Call> {
             .filter(|s| !s.is_empty())
             .map(str::to_owned)
     };
+    // NOTE: an empty project is an answer, not a missing one: it clears it
+    let clearable = |key: &str| -> Option<String> {
+        args.get(key)
+            .and_then(Value::as_str)
+            .map(|s| s.trim().to_owned())
+    };
     let need = |key: &str| text(key).ok_or_else(|| anyhow::anyhow!("{key} is required"));
     let priority = |key: &str| -> Result<Option<Priority>> {
         match text(key) {
@@ -233,7 +240,7 @@ pub fn call(name: &str, args: &Value, who: Who) -> Result<Call> {
             title: need("title")?,
             body: need("body")?,
             slug: text("slug"),
-            project: text("project"),
+            project: clearable("project"),
             summary: text("summary"),
             supersedes: text("supersedes"),
             status: match text("status") {
@@ -261,6 +268,7 @@ pub fn call(name: &str, args: &Value, who: Who) -> Result<Call> {
             body: text("body"),
             priority: priority("priority")?,
             comment: text("comment"),
+            project: clearable("project"),
         },
         "progress" => NoteOp::Progress {
             text: need("text")?,
@@ -318,7 +326,7 @@ pub fn is_write(call: &Call) -> bool {
 }
 
 /// What the tool answers for a hub reply.
-pub fn text_of(reply: &Reply) -> String {
+pub fn text_of(reply: &Reply, cwd: &str) -> String {
     match reply {
         Reply::Written(w) => written(w),
         Reply::Hits(hits) => hits_text(hits, "the hub"),
@@ -326,7 +334,7 @@ pub fn text_of(reply: &Reply) -> String {
         Reply::Sent => "sent; the session gets it as context with its next prompt".into(),
         Reply::Claimed(Some(c)) => format!(
             "claimed: {}; other sessions of the project see it with their prompts",
-            crate::claims::describe(c, "", crate::util::now_ms())
+            crate::claims::describe(c, cwd, crate::util::now_ms())
         ),
         Reply::Claimed(None) => "released".into(),
         Reply::Imported {
@@ -607,10 +615,21 @@ mod tests {
             kept: false,
         };
         assert_eq!(
-            text_of(&Reply::Written(w)),
+            text_of(&Reply::Written(w), ""),
             "updated: issue `a` (version 3, closed)"
         );
-        assert!(text_of(&Reply::Hits(vec![])).starts_with("no matching"));
-        assert_eq!(text_of(&Reply::Context(None)), "nothing to add");
+        assert!(text_of(&Reply::Hits(vec![]), "").starts_with("no matching"));
+        assert_eq!(text_of(&Reply::Context(None), ""), "nothing to add");
+        let claim = crate::model::Claim {
+            what: "docs".into(),
+            paths: vec!["/w/repo/docs".into()],
+            issue: None,
+            since: 0,
+            until: None,
+        };
+        assert_eq!(
+            text_of(&Reply::Claimed(Some(claim)), "/w"),
+            "claimed: \"docs\" (repo/docs); other sessions of the project see it with their prompts"
+        );
     }
 }

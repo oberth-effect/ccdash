@@ -671,7 +671,12 @@ permission_mode?: string,
 /**
  * An ended session to continue (on its host, in its directory).
  */
-resume?: string, };
+resume?: string, 
+/**
+ * An open issue of the workspace the session is started for: it
+ * claims it as soon as it reports, so the board shows it working.
+ */
+issue?: string, };
 
 /**
  * Where a session can start: a connected host and, per workspace whose
@@ -822,7 +827,11 @@ status: string | null, title: string | null, body: string | null, priority: Prio
 /**
  * Appended to the body with a date.
  */
-comment: string | null, } | { "op": "progress", text: string, issue: string | null, project: string | null, } | { "op": "doc_write", slug: string, title: string | null, body: string, 
+comment: string | null, 
+/**
+ * Moves it to this project; empty makes it workspace-wide.
+ */
+project?: string, } | { "op": "progress", text: string, issue: string | null, project: string | null, } | { "op": "doc_write", slug: string, title: string | null, body: string, 
 /**
  * The version the edit was based on; required for an existing
  * document, refused when it moved on.

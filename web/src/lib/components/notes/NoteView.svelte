@@ -11,7 +11,9 @@
 	import Prose from '#lib/components/session/Prose.svelte';
 	import { fmtDate, fmtStamp, plural } from '#lib/format.js';
 	import { live } from '#lib/live/store.svelte.js';
+	import { notePanel } from '#lib/notepanel.svelte.js';
 	import { priorityOf, projectHref } from '#lib/notes.js';
+	import WorkOnIssue from '#lib/components/projects/WorkOnIssue.svelte';
 	import KindBadge from './KindBadge.svelte';
 	import NoteEditor from './NoteEditor.svelte';
 	import StatusBadge from './StatusBadge.svelte';
@@ -225,6 +227,9 @@
 					>
 				{/if}
 				{#if v.kind === 'issue'}
+					{#if v.status !== 'archived'}
+						<WorkOnIssue {ws} issue={v} size="sm" onstart={() => notePanel.close()} />
+					{/if}
 					<Button size="sm" variant="outline" onclick={toggleClosed} disabled={busy}
 						>{v.status === 'archived' ? 'Reopen' : 'Close'}</Button
 					>

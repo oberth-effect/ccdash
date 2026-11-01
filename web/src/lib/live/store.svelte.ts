@@ -97,7 +97,10 @@ class Live {
 			this.#abort = new AbortController();
 			try {
 				this.setConn('connecting');
-				const res = await api('stream', { signal: this.#abort.signal });
+				// NOTE: a connect in flight is not a stale stream: the watchdog would abort it at its next tick
+				this.#last = Date.now();
+				// NOTE: the HTTP cache may hold a second GET of this URL until the first ends, and a stream never does
+				const res = await api('stream', { signal: this.#abort.signal, cache: 'no-store' });
 				this.setConn('live');
 				delay = 1000;
 				this.#last = Date.now();

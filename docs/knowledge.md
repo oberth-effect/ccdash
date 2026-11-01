@@ -33,7 +33,8 @@ Sessions reach the notes through tools the channel server exposes:
 - A note belongs to a **project** or to the whole workspace. The project
   is a label from a closed set: a directory directly under the workspace
   on some host, or one that already has notes; anything else is refused.
-  A call names it with `project`, else the note takes the session's.
+  A call names it with `project`, else the note takes the session's. An
+  empty `project` on `remember` or `issue_update` makes a note workspace-wide.
 - A session's project is the launch's (the panel), or `claude --project
 <name>` in a terminal (which sets `CCDASH_PROJECT`; the `channel` wrapper
   takes the flag), else the one it `claim`s with `project`, `/ccdash:project

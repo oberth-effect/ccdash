@@ -229,7 +229,7 @@ async fn handle(
                     .call_within(Call::Import { dir, notes }, Duration::from_secs(60))
                     .await?
                 {
-                    Ok(reply) => json!({ "type": "ok", "message": tools::text_of(&reply) }),
+                    Ok(reply) => json!({ "type": "ok", "message": tools::text_of(&reply, "") }),
                     Err(e) => error(e),
                 }
             }
@@ -322,7 +322,10 @@ async fn tool(local: &Local, name: &str, args: &Value, who: Who) -> Result<Value
         return cached(local, &who, call).await;
     }
     match local.call_within(call.clone(), TOOL_WAIT).await? {
-        Ok(reply) => Ok(tool_reply(true, tools::text_of(&reply))),
+        Ok(reply) => Ok(tool_reply(
+            true,
+            tools::text_of(&reply, who.cwd.as_deref().unwrap_or_default()),
+        )),
         Err(e) if write && e == NOT_CONNECTED => {
             local.send(LocalCmd::Queue(call)).await?;
             Ok(tool_reply(
@@ -350,7 +353,7 @@ async fn cached(local: &Local, who: &Who, call: Call) -> Result<Value> {
             format!(
                 "{}
 (from the offline cache; links not shown)",
-                tools::text_of(&reply)
+                tools::text_of(&reply, "")
             ),
         ),
         Err(e) => tool_reply(false, e),

@@ -18,7 +18,7 @@
 		toolTitle
 	} from '#lib/format.js';
 	import { live } from '#lib/live/store.svelte.js';
-	import { children as agentsOf, label, shown } from '#lib/session.js';
+	import { children as agentsOf, label, quietFor, shown } from '#lib/session.js';
 	import { base, family, ICONS, tellStep } from '#lib/steps.js';
 	import Clock from './Clock.svelte';
 	import Meter from './Meter.svelte';
@@ -43,6 +43,7 @@
 	};
 
 	const working = $derived(s.activity === 'working');
+	const quiet = $derived(quietFor(s, live.now));
 	const asked = $derived(plain(s.prompt?.text));
 	const said = $derived(plain(working ? s.message?.text : s.reply?.text));
 	const steps = $derived((s.turn?.steps ?? []).slice(-STEPS));
@@ -80,6 +81,11 @@
 			>{label(s)}</a
 		>
 		<Clock since={s.activity_since} class="shrink-0 text-xs" />
+		{#if quiet !== null}
+			<span class="shrink-0 text-xs font-medium text-warning" title="No hook for this long"
+				>quiet {fmtDuration(quiet).split(' ')[0]}</span
+			>
+		{/if}
 		{#if working}<SessionActions session={s} />{/if}
 	</header>
 	<Where session={s} />

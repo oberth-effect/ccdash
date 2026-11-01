@@ -36,6 +36,18 @@ export const children = (all: Iterable<Session>, s: Session) =>
 export const stub = (s: Session) =>
 	s.activity === 'gone' && !s.hooked && s.last_event_at - s.started_at < 60_000;
 
+/** How long a working session may say nothing: between tools, in a tool. */
+const QUIET_MS = 10 * 60_000;
+const QUIET_TOOL_MS = 30 * 60_000;
+
+/** How long a working session has been silent, once that is unusual: a hung
+ * command or a dead process. Only hooks move `last_event_at`. */
+export function quietFor(s: Session, now: number): number | null {
+	if (s.activity !== 'working' || !s.hooked) return null;
+	const silent = now - s.last_event_at;
+	return silent > (s.tool ? QUIET_TOOL_MS : QUIET_MS) ? silent : null;
+}
+
 export const live = (s: Session) => s.activity !== 'gone';
 export const busy = (s: Session) => s.activity === 'working' || s.activity === 'permission';
 

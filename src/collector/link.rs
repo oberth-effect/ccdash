@@ -70,15 +70,26 @@ pub async fn run(
                 continue;
             }
         };
-        last_error = None;
-        match session(socket, &mut link, &mut rx, &local).await {
+        let mut welcomed = false;
+        let end = session(socket, &mut link, &mut rx, &local, &mut welcomed).await;
+        // NOTE: a hub that refuses this collector is asked again ever more slowly, not every second
+        if welcomed {
+            last_error = None;
+            backoff = Duration::from_secs(1);
+        }
+        match end {
             Ok(()) => info!("hub closed the link"),
-            Err(e) => warn!("hub link: {e:#}"),
+            Err(e) => {
+                let message = format!("{e:#}");
+                if last_error.as_ref() != Some(&message) {
+                    warn!("hub link: {message}");
+                    last_error = Some(message);
+                }
+            }
         }
         if local.send(LocalCmd::LinkDown).await.is_err() {
             return;
         }
-        backoff = Duration::from_secs(1);
     }
 }
 
@@ -114,6 +125,7 @@ async fn session(
     link: &mut Link,
     rx: &mut mpsc::UnboundedReceiver<ToHub>,
     local: &mpsc::Sender<LocalCmd>,
+    welcomed: &mut bool,
 ) -> Result<()> {
     let hello = ToHub::Hello {
         v: VERSION,
@@ -126,11 +138,15 @@ async fn session(
         .await
         .context("no welcome")?
         .context("closed before the welcome")??;
+    if let Some(reason) = refusal(&first) {
+        bail!("refused: {reason}");
+    }
     match parse(&first)? {
         Some(ToCollector::Welcome { v, .. }) if v != VERSION => {
             bail!("the hub speaks protocol {v}, this collector {VERSION}")
         }
         Some(welcome @ ToCollector::Welcome { .. }) => {
+            *welcomed = true;
             info!("connected to the hub at {}", link.cfg.url);
             local.send(LocalCmd::FromHub(Box::new(welcome))).await?;
         }
@@ -178,11 +194,38 @@ async fn session(
     }
 }
 
+/// Why the hub turned the link down: it answers a hello in plain text.
+fn refusal(msg: &Message) -> Option<&str> {
+    match msg {
+        Message::Text(text) if serde_json::from_str::<serde_json::Value>(text).is_err() => {
+            Some(text.as_str())
+        }
+        _ => None,
+    }
+}
+
 fn parse(msg: &Message) -> Result<Option<ToCollector>> {
     match msg {
         Message::Text(text) => Ok(Some(serde_json::from_str(text).context("bad message")?)),
         Message::Binary(bytes) => Ok(Some(serde_json::from_slice(bytes).context("bad message")?)),
         Message::Close(frame) => bail!("closed: {frame:?}"),
         _ => Ok(None),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_refusal_is_read_as_text_and_messages_are_not() {
+        let refused = Message::Text("the hub speaks protocol 12, not 11".into());
+        assert_eq!(
+            refusal(&refused),
+            Some("the hub speaks protocol 12, not 11")
+        );
+        let welcome = Message::Text(r#"{"type":"welcome"}"#.into());
+        assert_eq!(refusal(&welcome), None);
+        assert_eq!(refusal(&Message::Ping(Vec::new().into())), None);
     }
 }
