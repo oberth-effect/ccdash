@@ -80,11 +80,19 @@ another retires it.
 ## 6. Import and export
 
 ```sh
-ccdash import memory ~/code/work/.claude/memory              # one note per file, safe to rerun
+ccdash import memory ~/code/work/.claude/memory              # one note per file, subdirectories too
+ccdash import memory ~/code/work/.claude/memory/ops          # one subdirectory (its own MEMORY.md or INDEX.md)
 ccdash import plan ~/code/work/meta/plans/x.md --project x   # doc, checkboxes as issues, log as progress
+ccdash import plan ~/code/work/notes/design.md --doc --slug design   # the document alone
 ccdash export --config /etc/ccdash/hub.toml ./notes          # every note as markdown
 ```
 
 `import` runs on a workstation and sends through its collector; `export`
-reads the database (or a backup copy with `--db`) directly. A plan's
-checkbox is keyed by its section and text: tick it without rewording it.
+reads the database (or a backup copy with `--db`) directly. Every import is
+safe to rerun: an unchanged file changes nothing, and a note the hub changed
+after the file's modification time is kept (the report counts it as
+`kept`). A memory's title is its index line's, its summary the frontmatter
+`description` or the index hook when that says more; `status: archived` in
+the frontmatter retires the note, so an export imports back as it was. A
+plan's checkbox is keyed by its section and text: tick it without rewording
+it.

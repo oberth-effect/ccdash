@@ -356,6 +356,10 @@ pub struct Written {
     pub created: bool,
     /// False when the content was already there (an idempotent rerun).
     pub changed: bool,
+    /// True when the hub kept its own, later version: the write carried an
+    /// older `updated_at` (an import of a file the hub has moved past).
+    #[serde(default)]
+    pub kept: bool,
 }
 
 /// A full write of one note, as the importer and the tools produce it;
@@ -705,6 +709,19 @@ pub fn upsert(
                     up.kind
                 );
             }
+            // NOTE: imports carry the file's mtime; what the hub changed after it stays
+            if up.updated_at.is_some_and(|at| old.updated_at > at) {
+                return Ok(Written {
+                    slug: up.slug.clone(),
+                    kind: up.kind,
+                    title: old.title.clone(),
+                    status: old.status,
+                    version: old.version,
+                    created: false,
+                    changed: false,
+                    kept: true,
+                });
+            }
             let same = old.title == up.title
                 && old.summary == up.summary
                 && old.body == up.body
@@ -756,6 +773,7 @@ pub fn upsert(
         version,
         created,
         changed,
+        kept: false,
     })
 }
 
@@ -873,6 +891,7 @@ pub fn apply(
                 version: note.version,
                 created: false,
                 changed: note.status != status,
+                kept: false,
             })
         }
         NoteOp::IssueAdd {
@@ -1390,7 +1409,7 @@ pub fn session_start(
             `issue_add`, `issue_update`, `progress`, `doc_write`; between sessions \
             `claim` / `release` (what you are working on, so others keep clear) and \
             `tell_session` (a message handed to another session at its next prompt). \
-            Memory files are frozen: remember through the tool, verify memories you \
+            Knowledge lives only here, never in files: remember through the tool, verify memories you \
             confirm, file issues and log progress as you go.\n"
     );
     if project.is_none() {
@@ -2168,6 +2187,58 @@ mod tests {
             "{html}"
         );
         assert!(html.contains("[[nope!]]"));
+    }
+
+    #[test]
+    fn upsert_keeps_what_the_hub_changed_later() {
+        let conn = db();
+        let file = Upsert {
+            slug: "a--b".into(),
+            kind: NoteKind::Memory,
+            project: None,
+            title: "A: b".into(),
+            summary: None,
+            status: Status::Active,
+            extra: json!({"source": "memory"}),
+            body: "from the file".into(),
+            links: Vec::new(),
+            created_at: Some(5),
+            updated_at: Some(6),
+            verified: true,
+        };
+        assert!(
+            upsert(&conn, "ws", &file, Some("import"), 100)
+                .unwrap()
+                .created
+        );
+        // a session rewrites the note later (no timestamp of its own: now)
+        let session = Upsert {
+            body: "rewritten in the hub".into(),
+            updated_at: None,
+            ..file.clone()
+        };
+        let w = upsert(&conn, "ws", &session, Some("s1"), 200).unwrap();
+        assert!(w.changed && !w.kept);
+        // the old file comes back through a rerun: kept
+        let w = upsert(&conn, "ws", &file, Some("import"), 300).unwrap();
+        assert!(w.kept && !w.changed && !w.created);
+        let note = get(&conn, "ws", "a--b").unwrap().unwrap();
+        assert_eq!(
+            (note.body.as_str(), note.version, note.updated_at),
+            ("rewritten in the hub", 2, 200)
+        );
+        // a file edited after the hub's change wins
+        let newer = Upsert {
+            body: "edited in the file".into(),
+            updated_at: Some(250),
+            ..file.clone()
+        };
+        let w = upsert(&conn, "ws", &newer, Some("import"), 400).unwrap();
+        assert!(w.changed && !w.kept);
+        assert_eq!(
+            get(&conn, "ws", "a--b").unwrap().unwrap().body,
+            "edited in the file"
+        );
     }
 
     #[test]

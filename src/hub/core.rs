@@ -2212,14 +2212,15 @@ impl Core {
                     let result = store
                         .exec(move |conn| {
                             let tx = conn.unchecked_transaction()?;
-                            let (mut added, mut updated, mut unchanged) = (0, 0, 0);
+                            let (mut added, mut updated, mut unchanged, mut kept) = (0, 0, 0, 0);
                             for up in &notes {
                                 let w = knowledge::upsert(&tx, &ws, up, Some("import"), at)
                                     .with_context(|| format!("importing {}", up.slug))?;
-                                match (w.created, w.changed) {
-                                    (true, _) => added += 1,
-                                    (false, true) => updated += 1,
-                                    (false, false) => unchanged += 1,
+                                match (w.created, w.changed, w.kept) {
+                                    (true, _, _) => added += 1,
+                                    (false, true, _) => updated += 1,
+                                    (false, false, true) => kept += 1,
+                                    (false, false, false) => unchanged += 1,
                                 }
                             }
                             tx.commit()?;
@@ -2227,6 +2228,7 @@ impl Core {
                                 added,
                                 updated,
                                 unchanged,
+                                kept,
                             })
                         })
                         .await;

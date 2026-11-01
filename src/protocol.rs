@@ -313,6 +313,9 @@ pub enum Reply {
         added: usize,
         updated: usize,
         unchanged: usize,
+        /// Notes the hub kept because it changed them after the file.
+        #[serde(default)]
+        kept: usize,
     },
     Sent,
     /// Why the session must not go on here; none when it may.
@@ -702,6 +705,7 @@ mod tests {
                 added: 1,
                 updated: 0,
                 unchanged: 2,
+                kept: 1,
             },
             Reply::Guard(None),
             Reply::Guard(Some("open on navi".into())),

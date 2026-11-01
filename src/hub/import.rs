@@ -163,30 +163,90 @@ mod tests {
 // --- knowledge: memory files and plans ----------------------------------
 
 /// `ccdash import memory <dir>`: every `<name>.md` of a workspace's
-/// `.claude/memory` becomes a memory note keyed by its `name`, with the
-/// frontmatter `description` as summary and the index line of `MEMORY.md`
-/// as title. A `<scope>--<topic>` name whose scope is a directory of the
-/// workspace gets that project. Safe to rerun: unchanged files change
-/// nothing.
+/// `.claude/memory` becomes a memory note keyed by its `name`. The title is
+/// the index line's (`MEMORY.md` or `INDEX.md`, `- [Title](file.md) — hook`),
+/// the summary the frontmatter `description`, or the index hook when that
+/// says more. Subdirectories are walked, each with its own index; a note
+/// from one carries `memory_dir` in `extra`. A `<scope>--<topic>` name
+/// whose scope is a directory of the workspace gets that project. The
+/// workspace is the parent of the `.claude` ancestor, so a subdirectory
+/// imports on its own too; `status: archived` in the frontmatter retires the
+/// note. Safe to rerun: unchanged files change nothing,
+/// and the hub keeps a note it changed after the file.
 pub fn memory_dir(dir: &Path) -> Result<Vec<Upsert>> {
     if !dir.is_dir() {
         bail!("{} is not a directory", dir.display());
     }
-    let workspace_dir = dir.parent().and_then(Path::parent);
-    let titles = std::fs::read_to_string(dir.join("MEMORY.md"))
-        .map(|text| index_titles(&text))
-        .unwrap_or_default();
+    let workspace_dir = workspace_of(dir);
+    let root = memory_root(dir);
+    let mut notes = Vec::new();
+    memory_tree(root, dir, workspace_dir, &mut notes)?;
+    Ok(notes)
+}
+
+const INDEX_FILES: [&str; 2] = ["MEMORY.md", "INDEX.md"];
+
+/// The workspace holding a memory directory: the parent of its `.claude`
+/// ancestor, else two levels up.
+fn workspace_of(dir: &Path) -> Option<&Path> {
+    dir.ancestors()
+        .find(|a| a.file_name().is_some_and(|n| n == ".claude"))
+        .and_then(Path::parent)
+        .or_else(|| dir.parent().and_then(Path::parent))
+}
+
+/// The `.claude/memory` directory `dir` lies in (itself when none does),
+/// against which a note's `memory_dir` is named.
+fn memory_root(dir: &Path) -> &Path {
+    dir.ancestors()
+        .find(|a| {
+            a.file_name().is_some_and(|n| n == "memory")
+                && a.parent()
+                    .and_then(Path::file_name)
+                    .is_some_and(|n| n == ".claude")
+        })
+        .unwrap_or(dir)
+}
+
+/// The notes of one directory, then of its subdirectories (hidden ones
+/// skipped).
+fn memory_tree(
+    root: &Path,
+    dir: &Path,
+    workspace_dir: Option<&Path>,
+    notes: &mut Vec<Upsert>,
+) -> Result<()> {
+    let mut index = HashMap::new();
+    for name in INDEX_FILES {
+        if let Ok(text) = std::fs::read_to_string(dir.join(name)) {
+            index.extend(index_entries(&text));
+        }
+    }
+    let subdir = dir
+        .strip_prefix(root)
+        .ok()
+        .filter(|p| !p.as_os_str().is_empty())
+        .map(|p| p.to_string_lossy().into_owned());
     let mut entries: Vec<_> = std::fs::read_dir(dir)?
         .filter_map(Result::ok)
         .map(|e| e.path())
-        .filter(|p| {
-            p.extension().is_some_and(|e| e == "md")
-                && p.file_name().is_some_and(|n| n != "MEMORY.md")
-        })
         .collect();
     entries.sort();
-    let mut notes = Vec::new();
+    let mut dirs = Vec::new();
     for path in entries {
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        if path.is_dir() {
+            if !name.starts_with('.') {
+                dirs.push(path);
+            }
+            continue;
+        }
+        if !path.extension().is_some_and(|e| e == "md") || INDEX_FILES.contains(&name.as_str()) {
+            continue;
+        }
         let text = std::fs::read_to_string(&path)
             .with_context(|| format!("reading {}", path.display()))?;
         let stem = path
@@ -198,13 +258,23 @@ pub fn memory_dir(dir: &Path) -> Result<Vec<Upsert>> {
             .ok()
             .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
             .map(|d| d.as_millis() as i64);
-        if let Some(note) = memory_file(&text, &stem, &titles, workspace_dir, mtime) {
+        if let Some(note) = memory_file(
+            &text,
+            &stem,
+            &index,
+            workspace_dir,
+            mtime,
+            subdir.as_deref(),
+        ) {
             notes.push(note);
         } else {
             eprintln!("skipping {}: no usable content", path.display());
         }
     }
-    Ok(notes)
+    for sub in dirs {
+        memory_tree(root, &sub, workspace_dir, notes)?;
+    }
+    Ok(())
 }
 
 /// The directory of `workspace_dir` named like `scope`, case-insensitively
@@ -222,9 +292,16 @@ fn project_dir(workspace_dir: &Path, scope: &str) -> Option<String> {
         .find(|name| name.to_lowercase() == wanted)
 }
 
-/// `- [Title](file.md) — hook` lines of a `MEMORY.md`, by file stem.
-fn index_titles(text: &str) -> HashMap<String, String> {
-    let mut titles = HashMap::new();
+/// One `- [Title](file.md) — hook` line of an index.
+struct IndexLine {
+    title: String,
+    /// The recall cue after the dash; empty when the line has none.
+    hook: String,
+}
+
+/// The index lines of a `MEMORY.md` or `INDEX.md`, by file stem.
+fn index_entries(text: &str) -> HashMap<String, IndexLine> {
+    let mut lines = HashMap::new();
     for line in text.lines() {
         let Some(rest) = line.trim_start().strip_prefix("- [") else {
             continue;
@@ -232,22 +309,30 @@ fn index_titles(text: &str) -> HashMap<String, String> {
         let Some((title, rest)) = rest.split_once("](") else {
             continue;
         };
-        let Some((file, _)) = rest.split_once(')') else {
+        let Some((file, rest)) = rest.split_once(')') else {
             continue;
         };
         let stem = file.trim().trim_end_matches(".md");
-        titles.insert(stem.to_owned(), title.trim().to_owned());
+        let hook = rest.trim().trim_start_matches(['—', '–', '-']).trim();
+        lines.insert(
+            stem.to_owned(),
+            IndexLine {
+                title: title.trim().to_owned(),
+                hook: hook.to_owned(),
+            },
+        );
     }
-    titles
+    lines
 }
 
 /// One memory file as a note; None when it has no body.
 fn memory_file(
     text: &str,
     stem: &str,
-    titles: &HashMap<String, String>,
+    index: &HashMap<String, IndexLine>,
     workspace_dir: Option<&Path>,
     mtime: Option<i64>,
+    memory_dir: Option<&str>,
 ) -> Option<Upsert> {
     let (front, body) = frontmatter(text);
     let body = body.trim();
@@ -264,12 +349,19 @@ fn memory_file(
     } else {
         knowledge::slugify(&name)
     };
-    let title = titles
-        .get(stem)
-        .or_else(|| titles.get(&name))
-        .cloned()
+    let line = index.get(stem).or_else(|| index.get(&name));
+    let title = line
+        .map(|l| l.title.clone())
         .or_else(|| knowledge::heading(body))
         .unwrap_or_else(|| name.replace("--", ": ").replace(['-', '_'], " "));
+    let description = front.get("description").cloned().filter(|d| !d.is_empty());
+    // NOTE: the index hook is the curated "when to recall" line; it wins when it says more
+    let summary = match line.map(|l| l.hook.as_str()).filter(|h| !h.is_empty()) {
+        Some(hook) if description.as_ref().is_none_or(|d| hook.len() > d.len()) => {
+            Some(hook.to_owned())
+        }
+        _ => description,
+    };
     let project = name
         .split_once("--")
         .map(|(scope, _)| scope)
@@ -286,13 +378,21 @@ fn memory_file(
     if let Some(origin) = front.get("metadata.originSessionId") {
         extra.insert("origin_session".into(), json!(origin));
     }
+    if let Some(sub) = memory_dir {
+        extra.insert("memory_dir".into(), json!(sub));
+    }
+    // NOTE: `status: archived` round-trips what `ccdash export` writes
+    let status = match front.get("status").map(String::as_str) {
+        Some("archived") => Status::Archived,
+        _ => Status::Active,
+    };
     Some(Upsert {
         slug,
         kind: NoteKind::Memory,
         project,
         title,
-        summary: front.get("description").cloned().filter(|d| !d.is_empty()),
-        status: Status::Active,
+        summary,
+        status,
         extra: Value::Object(extra),
         body: body.to_owned(),
         links: Vec::new(),
@@ -352,12 +452,18 @@ fn unquote(value: &str) -> String {
     }
 }
 
-/// `ccdash import plan <file>`: the file becomes a document; every
-/// `- [ ]`/`- [x]` item an open or closed issue linked to it (keyed by a
-/// hash of its text, so a rerun updates its status); every `## Log` entry
-/// (`- **YYYY-MM-DD (label):** …`) a progress note. The document slug is
-/// the file stem, prefixed with its directory when that is not `plans`.
-pub fn plan_file(path: &Path, project: Option<&str>) -> Result<Vec<Upsert>> {
+/// `ccdash import plan <file>`: the file becomes a document; unless
+/// `doc_only`, every `- [ ]`/`- [x]` item an open or closed issue linked to
+/// it (keyed by a hash of its text, so a rerun updates its status) and every
+/// `## Log` entry (`- **YYYY-MM-DD (label):** …`) a progress note. The
+/// document slug is `slug`, else the file stem, prefixed with its directory
+/// when that is not `plans`.
+pub fn plan_file(
+    path: &Path,
+    project: Option<&str>,
+    slug: Option<&str>,
+    doc_only: bool,
+) -> Result<Vec<Upsert>> {
     let text =
         std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
     let stem = path
@@ -369,19 +475,27 @@ pub fn plan_file(path: &Path, project: Option<&str>) -> Result<Vec<Upsert>> {
         .and_then(Path::file_name)
         .map(|s| s.to_string_lossy().into_owned())
         .filter(|p| p != "plans" && !p.is_empty());
-    let slug = match parent {
-        Some(p) => format!("{}--{}", knowledge::slugify(&p), knowledge::slugify(&stem)),
-        None => knowledge::slugify(&stem),
+    let slug = match (slug, parent) {
+        (Some(s), _) if knowledge::valid_slug(s) => s.to_owned(),
+        (Some(s), _) => knowledge::slugify(s),
+        (None, Some(p)) => format!("{}--{}", knowledge::slugify(&p), knowledge::slugify(&stem)),
+        (None, None) => knowledge::slugify(&stem),
     };
     let mtime = std::fs::metadata(path)
         .and_then(|m| m.modified())
         .ok()
         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
         .map(|d| d.as_millis() as i64);
-    Ok(plan_text(&text, &slug, project, mtime))
+    Ok(plan_text(&text, &slug, project, mtime, doc_only))
 }
 
-pub fn plan_text(text: &str, slug: &str, project: Option<&str>, mtime: Option<i64>) -> Vec<Upsert> {
+pub fn plan_text(
+    text: &str,
+    slug: &str,
+    project: Option<&str>,
+    mtime: Option<i64>,
+    doc_only: bool,
+) -> Vec<Upsert> {
     let title = knowledge::heading(text).unwrap_or_else(|| slug.to_owned());
     let mut notes = vec![Upsert {
         slug: slug.to_owned(),
@@ -390,13 +504,16 @@ pub fn plan_text(text: &str, slug: &str, project: Option<&str>, mtime: Option<i6
         title: title.clone(),
         summary: None,
         status: Status::Active,
-        extra: json!({ "source": "plan" }),
+        extra: json!({ "source": if doc_only { "file" } else { "plan" } }),
         body: text.trim_end().to_owned(),
         links: Vec::new(),
         created_at: None,
         updated_at: mtime,
         verified: false,
     }];
+    if doc_only {
+        return notes;
+    }
     let mut section = String::new();
     let mut in_log = false;
     let lines: Vec<&str> = text.lines().collect();
@@ -594,8 +711,40 @@ mod knowledge_tests {
             "# Index\n\n- [ccdash](ccdash--project.md) — the hook\n",
         )
         .unwrap();
+        // a store of its own in a subdirectory, indexed by INDEX.md
+        let so = mem.join("sys-operativa");
+        std::fs::create_dir_all(so.join(".cache")).unwrap();
+        std::fs::write(
+            so.join("INDEX.md"),
+            "# SO\n\n## Entries\n\n- [uzb2 disks](uzb2--disks.md) — NVMe dies recurrently; reboot revives; death tell = ext4 -5 spam\n- [BITE y](radar-bite--y.md) - short\n",
+        )
+        .unwrap();
+        std::fs::write(
+            so.join("uzb2--disks.md"),
+            "---\nname: uzb2--disks\ndescription: uzb2 disk failure\nmetadata:\n  type: project\n---\n\nSO-106.\n",
+        )
+        .unwrap();
+        std::fs::write(
+            so.join("radar-bite--y.md"),
+            "---\nname: radar-bite--y\ndescription: a description longer than the hook\n---\nbody\n",
+        )
+        .unwrap();
+        std::fs::write(so.join(".cache/z.md"), "---\nname: z\n---\nhidden\n").unwrap();
+        std::fs::write(
+            so.join("old--gone.md"),
+            "---\nname: old--gone\nstatus: archived\n---\nsuperseded by uzb2--disks\n",
+        )
+        .unwrap();
         let notes = memory_dir(&mem).unwrap();
-        assert_eq!(notes.len(), 3);
+        assert_eq!(notes.len(), 6);
+        let gone = notes.iter().find(|n| n.slug == "old--gone").unwrap();
+        assert_eq!(gone.status, Status::Archived);
+        assert!(
+            notes
+                .iter()
+                .filter(|n| n.slug != "old--gone")
+                .all(|n| n.status == Status::Active)
+        );
         let bite = notes.iter().find(|n| n.slug == "radar-bite--x").unwrap();
         assert_eq!(bite.project.as_deref(), Some("radar-BITE"));
         let n = notes.iter().find(|n| n.slug == "ccdash--project").unwrap();
@@ -603,20 +752,64 @@ mod knowledge_tests {
         assert_eq!(n.project.as_deref(), Some("ccdash"));
         assert_eq!(n.summary.as_deref(), Some("ccdash — the dashboard"));
         assert_eq!(n.extra["memory_type"], "project");
+        assert!(n.extra.get("memory_dir").is_none());
         assert_eq!(n.created_at, Some(1_791_675_514_851));
         assert!(n.verified);
         let loose = notes.iter().find(|n| n.slug == "loose").unwrap();
         assert_eq!(loose.title, "loose");
         assert!(loose.project.is_none());
+        let uzb2 = notes.iter().find(|n| n.slug == "uzb2--disks").unwrap();
+        assert_eq!(uzb2.title, "uzb2 disks");
+        assert_eq!(
+            uzb2.summary.as_deref(),
+            Some("NVMe dies recurrently; reboot revives; death tell = ext4 -5 spam"),
+            "the longer index hook is the summary"
+        );
+        assert_eq!(uzb2.extra["memory_dir"], "sys-operativa");
+        assert!(uzb2.project.is_none());
+        let y = notes.iter().find(|n| n.slug == "radar-bite--y").unwrap();
+        assert_eq!(y.title, "BITE y");
+        assert_eq!(
+            y.summary.as_deref(),
+            Some("a description longer than the hook")
+        );
+        assert_eq!(y.project.as_deref(), Some("radar-BITE"));
+        // the subdirectory on its own: same workspace, same memory_dir
+        let alone = memory_dir(&so).unwrap();
+        assert_eq!(alone.len(), 3);
+        let y = alone.iter().find(|n| n.slug == "radar-bite--y").unwrap();
+        assert_eq!(y.project.as_deref(), Some("radar-BITE"));
+        assert_eq!(y.extra["memory_dir"], "sys-operativa");
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn index_lines_carry_title_and_hook() {
+        let lines = index_entries(
+            "- [A](a.md) — the hook\n- [B](b.md) - dash hook\n- [C](c.md)\n- plain\n",
+        );
+        assert_eq!(
+            (lines["a"].title.as_str(), lines["a"].hook.as_str()),
+            ("A", "the hook")
+        );
+        assert_eq!(lines["b"].hook, "dash hook");
+        assert_eq!(
+            (lines["c"].title.as_str(), lines["c"].hook.as_str()),
+            ("C", "")
+        );
+        assert_eq!(lines.len(), 3);
     }
 
     #[test]
     fn plans_split_into_doc_issues_and_progress() {
         let text = "# ccdash: live dashboard\n\nIntro.\n\n## Milestones\n\n### M1: collector\n\n- [x] crate modules: model, ingest\n      and more\n- [ ] **STOP → owner:** commit + push\n- plain bullet\n\n## Log\n\n- **2026-10-18 (M3.8 live):** deployed; watch answers\n  verified.\n- **2026-10-11:** brainstorm and M0.\n- not an entry\n";
-        let notes = plan_text(text, "ccdash", Some("ccdash"), Some(5));
+        let notes = plan_text(text, "ccdash", Some("ccdash"), Some(5), false);
         assert_eq!(notes[0].kind, NoteKind::Doc);
         assert_eq!(notes[0].title, "ccdash: live dashboard");
+        assert_eq!(notes[0].extra["source"], "plan");
+        let only = plan_text(text, "ccdash", Some("ccdash"), Some(5), true);
+        assert_eq!(only.len(), 1, "--doc: the document alone");
+        assert_eq!(only[0].extra["source"], "file");
         let issues: Vec<&Upsert> = notes.iter().filter(|n| n.kind == NoteKind::Issue).collect();
         assert_eq!(issues.len(), 2);
         assert_eq!(issues[0].status, Status::Archived);
@@ -640,6 +833,7 @@ mod knowledge_tests {
             "ccdash",
             Some("ccdash"),
             Some(6),
+            false,
         );
         let closed = again
             .iter()

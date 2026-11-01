@@ -1729,4 +1729,9 @@ export type Written = { slug: string, kind: NoteKind, title: string, status: Sta
 /**
  * False when the content was already there (an idempotent rerun).
  */
-changed: boolean, };
+changed: boolean, 
+/**
+ * True when the hub kept its own, later version: the write carried an
+ * older `updated_at` (an import of a file the hub has moved past).
+ */
+kept: boolean, };

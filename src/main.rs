@@ -199,17 +199,27 @@ enum Import {
         /// The database to read, e.g. a copy of `~/.local/state/ccdash/ccdash.db`.
         source: PathBuf,
     },
-    /// A workspace's `.claude/memory` directory: one memory note per file,
-    /// keyed by its `name`, sent to the hub through this machine's
-    /// collector. Safe to repeat.
+    /// A workspace's `.claude/memory` directory, or one of its
+    /// subdirectories: one memory note per file, keyed by its `name`, titled
+    /// by its `MEMORY.md`/`INDEX.md` line, sent to the hub through this
+    /// machine's collector. Safe to repeat: the hub keeps a note it changed
+    /// after the file.
     Memory { dir: PathBuf },
-    /// A markdown plan: the file as a document, its checkboxes as issues,
-    /// its `## Log` entries as progress notes. Safe to repeat.
+    /// A markdown file: the file as a document and, unless `--doc`, its
+    /// checkboxes as issues and its `## Log` entries as progress notes.
+    /// Safe to repeat.
     Plan {
         file: PathBuf,
         /// The repo directory name the plan is about (default: none).
         #[arg(long)]
         project: Option<String>,
+        /// The document's slug (default: the file stem, prefixed with its
+        /// directory when that is not `plans`).
+        #[arg(long)]
+        slug: Option<String>,
+        /// The document only: no issues, no progress notes.
+        #[arg(long)]
+        doc: bool,
     },
 }
 
@@ -248,10 +258,20 @@ fn main() -> ExitCode {
             .and_then(|dir| Ok((hub::import::memory_dir(&dir)?, dir)))
             .and_then(|(notes, dir)| client::import(&dir, notes)),
         Command::Import {
-            what: Import::Plan { file, project },
+            what:
+                Import::Plan {
+                    file,
+                    project,
+                    slug,
+                    doc,
+                },
         } => std::path::absolute(&file)
             .map_err(Into::into)
-            .and_then(|file| Ok((hub::import::plan_file(&file, project.as_deref())?, file)))
+            .and_then(|file| {
+                let notes =
+                    hub::import::plan_file(&file, project.as_deref(), slug.as_deref(), doc)?;
+                Ok((notes, file))
+            })
             .and_then(|(notes, file)| client::import(&file, notes)),
         Command::Backup { config, dest } => config::load::<HubConfig>(config)
             .and_then(|cfg| hub::backup::backup(&cfg.store_path(), &dest)),

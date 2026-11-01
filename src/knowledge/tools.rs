@@ -333,7 +333,17 @@ pub fn text_of(reply: &Reply) -> String {
             added,
             updated,
             unchanged,
-        } => format!("imported: {added} added, {updated} updated, {unchanged} unchanged"),
+            kept,
+        } => {
+            let mut text =
+                format!("imported: {added} added, {updated} updated, {unchanged} unchanged");
+            if *kept > 0 {
+                text.push_str(&format!(
+                    ", {kept} kept (the hub changed them after the file)"
+                ));
+            }
+            text
+        }
         Reply::Context(Some(text)) => text.clone(),
         Reply::Context(None) => "nothing to add".into(),
         Reply::Session(_) | Reply::Guard(None) => "ok".into(),
@@ -594,6 +604,7 @@ mod tests {
             version: 3,
             created: false,
             changed: true,
+            kept: false,
         };
         assert_eq!(
             text_of(&Reply::Written(w)),
