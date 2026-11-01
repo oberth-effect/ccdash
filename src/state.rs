@@ -10,8 +10,8 @@ use crate::{
     ask::Answer,
     model::{
         Activity, Ask, AskKind, Claim, Kind, Limit, Message, PARKED_AFTER_MS, ProcInfo, RateLimits,
-        Resolved, Resources, ScopedLimit, Session, Stamped, Subagent, Task, TaskStatus, ToolRun,
-        Turn, WindowRef,
+        Resolved, Resources, ScopedLimit, Session, Stamped, Step, Subagent, Task, TaskStatus,
+        ToolRun, Turn, WindowRef,
     },
     task_notification,
     util::{tail, truncate},
@@ -767,8 +767,20 @@ impl State {
                             tool_description(tool_name, tool_input),
                         ),
                     };
+                    let output = tool_output(ok, p, self.tool_output_bytes);
                     if let Some(turn) = &mut s.turn {
                         turn.note_tool(tool_name, &summary, ok);
+                        turn.note_step(Step {
+                            name: tool_name.to_owned(),
+                            summary: summary.clone(),
+                            description: description.clone(),
+                            at: ts,
+                            ms,
+                            error: (!ok).then(|| {
+                                let text = output.as_deref().unwrap_or_default().trim();
+                                truncate(text.lines().next().unwrap_or_default(), SUMMARY_LEN)
+                            }),
+                        });
                     }
                     let mut data =
                         json!({ "name": tool_name, "summary": summary, "ms": ms, "ok": ok });
@@ -780,7 +792,7 @@ impl State {
                     {
                         data["command"] = truncate(command, COMMAND_LEN).into();
                     }
-                    if let Some(output) = tool_output(ok, p, self.tool_output_bytes) {
+                    if let Some(output) = output {
                         data["output"] = output.into();
                     }
                     record(store, ts, id, "tool", data);
@@ -2473,8 +2485,50 @@ mod tests {
                 failures: 1,
                 subagent_tools: 0,
                 files: vec!["src/a.rs".into()],
+                steps: turn.steps.clone(),
             }
         );
+    }
+
+    #[test]
+    fn a_turn_keeps_its_last_steps_without_the_bookkeeping() {
+        let mut st = state();
+        hook(&mut st, 1, "UserPromptSubmit", json!({"prompt": "go"}));
+        for ts in 2..10 {
+            hook(
+                &mut st,
+                ts,
+                "PostToolUse",
+                json!({"tool_name": "Read", "tool_input": {"file_path": format!("/work/repo/{ts}.rs")}}),
+            );
+        }
+        hook(
+            &mut st,
+            10,
+            "PostToolUse",
+            json!({"tool_name": "TaskUpdate", "tool_input": {"taskId": "1", "status": "completed"}}),
+        );
+        hook(
+            &mut st,
+            11,
+            "PostToolUseFailure",
+            json!({
+                "tool_name": "Bash",
+                "tool_input": {"command": "cargo test", "description": "Run the tests"},
+                "error": "boom\nmore detail",
+            }),
+        );
+        let steps = session(&st).turn.clone().unwrap().steps;
+        assert_eq!(steps.len(), 6);
+        assert_eq!(steps[0].summary, "5.rs", "the oldest fell off");
+        assert!(steps.iter().all(|s| s.name != "TaskUpdate"));
+        let failed = steps.last().unwrap();
+        assert_eq!(failed.description.as_deref(), Some("Run the tests"));
+        assert_eq!(failed.error.as_deref(), Some("boom"), "its first line");
+        assert_eq!(steps[1].error, None);
+
+        hook(&mut st, 12, "UserPromptSubmit", json!({"prompt": "next"}));
+        assert!(session(&st).turn.clone().unwrap().steps.is_empty());
     }
 
     #[test]

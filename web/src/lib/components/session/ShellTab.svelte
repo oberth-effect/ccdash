@@ -7,6 +7,7 @@
 	import { Button } from '#lib/components/ui/button/index.js';
 	import { fmtDuration, fmtStamp, fmtTime, known } from '#lib/format.js';
 	import { noticeTitle } from '#lib/session.js';
+	import { copyText } from '#lib/utils.js';
 	import type { Convo } from './convo.svelte.js';
 
 	let { convo }: { convo: Convo } = $props();
@@ -29,7 +30,7 @@
 
 	async function copy(call: Call) {
 		const text = [call.command ?? call.summary, call.output ?? ''].filter(Boolean).join('\n');
-		await navigator.clipboard?.writeText(text);
+		if (!(await copyText(text))) return;
 		copied = call.id;
 		setTimeout(() => (copied = null), 1500);
 	}

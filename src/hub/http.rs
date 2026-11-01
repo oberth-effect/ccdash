@@ -46,7 +46,7 @@ use super::{
 };
 use crate::{
     actions::{self, MAX_PROMPT, PERMISSION_MODES},
-    analytics::{self, Analytics},
+    analytics::{self, Analytics, LimitTracks},
     ask::Answer,
     config::HubConfig,
     conversation,
@@ -153,6 +153,7 @@ pub async fn serve(
         .route("/prompts", get(prompts))
         .route("/history", get(history))
         .route("/analytics", get(analytics))
+        .route("/limits", get(limits))
         .route("/stream", get(stream))
         .route("/projects", get(projects_view))
         .route("/graph", get(graph))
@@ -1019,6 +1020,21 @@ async fn analytics(
     .await
     .map_err(anyhow::Error::from)??;
     Ok(Json(analytics))
+}
+
+/// Each limit's current window, for the Now page's tiles.
+async fn limits(State(app): State<App>) -> Result<Json<LimitTracks>, ApiError> {
+    let snapshot = app.hub.snapshot().await?;
+    let Some(live) = snapshot.rate_limits else {
+        return Ok(Json(LimitTracks::default()));
+    };
+    let store = app.store.clone();
+    let now = snapshot.now;
+    let tracks =
+        tokio::task::spawn_blocking(move || analytics::limit_tracks(&store.reader()?, &live, now))
+            .await
+            .map_err(anyhow::Error::from)??;
+    Ok(Json(tracks))
 }
 
 async fn stream(

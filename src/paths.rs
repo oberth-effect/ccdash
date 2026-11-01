@@ -44,6 +44,11 @@ pub fn notes_cache() -> PathBuf {
     state_dir().join("notes-cache.json")
 }
 
+/// Where desktop tools leave generated files (pywal's colours and such).
+pub fn cache_dir() -> PathBuf {
+    xdg("XDG_CACHE_HOME", ".cache")
+}
+
 pub fn state_dir() -> PathBuf {
     xdg("XDG_STATE_HOME", ".local/state").join("ccdash")
 }

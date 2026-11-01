@@ -11,14 +11,22 @@ links can be shared and the back button works.
 3. [Projects](#3-projects)
 4. [History and Analytics](#4-history-and-analytics)
 5. [Machines, Claude state and Workspace](#5-machines-claude-state-and-workspace)
-6. [Desktop (DankMaterialShell)](#6-desktop-dankmaterialshell)
+6. [Themes](#6-themes)
+7. [Desktop (DankMaterialShell)](#7-desktop-dankmaterialshell)
 
 ## 1. Now and Sessions
 
-- **Now** lists what needs you, with the answer inline (permission prompts,
-  questions, plans, sessions on your turn with a quick reply) and
-  **Resolved** and **Kill** at hand, then what is working, the hosts with
-  their link state, the account limits and the last progress entries.
+- **Now** is the page to leave open on a second monitor; a look at it should
+  replace opening the sessions. What needs you has the answer inline
+  (permission prompts, questions, plans, sessions on your turn with a quick
+  reply) and **Resolved** and **Kill** at hand. Every session that needs you
+  or is working shows what you asked, what Claude last said, its last steps
+  with the running one under them (failures in red with their error), tasks,
+  subagents, the files of the turn and its numbers. The other open sessions
+  follow in a line each. On wide screens a column beside them holds the
+  [limits](#limits-on-now), the system (machines and their link, open issues,
+  the workspace sync, Claude's state) and the last progress across projects
+  by day, with the issue and the session of each entry; a phone stacks them.
   **Start a session** is here ([sessions](sessions.md)).
 - **Sessions** groups every session: those that need you, then working,
   parked and idle, then the ones Claude started (which show the session that
@@ -27,6 +35,14 @@ links can be shared and the back button works.
   it no longer counts as needing you.
 - Every session card has an **Actions** menu: Open on, Resolved, Keep open,
   Continue, Kill, Forget, whichever apply ([sessions](sessions.md)).
+
+### Limits on Now
+
+Each limit's tile draws its current window behind the numbers: the readings
+so far, a dashed line to where the recent pace leads at the reset, and a faint
+diagonal for an even pace, so a line above it is running hot. Hovering reads
+the value off the line and a click opens Analytics › Limits. A window that
+reset with no reading since says so, rather than keeping the old number.
 
 ## 2. A session's page
 
@@ -54,6 +70,11 @@ The block under the newest exchange shows what is happening now: the
 state, the running tool (what it does, the call below), the text Claude
 is writing, the turn's tools and files, subagents and tasks, and a pending
 **Stop** ([sessions](sessions.md#4-interrupt)).
+
+**Code blocks** in replies, notes and the steps of a command have syntax
+colours in the theme's palette, line numbers (kept out of a selection) and a
+copy button. A language the panel does not know, or a chunk it could not
+fetch, leaves the block plain.
 
 **Task notifications** are what Claude Code tells a session when a
 background task reports: a subagent finished, a background command exited,
@@ -158,7 +179,38 @@ pushes, CPU and memory per machine, the hub's repositories, conflicts) and
 travelling name keeps home, previewed by the hub as you type; then the
 coverage: what travels and what stays home on every machine, and why).
 
-## 6. Desktop (DankMaterialShell)
+## 6. Themes
+
+The theme menu in the top bar and Settings › Colours pick the mode (system,
+light, dark) and the colour scheme, per device: Neutral, ccdash, Catppuccin,
+Gruvbox, Nord, Tokyo Night, Rosé Pine, Everforest, Kanagawa, Solarized,
+Dracula (dark only), or **Wallpaper**.
+
+**Wallpaper** follows a machine's desktop colours, as they change. The
+collector reads them from the files the desktop already generates, on every
+machine that has one, and reports them to the hub, so the phone can follow
+them too:
+
+| Read first                          | Otherwise         |
+| ----------------------------------- | ----------------- |
+| `DankMaterialShell/dms-colors.json` | `wal/colors.json` |
+
+Both under `$XDG_CACHE_HOME` (`~/.cache`).
+
+DankMaterialShell's has both modes and Material's colour roles; pywal's has
+one mode, which then decides light or dark. The newer file wins, so running
+`wal` on a machine that used to run DankMaterialShell takes effect. pywalfox
+needs nothing here: it shows the same `wal/colors.json` in Firefox, and a page
+cannot read an extension. With several machines reporting, Settings › Colours
+picks which one to follow; a machine that stops reporting leaves its last
+colours in place.
+
+A palette names colours, not meanings: pywal fills its slots in any order. So
+the panel takes each state's hue from the nearest colour the wallpaper has,
+makes one at the wallpaper's strength when it has none, and moves lightness
+until text reads against the background (`web/src/lib/theme.ts`).
+
+## 7. Desktop (DankMaterialShell)
 
 `services.ccdash.dms.enable = true` links the [plugin](../dms-plugin/) into
 DankMaterialShell: a bar pill with the sessions that need you, a dash tab

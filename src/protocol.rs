@@ -13,7 +13,7 @@ use crate::state::Window;
 use crate::{
     ask::Answer,
     knowledge::{Hit, Note, NoteOp, NoteView, Query, Upsert, Written},
-    model::{Claim, Kind, RateLimits, ScopedLimit, Session, Skill, Update},
+    model::{Claim, Kind, Palette, RateLimits, ScopedLimit, Session, Skill, Update},
     state::{AgentEntry, NiriEvent, ProcPoll},
     sync::{Keep, SyncStatus},
     wire::Envelope,
@@ -22,6 +22,7 @@ use crate::{
     },
 };
 
+/// 12: the desktop's colours (`Palette` up).
 /// 9: the sync's cost and coverage (`WorkspaceStatus.cost`,
 /// `SeenUnit.excluded`/`.unsyncable`) and held actions acknowledged
 /// (`WorkspaceHeldDone` up).
@@ -39,7 +40,7 @@ use crate::{
 /// `Stop`, `Open` down; `Launched`, `Stopped` up), `branch` and `launched`
 /// on sessions, `branch` on agents entries and envelopes, `launch` on
 /// envelopes.
-pub const VERSION: u32 = 11;
+pub const VERSION: u32 = 12;
 
 /// Collector → hub.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -141,6 +142,11 @@ pub enum ToHub {
     /// they change.
     Skills {
         skills: Vec<Skill>,
+    },
+    /// The colours of this machine's desktop, if it has any. Sent after
+    /// each welcome and when the wallpaper changes them.
+    Palette {
+        palette: Option<Palette>,
     },
     /// How this machine's copy of Claude Code's state stands.
     Sync {

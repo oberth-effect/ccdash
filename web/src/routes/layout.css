@@ -64,6 +64,15 @@
 	--seq-4: #3987e5;
 	--seq-5: #256abf;
 	--seq-6: #184f95;
+	/* code blocks: the light half of GitHub's syntax colours */
+	--hl-keyword: #cf222e;
+	--hl-string: #0a3069;
+	--hl-number: #0550ae;
+	--hl-title: #8250df;
+	--hl-type: #953800;
+	--hl-attr: #0550ae;
+	--hl-builtin: #116329;
+	--hl-comment: #59636e;
 }
 
 .dark {
@@ -115,6 +124,14 @@
 	--seq-4: #5598e7;
 	--seq-5: #86b6ef;
 	--seq-6: #b7d3f6;
+	--hl-keyword: #ff7b72;
+	--hl-string: #a5d6ff;
+	--hl-number: #79c0ff;
+	--hl-title: #d2a8ff;
+	--hl-type: #ffa657;
+	--hl-attr: #79c0ff;
+	--hl-builtin: #7ee787;
+	--hl-comment: #9198a1;
 }
 
 /* ccdash's own scheme (Settings › Colours): the logo's warm neutrals, its
@@ -280,11 +297,8 @@ colours stay the validated ones. */
 .prose-chat code {
 	@apply rounded bg-muted px-1 py-0.5 font-mono text-[0.85em];
 }
-.prose-chat pre {
-	@apply overflow-x-auto rounded-md bg-muted p-3 font-mono text-[0.8rem];
-}
-.prose-chat pre code {
-	@apply bg-transparent p-0;
+.prose-chat pre.code-host {
+	display: contents;
 }
 .prose-chat a {
 	@apply underline underline-offset-2;
@@ -302,6 +316,94 @@ colours stay the validated ones. */
 }
 .prose-chat hr {
 	@apply my-3 border-border;
+}
+
+/* Code blocks (CodeBlock.svelte): highlight.js's classes on the theme's
+colours. NOTE: `pre` keeps its lines whole, the gutter counts on it. */
+.code-block pre {
+	margin: 0;
+}
+.code-block code {
+	@apply rounded-none bg-transparent p-0;
+	font-size: inherit;
+}
+.code-block pre,
+.code-block code {
+	overflow-wrap: normal;
+	white-space: pre;
+}
+.hljs-keyword,
+.hljs-selector-tag,
+.hljs-doctag,
+.hljs-template-tag {
+	color: var(--hl-keyword);
+}
+.hljs-string,
+.hljs-regexp,
+.hljs-template-string,
+.hljs-symbol {
+	color: var(--hl-string);
+}
+.hljs-number,
+.hljs-literal,
+.hljs-bullet,
+.hljs-link {
+	color: var(--hl-number);
+}
+.hljs-title,
+.hljs-section,
+.hljs-title.function_ {
+	color: var(--hl-title);
+}
+.hljs-type,
+.hljs-title.class_,
+.hljs-selector-class,
+.hljs-selector-id {
+	color: var(--hl-type);
+}
+.hljs-attr,
+.hljs-attribute,
+.hljs-property,
+.hljs-variable,
+.hljs-template-variable,
+.hljs-params {
+	color: var(--hl-attr);
+}
+.hljs-built_in,
+.hljs-meta,
+.hljs-name,
+.hljs-tag {
+	color: var(--hl-builtin);
+}
+.hljs-comment,
+.hljs-quote {
+	color: var(--hl-comment);
+	font-style: italic;
+}
+.hljs-addition {
+	color: var(--your-turn);
+	background: color-mix(in oklab, var(--your-turn) 12%, transparent);
+}
+.hljs-deletion {
+	color: var(--critical);
+	background: color-mix(in oklab, var(--critical) 12%, transparent);
+}
+.hljs-strong {
+	font-weight: 600;
+}
+.hljs-emphasis {
+	font-style: italic;
+}
+
+/* Text over a limit's line: a halo of the card keeps it readable, and the
+pointer goes through to the line beneath. */
+.limit-text {
+	position: relative;
+	pointer-events: none;
+	text-shadow:
+		0 0 2px var(--card),
+		0 0 4px var(--card),
+		0 0 6px var(--card);
 }
 
 /* LayerChart's tokens, mapped onto the theme (portaled tooltips sit outside the chart root). */

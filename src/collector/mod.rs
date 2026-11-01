@@ -35,8 +35,8 @@ use crate::{
     config::{CollectorConfig, Launch},
     git,
     knowledge::{self, Note, Query},
-    model::{HostStatus, RateLimits, ScopedLimit, Session, Skill, Snapshot, Update},
-    niri, otlp, paths, procs,
+    model::{HostStatus, Palette, RateLimits, ScopedLimit, Session, Skill, Snapshot, Update},
+    niri, otlp, palette, paths, procs,
     protocol::{Call, Injection, Reply, TelemetryRecord, ToCollector, ToHub, Who, WorkspaceDir},
     state::{AgentEntry, NiriEvent, ProcPoll, StoreMsg, Window},
     sync::collector::{self as sync, Cmd as SyncCmd, Handle as SyncHandle},
@@ -56,6 +56,8 @@ pub enum LocalCmd {
     Niri(NiriEvent),
     Procs(Vec<ProcPoll>, i64),
     Usage(Vec<ScopedLimit>, i64),
+    /// Time to look at the desktop's colours again.
+    PaletteTick,
     Telemetry(Vec<StoreMsg>),
     Snapshot(oneshot::Sender<Snapshot>),
     Resolve(String, oneshot::Sender<Option<Session>>),
@@ -194,6 +196,9 @@ const LAUNCH_FLUSH_WAIT: Duration = Duration::from_secs(60);
 const DIRS_EVERY_MS: i64 = 60_000;
 /// How often the skills on this machine are re-read.
 const SKILLS_EVERY_MS: i64 = 300_000;
+/// How often the desktop's colour files are looked at: two `stat`s, and the
+/// theme follows a new wallpaper within this.
+const PALETTE_EVERY: Duration = Duration::from_secs(3);
 /// A pending interrupt that no tool hook took within this (a turn of text
 /// alone, a lost hook) is dropped; the hub's mark went with the turn.
 const INTERRUPT_KEEP_MS: i64 = 10 * 60_000;
@@ -280,6 +285,14 @@ async fn serve(cfg: Arc<CollectorConfig>) -> Result<()> {
         });
         tokio::spawn(otlp::serve(listener, sink));
     }
+    let palette_tick = local.sender();
+    tokio::spawn(async move {
+        let mut ticks = tokio::time::interval(PALETTE_EVERY);
+        // NOTE: not on the `agents` poll: that needs a working `claude`, a wallpaper does not
+        while palette_tick.send(LocalCmd::PaletteTick).await.is_ok() {
+            ticks.tick().await;
+        }
+    });
     tokio::spawn(ingest_loop(ingest, local.sender()));
     tokio::spawn(api::serve(api, local.clone(), cfg.clone(), sync, workspace));
     tokio::spawn(agents::run(
@@ -498,6 +511,10 @@ struct Actor {
     skills: Vec<Skill>,
     skills_at: i64,
     plugin_dirs: Vec<PathBuf>,
+    /// The desktop's colours last reported (`ToHub::Palette`) and their
+    /// files' times when they were read.
+    palette: Option<Palette>,
+    palette_stamp: palette::Stamp,
     /// The sync thread, when `[sync]` is on.
     sync: Option<SyncHandle>,
     /// The workspace thread, when `[workspace]` is on.
@@ -561,6 +578,8 @@ impl Actor {
             skills: Vec::new(),
             skills_at: 0,
             plugin_dirs: Vec::new(),
+            palette: None,
+            palette_stamp: (None, None),
             sync: None,
             workspace: None,
             interrupts: HashMap::new(),
@@ -631,6 +650,29 @@ impl Actor {
             self.skills = skills.clone();
             self.to_hub(ToHub::Skills { skills });
         }
+    }
+
+    /// Tells the hub the colours of this desktop: always after a welcome,
+    /// else when their files changed.
+    fn report_palette(&mut self, force: bool) {
+        let cache = crate::paths::cache_dir();
+        let stamp = palette::stamp(&cache);
+        if !force && stamp == self.palette_stamp {
+            return;
+        }
+        let read = palette::read(&cache);
+        // NOTE: a file caught mid-write is no change: the next tick reads it
+        if read.is_some() || stamp == (None, None) {
+            self.palette_stamp = stamp;
+            if read == self.palette && !force {
+                return;
+            }
+            self.palette = read;
+        } else if !force {
+            return;
+        }
+        let palette = self.palette.clone();
+        self.to_hub(ToHub::Palette { palette });
     }
 
     fn with_commands(mut self, launch: Launch, attach: Vec<String>) -> Self {
@@ -887,6 +929,7 @@ impl Actor {
                 connected: self.connected,
                 since: self.link_since,
                 rtt_ms: None,
+                palette: self.palette.clone(),
             }],
             sessions,
             rate_limits: self.rate_limits.clone(),
@@ -937,6 +980,7 @@ impl Actor {
                 self.workspaces = Workspaces::from_entries(&workspaces);
                 self.report_dirs(true);
                 self.report_skills(true);
+                self.report_palette(true);
             }
             ToCollector::Notes { workspace, notes } => {
                 self.notes.insert(
@@ -1204,6 +1248,8 @@ async fn run_actor(mut a: Actor, mut rx: mpsc::Receiver<LocalCmd>) {
             }
             LocalCmd::Procs(polls, at) => a.to_hub(ToHub::Procs { polls, at }),
             LocalCmd::Usage(limits, at) => a.to_hub(ToHub::Usage { limits, at }),
+            LocalCmd::PaletteTick if a.connected => a.report_palette(false),
+            LocalCmd::PaletteTick => {}
             LocalCmd::Telemetry(records) => {
                 let records: Vec<TelemetryRecord> = records
                     .into_iter()

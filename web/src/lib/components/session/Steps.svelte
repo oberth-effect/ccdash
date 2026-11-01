@@ -11,6 +11,7 @@
 	import type { Item } from '#lib/api/types.js';
 	import { fmtDuration, fmtTime, known, plural, toolName } from '#lib/format.js';
 	import { ICONS, rows as toRows, summarize } from '#lib/steps.js';
+	import CodeBlock from './CodeBlock.svelte';
 
 	const VISIBLE = 20;
 
@@ -146,15 +147,18 @@
 										: ''}{item.ok ? '' : ' · failed'}</span
 								>
 								{#if item.command || item.summary}
-									<pre
-										class="font-mono break-words whitespace-pre-wrap text-foreground">{item.command ??
-											item.summary}</pre>
+									<CodeBlock
+										code={item.command ?? item.summary}
+										lang={item.command ? 'bash' : null}
+										class="my-0 text-foreground"
+									/>
 								{/if}
 								{#if item.output}
-									<pre
-										class="max-h-60 overflow-auto rounded bg-neutral-950 p-2 font-mono break-words whitespace-pre-wrap {item.ok
-											? 'text-neutral-300'
-											: 'text-critical'}">{item.output}</pre>
+									<CodeBlock
+										code={item.output}
+										bodyClass="max-h-60"
+										class="my-0 {item.ok ? 'text-foreground' : 'text-critical'}"
+									/>
 								{/if}
 							{/if}
 						</div>

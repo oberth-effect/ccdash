@@ -19,6 +19,7 @@ import type {
 	Hit,
 	Launch,
 	LaunchBody,
+	LimitTracks,
 	LaunchTarget,
 	Message,
 	Note,
@@ -215,6 +216,9 @@ export const fetchAnalytics = (params: {
 	workspace?: string;
 	host?: string;
 }) => getJson<Analytics>(`analytics${query(params)}`);
+
+/** Each limit's current window, for the Now page. */
+export const fetchLimitTracks = () => getJson<LimitTracks>('limits');
 
 export const fetchNotes = (params: {
 	workspace?: string;

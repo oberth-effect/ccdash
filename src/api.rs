@@ -31,6 +31,7 @@ mod tests {
         crate::knowledge::projects::Graph::export_all(&cfg).unwrap();
         crate::history::History::export_all(&cfg).unwrap();
         crate::analytics::Analytics::export_all(&cfg).unwrap();
+        crate::analytics::LimitTracks::export_all(&cfg).unwrap();
         crate::push::Subscribe::export_all(&cfg).unwrap();
         crate::push::Subscription::export_all(&cfg).unwrap();
         crate::push::Outcome::export_all(&cfg).unwrap();

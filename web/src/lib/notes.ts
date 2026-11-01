@@ -1,6 +1,9 @@
 // What the panel derives from notes: labels, colours, links, slugs.
 
 import type { Card, NoteKind, Priority, Status } from './api/types';
+import { fmtDate } from './format';
+
+const DAY_MS = 86_400_000;
 
 export const KINDS: NoteKind[] = ['issue', 'memory', 'doc', 'progress'];
 
@@ -64,3 +67,20 @@ export const line = (c: Card) => c.summary || c.excerpt;
 
 /** Day key for grouping, local time. */
 export const dayKey = (ts: number) => new Date(ts).toDateString();
+
+/** A day's heading, seen from `now`. */
+export function dayName(ts: number, now: number): string {
+	const today = dayKey(now);
+	if (dayKey(ts) === today) return 'Today';
+	if (dayKey(ts + DAY_MS) === today) return 'Yesterday';
+	return fmtDate(ts);
+}
+
+/** A progress entry's excerpt without the title it starts with. */
+export function entryRest(e: { title: string; excerpt: string }): string {
+	const head = e.title.replace(/…$/, '');
+	const text = e.excerpt.replace(/^[-*\s]+/, '');
+	if (!text.startsWith(head)) return text;
+	const rest = text.slice(head.length).trim();
+	return rest && e.title.endsWith('…') ? `…${rest}` : rest;
+}

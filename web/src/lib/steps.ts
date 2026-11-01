@@ -14,7 +14,7 @@ import PlugIcon from '@lucide/svelte/icons/plug';
 import SearchIcon from '@lucide/svelte/icons/search';
 import TerminalIcon from '@lucide/svelte/icons/terminal';
 import WrenchIcon from '@lucide/svelte/icons/wrench';
-import type { Item } from './api/types';
+import type { Item, Step } from './api/types';
 import { fmtDuration, plural, toolName } from './format';
 
 export type Tool = Extract<Item, { kind: 'tool' }>;
@@ -105,8 +105,14 @@ export function plugin(name: string): [string, string] | null {
 
 const firstLine = (text: string | undefined) => text?.trim().split('\n')[0] ?? '';
 
+/** What `tell` reads of a call. */
+export type Call = Pick<Tool, 'name' | 'summary' | 'ok'> & {
+	description?: string | null;
+	output?: string | null;
+};
+
 /** One tool call as a sentence. */
-export function tell(t: Tool): Told {
+export function tell(t: Call): Told {
 	const s = t.summary;
 	const told = ((): Told => {
 		switch (t.name) {
@@ -159,9 +165,13 @@ export function tell(t: Tool): Told {
 		if (p) return { text: `${p[0]}: ${p[1]}`, code: s || undefined };
 		return { text: toolName(t.name), code: s || undefined };
 	})();
-	if (!t.ok) told.error = firstLine(t.output) || 'failed';
+	if (!t.ok) told.error = firstLine(t.output ?? undefined) || 'failed';
 	return told;
 }
+
+/** A session's recent step, told as the chat tells a call. */
+export const tellStep = (step: Step) =>
+	tell({ ...step, ok: step.error === null, output: step.error });
 
 export type StepRow = {
 	kind: 'step';

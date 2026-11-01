@@ -78,6 +78,8 @@
 		if (token) setToken(token);
 	}
 
+	$effect(() => prefs.takePalettes(live.hosts));
+
 	onMount(() => {
 		prefs.applyTheme();
 		matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => prefs.applyTheme());

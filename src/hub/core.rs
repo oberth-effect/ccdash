@@ -240,6 +240,11 @@ pub enum Cmd {
         host: String,
         skills: Vec<crate::model::Skill>,
     },
+    /// The colours of a collector's desktop.
+    Palette {
+        host: String,
+        palette: Option<crate::model::Palette>,
+    },
     /// One host's skills (none for a host never heard from).
     HostSkills {
         host: String,
@@ -1043,6 +1048,14 @@ async fn run(mut core: Core, mut rx: mpsc::Receiver<Cmd>) {
             Cmd::Skills { host, skills } => {
                 core.skills.insert(host, skills);
             }
+            Cmd::Palette { host, palette } => {
+                if let Some(status) = core.hosts.get_mut(&host)
+                    && status.palette != palette
+                {
+                    status.palette = palette;
+                    core.hosts_changed();
+                }
+            }
             Cmd::HostSkills { host, reply } => {
                 let _ = reply.send(core.skills.get(&host).cloned().unwrap_or_default());
             }
@@ -1416,6 +1429,7 @@ impl Core {
                 tx: tx.clone(),
             },
         );
+        let palette = self.hosts.remove(&host).and_then(|h| h.palette);
         self.hosts.insert(
             host.clone(),
             HostStatus {
@@ -1423,6 +1437,7 @@ impl Core {
                 connected: true,
                 since: now,
                 rtt_ms: None,
+                palette,
             },
         );
         let state = &self.states[&host];

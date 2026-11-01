@@ -539,7 +539,11 @@ since: number,
 /**
  * Round trip of the hub's last WebSocket ping to the collector.
  */
-rtt_ms: number | null, };
+rtt_ms: number | null, 
+/**
+ * The colours of the machine's desktop; kept while it is offline.
+ */
+palette: Palette | null, };
 
 export type HostTotals = { host: string, sessions: number, working_ms: number, permission_ms: number, 
 /**
@@ -686,6 +690,29 @@ export type Limit = { used_pct: number,
  */
 resets_at: number, };
 
+/**
+ * One limit's window so far, for the Now page.
+ */
+export type LimitTrack = { 
+/**
+ * `five_hour`, `seven_day`, or a scoped limit's label.
+ */
+key: string, 
+/**
+ * None once the window reset without a new reading.
+ */
+forecast: Forecast | null, 
+/**
+ * `(ms, percent)` since the window opened: per minute for the 5-hour
+ * limit, hourly peaks for the weekly ones.
+ */
+points: Array<[number, number]>, };
+
+/**
+ * `GET /api/v1/limits`.
+ */
+export type LimitTracks = { tracks: Array<LimitTrack>, };
+
 export type Limits = { five_hour: Forecast | null, seven_day: Forecast | null, 
 /**
  * 7-day readings since the current window opened, hourly peaks.
@@ -815,6 +842,40 @@ summary: string | null, status: Status, stale_reason: string | null, version: nu
  * `closed_by`; progress carries `issue`; imports carry `source`.
  */
 extra: Record<string, unknown>, body: string, };
+
+/**
+ * Colours generated from a machine's wallpaper, which a panel can follow.
+ */
+export type Palette = { source: PaletteSource, 
+/**
+ * The wallpaper's file name.
+ */
+wallpaper: string | null, 
+/**
+ * The two modes; pywal generates only the one its colours are.
+ */
+dark: PaletteColours | null, light: PaletteColours | null, };
+
+/**
+ * One mode's colours, all `#rrggbb`. The roles are Material You's and only
+ * DankMaterialShell has them; the panel picks its own from `ansi` without.
+ */
+export type PaletteColours = { background: string, foreground: string, primary: string | null, secondary: string | null, tertiary: string | null, 
+/**
+ * A raised surface (cards).
+ */
+surface: string | null, 
+/**
+ * Dim text.
+ */
+muted: string | null, 
+/**
+ * The 16 terminal colours, or none. pywal's follow the wallpaper, not
+ * the ANSI hues: slot 1 is not necessarily a red.
+ */
+ansi: Array<string>, };
+
+export type PaletteSource = "dms" | "pywal";
 
 export type Parallel = { slot_ms: number, 
 /**
@@ -1239,6 +1300,20 @@ your_turn_ms: number, parked_ms: number, };
 
 export type Status = "active" | "stale" | "superseded" | "archived";
 
+/**
+ * A finished main-thread tool call, as a session's card lists it.
+ */
+export type Step = { name: string, summary: string, 
+/**
+ * What Claude said the call does (the Bash tool's `description`).
+ */
+description: string | null, at: number, ms: number | null, 
+/**
+ * The first line of a failed call's error; failed without one is
+ * an empty string.
+ */
+error: string | null, };
+
 export type Subagent = { id: string, agent_type: string, 
 /**
  * The `description` the main thread gave the Agent tool.
@@ -1484,7 +1559,11 @@ export type Turn = { started_at: number, ended_at: number | null, tools: number,
 /**
  * Edited files, relative to the session cwd, in first-edit order.
  */
-files: Array<string>, };
+files: Array<string>, 
+/**
+ * The last few calls, oldest first, without task-list bookkeeping.
+ */
+steps: Array<Step>, };
 
 /**
  * A git repository or a plain directory under the workspace root.

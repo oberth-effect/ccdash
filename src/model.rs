@@ -50,6 +50,21 @@ pub struct ToolRun {
     pub description: Option<String>,
 }
 
+/// A finished main-thread tool call, as a session's card lists it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export_to = "types.ts")]
+pub struct Step {
+    pub name: String,
+    pub summary: String,
+    /// What Claude said the call does (the Bash tool's `description`).
+    pub description: Option<String>,
+    pub at: i64,
+    pub ms: Option<i64>,
+    /// The first line of a failed call's error; failed without one is
+    /// an empty string.
+    pub error: Option<String>,
+}
+
 /// Progress of the current or last turn. Counts cover the main thread;
 /// `subagent_tools` counts tool calls made by subagents.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -62,10 +77,23 @@ pub struct Turn {
     pub subagent_tools: u32,
     /// Edited files, relative to the session cwd, in first-edit order.
     pub files: Vec<String>,
+    /// The last few calls, oldest first, without task-list bookkeeping.
+    #[serde(default)]
+    pub steps: Vec<Step>,
 }
 
 impl Turn {
     const MAX_FILES: usize = 50;
+    const MAX_STEPS: usize = 6;
+    /// Bookkeeping that says nothing about the work.
+    const QUIET: [&str; 6] = [
+        "TaskCreate",
+        "TaskUpdate",
+        "TaskList",
+        "TaskGet",
+        "TodoWrite",
+        "ToolSearch",
+    ];
 
     /// Counts a finished main-thread tool call; successful edits add their file.
     pub fn note_tool(&mut self, name: &str, summary: &str, ok: bool) {
@@ -79,6 +107,16 @@ impl Turn {
         {
             self.files.push(summary.to_owned());
         }
+    }
+
+    /// Keeps a finished main-thread call among the last few.
+    pub fn note_step(&mut self, step: Step) {
+        if Self::QUIET.contains(&step.name.as_str()) {
+            return;
+        }
+        self.steps.push(step);
+        let excess = self.steps.len().saturating_sub(Self::MAX_STEPS);
+        self.steps.drain(..excess);
     }
 }
 
@@ -447,6 +485,49 @@ pub struct HostStatus {
     /// Round trip of the hub's last WebSocket ping to the collector.
     #[serde(default)]
     pub rtt_ms: Option<u64>,
+    /// The colours of the machine's desktop; kept while it is offline.
+    #[serde(default)]
+    pub palette: Option<Palette>,
+}
+
+/// Colours generated from a machine's wallpaper, which a panel can follow.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export_to = "types.ts")]
+pub struct Palette {
+    pub source: PaletteSource,
+    /// The wallpaper's file name.
+    pub wallpaper: Option<String>,
+    /// The two modes; pywal generates only the one its colours are.
+    pub dark: Option<PaletteColours>,
+    pub light: Option<PaletteColours>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export_to = "types.ts")]
+#[serde(rename_all = "snake_case")]
+pub enum PaletteSource {
+    /// DankMaterialShell's matugen run.
+    Dms,
+    Pywal,
+}
+
+/// One mode's colours, all `#rrggbb`. The roles are Material You's and only
+/// DankMaterialShell has them; the panel picks its own from `ansi` without.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export_to = "types.ts")]
+pub struct PaletteColours {
+    pub background: String,
+    pub foreground: String,
+    pub primary: Option<String>,
+    pub secondary: Option<String>,
+    pub tertiary: Option<String>,
+    /// A raised surface (cards).
+    pub surface: Option<String>,
+    /// Dim text.
+    pub muted: Option<String>,
+    /// The 16 terminal colours, or none. pywal's follow the wallpaper, not
+    /// the ANSI hues: slot 1 is not necessarily a red.
+    pub ansi: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]

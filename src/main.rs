@@ -22,6 +22,7 @@ mod model;
 mod niri;
 mod notify;
 mod otlp;
+mod palette;
 mod paths;
 mod procs;
 mod protocol;

@@ -15,13 +15,14 @@
 	import Prose from '#lib/components/session/Prose.svelte';
 	import { fmtDate, fmtDuration, fmtTime, plural } from '#lib/format.js';
 	import { live } from '#lib/live/store.svelte.js';
-	import { dayKey } from '#lib/notes.js';
+	import { dayKey, dayName, entryRest } from '#lib/notes.js';
 	import { notePanel } from '#lib/notepanel.svelte.js';
 
 	let { ws, progress, showProject }: { ws: string; progress: Entry[]; showProject: boolean } =
 		$props();
 
 	const DAY_MS = 86_400_000;
+	const more = entryRest;
 
 	type Day = { key: string; day: string; items: Entry[]; issues: number; sessions: number };
 
@@ -31,7 +32,8 @@
 			const key = dayKey(e.logged_at);
 			const last = out.at(-1);
 			if (last && last.key === key) last.items.push(e);
-			else out.push({ key, day: dayName(e.logged_at), items: [e], issues: 0, sessions: 0 });
+			else
+				out.push({ key, day: dayName(e.logged_at, live.now), items: [e], issues: 0, sessions: 0 });
 		}
 		for (const d of out) {
 			d.issues = new Set(d.items.flatMap((e) => (e.issue ? [e.issue] : []))).size;
@@ -48,22 +50,6 @@
 	let open = $state<Record<string, boolean>>({});
 	let bodies = $state<Record<string, { html: string; heading: string | null }>>({});
 	let failed = $state<Record<string, string>>({});
-
-	function dayName(ts: number): string {
-		const today = dayKey(live.now);
-		if (dayKey(ts) === today) return 'Today';
-		if (dayKey(ts + DAY_MS) === today) return 'Yesterday';
-		return fmtDate(ts);
-	}
-
-	/** The excerpt without the title it starts with. */
-	function more(e: Entry): string {
-		const head = e.title.replace(/…$/, '');
-		const text = e.excerpt.replace(/^[-*\s]+/, '');
-		if (!text.startsWith(head)) return text;
-		const rest = text.slice(head.length).trim();
-		return rest && e.title.endsWith('…') ? `…${rest}` : rest;
-	}
 
 	/** The rendered entry without its first block when that is the title
 	 * (whole, where `title` is cut short), which comes back as `heading`. */

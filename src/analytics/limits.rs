@@ -53,6 +53,26 @@ pub struct ScopedForecast {
     pub week: Vec<(i64, f64)>,
 }
 
+/// `GET /api/v1/limits`.
+#[derive(Debug, Default, PartialEq, Serialize, TS)]
+#[ts(export_to = "types.ts")]
+pub struct LimitTracks {
+    pub tracks: Vec<LimitTrack>,
+}
+
+/// One limit's window so far, for the Now page.
+#[derive(Debug, PartialEq, Serialize, TS)]
+#[ts(export_to = "types.ts")]
+pub struct LimitTrack {
+    /// `five_hour`, `seven_day`, or a scoped limit's label.
+    pub key: String,
+    /// None once the window reset without a new reading.
+    pub forecast: Option<Forecast>,
+    /// `(ms, percent)` since the window opened: per minute for the 5-hour
+    /// limit, hourly peaks for the weekly ones.
+    pub points: Vec<(i64, f64)>,
+}
+
 #[derive(Debug, PartialEq, Serialize, TS)]
 #[ts(export_to = "types.ts")]
 pub struct Forecast {
@@ -155,6 +175,71 @@ pub fn limits(
     out.windows = windows(&in_range);
     out.shares = shares(conn, scope, week_start, workspaces)?;
     Ok(out)
+}
+
+/// Every live limit's current window, without what `limits` adds for a
+/// range: cheap enough for a page that stays open.
+pub fn tracks(conn: &Connection, live: &RateLimits, now: i64) -> Result<LimitTracks> {
+    let recent = readings(conn, now - SEVEN_DAYS_MS, now)?;
+    let five: Vec<(i64, f64)> = recent.iter().filter_map(|r| Some((r.0, r.1?))).collect();
+    let seven: Vec<(i64, f64)> = recent.iter().filter_map(|r| Some((r.0, r.2?))).collect();
+    let start = |f: &Forecast| f.resets_at - f.window_ms;
+    let mut out = Vec::new();
+    if let Some(limit) = &live.five_hour {
+        let forecast = forecast(
+            limit,
+            live.updated_at,
+            now,
+            FIVE_HOURS_MS,
+            RECENT_FIVE_HOUR_MS,
+            &five,
+        );
+        let from = forecast.as_ref().map_or(now, start);
+        let points = five.into_iter().filter(|p| p.0 >= from).collect();
+        out.push(LimitTrack {
+            key: "five_hour".into(),
+            forecast,
+            points,
+        });
+    }
+    if let Some(limit) = &live.seven_day {
+        let forecast = forecast(
+            limit,
+            live.updated_at,
+            now,
+            SEVEN_DAYS_MS,
+            RECENT_SEVEN_DAY_MS,
+            &seven,
+        );
+        let points = hourly_peaks(&seven, forecast.as_ref().map_or(now, start));
+        out.push(LimitTrack {
+            key: "seven_day".into(),
+            forecast,
+            points,
+        });
+    }
+    for limit in &live.scoped {
+        let readings = scoped_readings(conn, &limit.label, now - SEVEN_DAYS_MS, now)?;
+        // NOTE: scoped rows are weekly ones (`weekly_scoped` in `/usage`)
+        let forecast = forecast(
+            &Limit {
+                used_pct: limit.used_pct,
+                resets_at: limit.resets_at,
+            },
+            limit.read_at,
+            now,
+            SEVEN_DAYS_MS,
+            RECENT_SEVEN_DAY_MS,
+            &readings,
+        );
+        let points = hourly_peaks(&readings, forecast.as_ref().map_or(now, start));
+        out.push(LimitTrack {
+            key: limit.label.clone(),
+            forecast,
+            points,
+        });
+    }
+    Ok(LimitTracks { tracks: out })
 }
 
 /// Highest reading per hour from `from` on.
@@ -438,6 +523,70 @@ mod tests {
             fable.week.len(),
             1,
             "the reading at `now` is past the range"
+        );
+
+        let tracks = tracks(&conn, &live, now + 1).unwrap().tracks;
+        assert_eq!(tracks.len(), 1, "no 5-hour or 7-day reading yet");
+        assert_eq!(tracks[0].key, "Fable");
+        assert_eq!(tracks[0].points.len(), 2);
+        assert!(tracks[0].forecast.is_some());
+    }
+
+    #[test]
+    fn tracks_cover_the_open_window_only() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(crate::store::SCHEMA).unwrap();
+        let now = 1_000 * HOUR_MS;
+        // Opened 2 h ago: the reading before that is the previous window's.
+        for (ts, five, seven) in [
+            (now - 3 * HOUR_MS, 90.0, 10.0),
+            (now - HOUR_MS, 5.0, 11.0),
+            (now - 10 * MINUTE_MS, 20.0, 12.0),
+        ] {
+            conn.execute(
+                "INSERT INTO samples (ts, host, session, five_hour, seven_day) VALUES (?1, 'h', 's', ?2, ?3)",
+                params![ts, five, seven],
+            )
+            .unwrap();
+        }
+        let live = RateLimits {
+            five_hour: Some(Limit {
+                used_pct: 20.0,
+                resets_at: (now + 3 * HOUR_MS) / 1000,
+            }),
+            seven_day: Some(Limit {
+                used_pct: 12.0,
+                resets_at: (now + 6 * 24 * HOUR_MS) / 1000,
+            }),
+            updated_at: now,
+            ..RateLimits::default()
+        };
+        let tracks = tracks(&conn, &live, now).unwrap().tracks;
+        assert_eq!(tracks.len(), 2);
+        assert_eq!(tracks[0].key, "five_hour");
+        assert_eq!(
+            tracks[0].points,
+            [(now - HOUR_MS, 5.0), (now - 10 * MINUTE_MS, 20.0)]
+        );
+        let week: Vec<f64> = tracks[1].points.iter().map(|p| p.1).collect();
+        assert_eq!(
+            week,
+            [10.0, 12.0],
+            "hourly peaks: the last two share an hour"
+        );
+
+        let stale = RateLimits {
+            five_hour: Some(Limit {
+                used_pct: 80.0,
+                resets_at: (now - HOUR_MS) / 1000,
+            }),
+            ..RateLimits::default()
+        };
+        let reset = super::tracks(&conn, &stale, now).unwrap().tracks;
+        assert!(reset[0].forecast.is_none());
+        assert!(
+            reset[0].points.is_empty(),
+            "a reset window has no readings yet"
         );
     }
 

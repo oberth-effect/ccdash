@@ -48,7 +48,7 @@ and notes in step across machines.
   tokens, permissions). ([panel](docs/panel.md#4-history-and-analytics))
 - **On the desktop:** a DankMaterialShell bar pill and dash tab, and a key
   to focus the session that waited longest.
-  ([panel](docs/panel.md#5-desktop-dankmaterialshell))
+  ([panel](docs/panel.md#7-desktop-dankmaterialshell))
 
 ## 2. How it fits together
 
@@ -144,7 +144,7 @@ In the panel:
 
 | Page         | For                                                                                                                                          |
 | ------------ | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| Now          | what needs you, with the answer inline; what is working; limits                                                                              |
+| Now          | the page to leave open: what needs you, with the answer inline; what each session is doing; limits, machines, progress                       |
 | Sessions     | every session; its page has the chat, the shell and the details                                                                              |
 | Projects     | each project's board, sessions, progress, documents, memories, graph                                                                         |
 | History      | sessions over time as lanes, time per project, tools, the 5-hour limit                                                                       |

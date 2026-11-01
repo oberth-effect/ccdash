@@ -92,4 +92,4 @@ under `/sync/` with the collector's token; the workspace sync uses git
 smart HTTP under `/git/` with the same token (`git http-backend` behind
 the hub) and carries its configuration, unit states and conflict
 resolutions over the WebSocket (protocol 8). The collectors' skill reports
-came with protocol 11.
+came with protocol 11, the desktop's colours with protocol 12.
