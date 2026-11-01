@@ -10,7 +10,7 @@ mod link;
 mod queue;
 
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, HashSet},
     fs::Permissions,
     os::unix::{fs::PermissionsExt, net::UnixStream as StdUnixStream},
     path::{Path, PathBuf},
@@ -496,6 +496,9 @@ struct Actor {
     /// Interrupts the owner asked for, by session: when. The session's
     /// next tool hook takes one and stops the turn.
     interrupts: HashMap<String, i64>,
+    /// Background jobs Claude Code lists on this machine: a session
+    /// continued here keeps its saved options.
+    jobs: HashSet<String>,
 }
 
 impl Actor {
@@ -549,6 +552,7 @@ impl Actor {
             sync: None,
             workspace: None,
             interrupts: HashMap::new(),
+            jobs: HashSet::new(),
         }
     }
 
@@ -665,10 +669,18 @@ impl Actor {
         git::branch(Path::new(dir))
     }
 
+    /// Whether job `id` can continue on its saved options here: Claude Code
+    /// lists it, and the settings file a launched one names is still there.
+    fn has_saved_options(&self, id: &str) -> bool {
+        let from_a_terminal = self.sessions.get(id).is_some_and(|s| !s.launched);
+        self.jobs.contains(id) && (from_a_terminal || actions::settings_kept(id))
+    }
+
     /// Starts `spec` in the background and tells the hub what came of it;
     /// a session to continue is synced first (it may have run elsewhere).
     fn launch(&self, launch: String, spec: LaunchSpec) {
         let (hub, cfg) = (self.hub.clone(), self.launch.clone());
+        let jobs = self.jobs.clone();
         let inside = self.workspaces.locate(&spec.cwd).is_some();
         let sync = self.sync.clone().filter(|_| spec.resume.is_some());
         tokio::spawn(async move {
@@ -678,7 +690,7 @@ impl Actor {
                 warn!("launch {launch}: the sync pass did not finish in time");
             }
             let result = if inside {
-                actions::launch(&cfg, &spec).await
+                actions::launch(&cfg, &spec, &jobs).await
             } else {
                 Err(format!("{} is outside every ccdash workspace", spec.cwd))
             };
@@ -974,6 +986,11 @@ impl Actor {
                 permission_mode,
                 resume,
             } => {
+                let saved = model.is_none()
+                    && permission_mode.is_none()
+                    && resume
+                        .as_deref()
+                        .is_some_and(|id| self.has_saved_options(id));
                 let spec = LaunchSpec {
                     cwd,
                     prompt,
@@ -981,6 +998,7 @@ impl Actor {
                     permission_mode,
                     resume,
                     nonce: launch.clone(),
+                    saved,
                 };
                 self.launch(launch, spec);
             }
@@ -1107,6 +1125,11 @@ async fn run_actor(mut a: Actor, mut rx: mpsc::Receiver<LocalCmd>) {
                 for e in &mut list {
                     e.branch = a.branch_of(Some(&e.session_id), e.cwd.as_deref());
                 }
+                a.jobs = list
+                    .iter()
+                    .filter(|e| e.kind.as_deref() == Some("background"))
+                    .map(|e| e.session_id.clone())
+                    .collect();
                 if a.connected {
                     a.report_dirs(false);
                 }

@@ -34,6 +34,10 @@ pub struct Envelope {
     /// panel did.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub launch: Option<String>,
+    /// The project the session was started for (`CCDASH_PROJECT`, which
+    /// `claude --project` sets).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<String>,
     /// The git branch of the session's directory, read by the collector
     /// for statusline readings.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -133,6 +137,7 @@ mod tests {
             remote_id: None,
             applied_title: None,
             launch: None,
+            project: None,
             branch: None,
             payload,
         }

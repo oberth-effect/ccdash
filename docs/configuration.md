@@ -35,26 +35,27 @@ channel plugin in Claude Code's managed settings.
 
 `services.ccdash.*`
 
-| Option                                     | Default                          | Meaning                                                          |
-| ------------------------------------------ | -------------------------------- | ---------------------------------------------------------------- |
-| `enable`                                   | `false`                          | run the collector and wire the hooks into `programs.claude-code` |
-| `hub.url`, `hub.tokenFile`                 | —                                | the hub's `/collect` endpoint and this machine's token           |
-| `sync.enable`                              | `false`                          | keep `~/.claude` in step through the hub                         |
-| `workspace.enable`, `workspace.root`       | `false`, `~/ProjectBundle`       | keep the workspace root in step through the hub                  |
-| `workspace.include`, `.exclude`            | `[ ]`, `[ ]`                     | globs on unit ids (the starting configuration)                   |
-| `workspace.alwaysExclude`                  | `node_modules`, `target`, …      | directory names that never travel                                |
-| `workspace.syncIgnored`                    | `.env`, `.env.*`, `.envrc.local` | gitignored paths that travel anyway                              |
-| `workspace.maxFileMb`, `.autoIncludeMb`    | `64`, `500`                      | the untracked file cap, the new-directory threshold              |
-| `launch.direnv`, `launch.env`              | `programs.direnv.enable`, `[ ]`  | launched sessions get the matching direnv variables              |
-| `dms.enable`                               | `false`                          | the DankMaterialShell plugin                                     |
-| `claudeCode.hooks.enable`                  | `true`                           | the hooks                                                        |
-| `claudeCode.asks.enable`                   | `true`                           | answer prompts from the panel (else only report them)            |
-| `claudeCode.channel.enable`                | `false`                          | start sessions with the channel (replies from the panel)         |
-| `claudeCode.channel.devFlag`               | `false`                          | load the channel without the allowlist (asks every launch)       |
-| `claudeCode.telemetry.enable`, `.port`     | `false`, `7839`                  | OpenTelemetry into the collector                                 |
-| `claudeCode.statusLine.enable`, `.command` | `false`, —                       | read the statusline, then run your own                           |
-| `systemdTarget`                            | `graphical-session.target`       | what the service starts with                                     |
-| `settings`                                 | `{ }`                            | any key of the collector's TOML                                  |
+| Option                                     | Default                          | Meaning                                                                                                                                               |
+| ------------------------------------------ | -------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `enable`                                   | `false`                          | run the collector and wire the hooks into `programs.claude-code`                                                                                      |
+| `hub.url`, `hub.tokenFile`                 | —                                | the hub's `/collect` endpoint and this machine's token                                                                                                |
+| `sync.enable`                              | `false`                          | keep `~/.claude` in step through the hub                                                                                                              |
+| `workspace.enable`, `workspace.root`       | `false`, `~/ProjectBundle`       | keep the workspace root in step through the hub                                                                                                       |
+| `workspace.include`, `.exclude`            | `[ ]`, `[ ]`                     | globs on unit ids (the starting configuration)                                                                                                        |
+| `workspace.alwaysExclude`                  | `node_modules`, `target`, …      | directory names that never travel                                                                                                                     |
+| `workspace.syncIgnored`                    | `.env`, `.env.*`, `.envrc.local` | gitignored paths that travel anyway                                                                                                                   |
+| `workspace.maxFileMb`, `.autoIncludeMb`    | `64`, `500`                      | the untracked file cap, the new-directory threshold                                                                                                   |
+| `launch.direnv`, `launch.env`              | `programs.direnv.enable`, `[ ]`  | launched sessions get the matching direnv variables                                                                                                   |
+| `dms.enable`                               | `false`                          | the DankMaterialShell plugin                                                                                                                          |
+| `claudeCode.hooks.enable`                  | `true`                           | the hooks                                                                                                                                             |
+| `claudeCode.daemon.enable`                 | `true`                           | Claude Code's supervisor as its own user service, so a collector restart leaves background sessions running ([sessions](sessions.md#8-configuration)) |
+| `claudeCode.asks.enable`                   | `true`                           | answer prompts from the panel (else only report them)                                                                                                 |
+| `claudeCode.channel.enable`                | `false`                          | start sessions with the channel (replies from the panel)                                                                                              |
+| `claudeCode.channel.devFlag`               | `false`                          | load the channel without the allowlist (asks every launch)                                                                                            |
+| `claudeCode.telemetry.enable`, `.port`     | `false`, `7839`                  | OpenTelemetry into the collector                                                                                                                      |
+| `claudeCode.statusLine.enable`, `.command` | `false`, —                       | read the statusline, then run your own                                                                                                                |
+| `systemdTarget`                            | `graphical-session.target`       | what the service starts with                                                                                                                          |
+| `settings`                                 | `{ }`                            | any key of the collector's TOML                                                                                                                       |
 
 ## 3. Hub keys
 
@@ -87,7 +88,7 @@ channel plugin in Claude Code's managed settings.
 | ------------------------------------------- | ----------------------------------------------- | ---------------------------------------------------------------------------------------- |
 | `host`                                      | the kernel's host name                          | must match a key of the hub's `collect.tokens`                                           |
 | `hub.url`, `hub.token_file`                 | —                                               | the hub's `/collect` endpoint, this machine's token                                      |
-| `agents.command`, `.interval_secs`          | `["claude","agents","--json"]`, `5`             | the liveness poll                                                                        |
+| `agents.command`, `.interval_secs`          | `["claude","agents","--json","--all"]`, `5`     | the liveness poll                                                                        |
 | `usage.command`, `.interval_secs`           | `["claude"]`, `600`                             | the `/usage` poll (`[]` is off)                                                          |
 | `launch.command`                            | `["claude"]`                                    | starts sessions from the panel (`[]` is off)                                             |
 | `launch.stop`, `.remove`                    | `claude stop {id}`, `claude rm {id}`            | stop a background session; remove one nothing runs                                       |

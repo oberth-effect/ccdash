@@ -272,6 +272,10 @@ pub struct Session {
     /// Started (or continued) from the panel: a finished turn notifies.
     #[serde(default)]
     pub launched: bool,
+    /// A background session Claude Code retired while idle: no process runs
+    /// it, and a reply restarts it from its saved conversation.
+    #[serde(default)]
+    pub asleep: bool,
     /// Name from `claude agents`.
     pub name: Option<String>,
     /// Conversation title from the statusline (also the window title).
@@ -332,6 +336,13 @@ pub struct Session {
 }
 
 impl Session {
+    /// Claude started it (`claude --bg` in a tool call, a fork), so it
+    /// answers to that session. One the owner started, from the panel or a
+    /// terminal, is theirs like any other.
+    pub fn is_agent(&self) -> bool {
+        self.kind == Kind::Background && self.parent.is_some() && !self.launched
+    }
+
     /// An idle interactive session with nothing reported yet.
     pub fn stub(host: &str, id: &str, cwd: &str) -> Self {
         Self {
@@ -347,6 +358,7 @@ impl Session {
             project_pinned: false,
             branch: None,
             launched: false,
+            asleep: false,
             name: None,
             title: None,
             activity: Activity::Idle,

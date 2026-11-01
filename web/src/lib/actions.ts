@@ -20,7 +20,7 @@ import {
 	type Session
 } from './api/index';
 import { live } from './live/store.svelte';
-import { busy, isAgent, label } from './session';
+import { busy, isBackground, label } from './session';
 import { starter } from './starter.svelte';
 
 export type ActionId = 'open' | 'interrupt' | 'resolve' | 'keep' | 'continue' | 'kill' | 'forget';
@@ -56,7 +56,7 @@ export const ACTIONS: SessionAction[] = [
 		id: 'open',
 		label: (s) => `Open on ${s.host}`,
 		icon: MonitorUpIcon,
-		offered: (s) => running(s) && online(s) && isAgent(s),
+		offered: (s) => running(s) && online(s) && isBackground(s),
 		run: async (s) => {
 			await put(openSession(s.id));
 			return `Opening on ${s.host}.`;
@@ -79,7 +79,11 @@ export const ACTIONS: SessionAction[] = [
 		icon: CircleCheckIcon,
 		offered: (s) => running(s) && online(s) && s.hooked && !s.resolved,
 		blocked: (s) =>
-			s.channel ? null : 'Runs without the ccdash channel: wrap it up in its terminal.',
+			s.channel
+				? null
+				: s.asleep
+					? 'Asleep: send it a message first, or kill it.'
+					: 'Runs without the ccdash channel: wrap it up in its terminal.',
 		confirm: (s) => ({
 			title: `Resolve “${label(s)}”?`,
 			body:
@@ -121,7 +125,7 @@ export const ACTIONS: SessionAction[] = [
 		offered: (s) => running(s) && online(s),
 		confirm: (s) => ({
 			title: `Kill “${label(s)}” on ${s.host}?`,
-			body: isAgent(s)
+			body: isBackground(s)
 				? `Runs claude stop ${shortId(s)} on ${s.host}. The conversation is kept: continue it later from its page.`
 				: `Sends SIGTERM to its Claude process${s.pid ? ` (pid ${s.pid})` : ''} on ${s.host}: ` +
 					'the session in that terminal ends. The conversation is kept: continue it later from its page.',

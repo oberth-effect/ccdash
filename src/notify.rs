@@ -19,7 +19,7 @@ use ts_rs::TS;
 
 use crate::{
     config::Notify,
-    model::{Activity, Ask, AskKind, Kind, Session},
+    model::{Activity, Ask, AskKind, Session},
     state::State,
     util::{now_ms, truncate},
 };
@@ -167,7 +167,7 @@ impl Composer {
             // NOTE: hooked only: unhooked turns come from the agents poll, which flaps
             if self.cfg.turns
                 && s.hooked
-                && (s.kind == Kind::Interactive || s.launched)
+                && !s.is_agent()
                 && s.activity == Activity::YourTurn
                 && s.asks.is_empty()
                 && s.activity_since >= self.started_at
@@ -298,7 +298,7 @@ impl Composer {
             (_, Some(reply)) if !reply.text.trim().is_empty() => reply.text.clone(),
             _ => "Claude finished.".into(),
         };
-        // NOTE: a session started from the panel runs in the background: it finished
+        // NOTE: a session started from the panel has no terminal: it finished
         let title = if s.launched {
             format!("Finished: {}", label(s))
         } else {
@@ -453,6 +453,7 @@ mod tests {
                 remote_id: None,
                 applied_title: None,
                 launch: None,
+                project: None,
                 branch: None,
                 payload,
             };
@@ -586,6 +587,7 @@ mod tests {
             remote_id: None,
             applied_title: None,
             launch: None,
+            project: None,
             branch: None,
             payload: json!({"session_id": SID, "hook_event_name": "Stop",
                 "last_assistant_message": "All done."}),
@@ -615,7 +617,7 @@ mod tests {
     }
 
     #[test]
-    fn launched_background_sessions_notify_when_finished() {
+    fn background_sessions_notify_unless_claude_started_them() {
         let mut st = state_with_prompt(2_000);
         let mut fx = Effects::default();
         let poll = |st: &mut State, fx: &mut Effects| {
@@ -638,16 +640,60 @@ mod tests {
             remote_id: None,
             applied_title: None,
             launch: None,
+            project: None,
             branch: None,
             payload: json!({"session_id": SID, "hook_event_name": "Stop",
                 "last_assistant_message": "Done."}),
         };
         st.apply(&stop, &mut fx);
-        assert!(composer().notes(&st, &HashMap::new(), 5_000).is_empty());
+        // the owner's, started in a terminal
+        let notes = composer().notes(&st, &HashMap::new(), 5_000);
+        assert_eq!(notes.len(), 1);
+        assert!(notes[0].content.title.ends_with(": your turn"));
         assert!(st.set_launched(SID, None, &mut fx));
         let notes = composer().notes(&st, &HashMap::new(), 5_000);
         assert_eq!(notes.len(), 1);
         assert!(notes[0].content.title.starts_with("Finished: "));
         assert_eq!(notes[0].content.body, "Done.");
+        // an agent answers to the session that started it
+        let mut agent = state_with_prompt(2_000);
+        let mut fx = Effects::default();
+        let parent = Envelope {
+            ts: 2_100,
+            payload: json!({"session_id": "other", "hook_event_name": "PreToolUse",
+                "tool_name": "Bash", "tool_input": {"command": "claude --bg go"}}),
+            ..stop.clone()
+        };
+        agent.apply(&parent, &mut fx);
+        let start = Envelope {
+            ts: 2_200,
+            payload: json!({"session_id": "child", "hook_event_name": "SessionStart",
+                "source": "startup"}),
+            ..stop.clone()
+        };
+        agent.apply(&start, &mut fx);
+        let done = Envelope {
+            payload: json!({"session_id": "child", "hook_event_name": "Stop",
+                "last_assistant_message": "Done."}),
+            ..stop
+        };
+        agent.apply(&done, &mut fx);
+        agent.agents(
+            &[crate::state::AgentEntry {
+                session_id: "child".into(),
+                kind: Some("background".into()),
+                pid: Some(1),
+                ..Default::default()
+            }],
+            4_500,
+            &mut fx,
+        );
+        assert!(agent.session("child").is_some_and(Session::is_agent));
+        assert!(
+            composer()
+                .notes(&agent, &HashMap::new(), 5_000)
+                .iter()
+                .all(|n| n.content.session != "child")
+        );
     }
 }

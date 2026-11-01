@@ -13,11 +13,16 @@ const ACTIVITY = {
     gone: { label: "Ended", rank: 6 }
 };
 
-function isAgent(s) {
+function isBackground(s) {
     return s.kind === "background";
 }
 
-/** Background sessions answer to their parent: a done turn is "finished". */
+/** Started by Claude; one the owner started is theirs like any other. */
+function isAgent(s) {
+    return isBackground(s) && !!s.parent && !s.launched;
+}
+
+/** Agents answer to their parent: a done turn is "finished". */
 function shown(s) {
     return isAgent(s) && s.activity === "your_turn" ? "finished" : s.activity;
 }

@@ -30,7 +30,7 @@ niri window events ────────────────┘      └�
 ## 2. What Claude Code interfaces are used
 
 Public ones only: `claude agents --json`, `claude --bg`, `claude stop`,
-`claude rm`, `claude attach`, hooks, the statusline payload,
+`claude rm`, `claude attach`, `claude daemon run`, hooks, the statusline payload,
 [channels](https://code.claude.com/docs/en/channels-reference),
 [OpenTelemetry](https://code.claude.com/docs/en/monitoring-usage) and the
 `/usage` report.
@@ -46,7 +46,7 @@ lines; the transcript format is never parsed.
   hub over one WebSocket (`/collect`, a token per machine). While the hub
   is unreachable, events wait in an on-disk queue and Claude Code runs as
   if ccdash were not there.
-- Polls `claude agents --json` every 5 s for liveness and background
+- Polls `claude agents --json --all` every 5 s for liveness and background
   sessions, and `claude -p /usage` every 10 minutes for the per-model
   weekly limits the statusline lacks (safe mode: no model request, no
   hooks, nothing saved; about a second of CPU).

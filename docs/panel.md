@@ -21,7 +21,7 @@ links can be shared and the back button works.
   their link state, the account limits and the last progress entries.
   **Start a session** is here ([sessions](sessions.md)).
 - **Sessions** groups every session: those that need you, then working,
-  parked and idle, then background ones (which show the session that
+  parked and idle, then the ones Claude started (which show the session that
   started them and "Finished" instead of "Your turn").
 - A session left on your turn for an hour is **parked**: most likely done,
   it no longer counts as needing you.

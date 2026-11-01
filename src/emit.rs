@@ -203,6 +203,9 @@ pub fn envelope(source: Source, payload: Value, applied_title: Option<String>) -
         launch: std::env::var("CCDASH_LAUNCH")
             .ok()
             .filter(|id| paths::plain_session_id(id)),
+        project: std::env::var("CCDASH_PROJECT")
+            .ok()
+            .filter(|p| !p.trim().is_empty()),
         branch: None,
         payload,
     }

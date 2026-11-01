@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use crate::{
-    model::{Activity, Kind, Session},
+    model::{Activity, Session},
     waits::{self, CLOSERS, Close, Edges, Wait},
     workspace::{IN_SCOPE, Scope},
 };
@@ -60,7 +60,7 @@ pub struct Lane {
     pub host: String,
     pub cwd: String,
     pub live: bool,
-    /// Started by Claude or `claude --bg`; its finished time is not a wait on you.
+    /// Started by Claude; its finished time is not a wait on you.
     pub background: bool,
     /// `[from, to, activity]`; time spent gone is not drawn. Your-turn
     /// stretches are drawn by how they ended (see `waits`).
@@ -91,6 +91,7 @@ struct Row {
     name: Option<String>,
     title: Option<String>,
     kind: String,
+    launched: bool,
     started_at: i64,
     ended_at: Option<i64>,
 }
@@ -202,7 +203,8 @@ pub fn lanes(conn: &Connection, scope: &Scope, live: &[Session]) -> Result<Vec<L
                 .is_some_and(|ended| ended - row.started_at < TRIVIAL_MS)
             && initial != Activity::Working
             && !events.iter().any(|(_, t)| t.to == Activity::Working);
-        let background = current.map_or(row.kind == "background", |s| s.kind == Kind::Background);
+        let background =
+            current.map_or(row.kind == "background" && !row.launched, Session::is_agent);
         let mut segments = segments(row.started_at.max(since), end, initial, &events);
         if segments.is_empty() || trivial {
             continue;
@@ -304,7 +306,7 @@ fn finished_is_idle(segments: &mut Vec<(i64, i64, Activity)>) {
 
 fn sessions_overlapping(conn: &Connection, scope: &Scope) -> Result<Vec<Row>> {
     let mut stmt = conn.prepare_cached(
-        "SELECT id, host, cwd, name, title, kind, started_at, ended_at FROM sessions
+        "SELECT id, host, cwd, name, title, kind, started_at, ended_at, COALESCE(launched, 0) FROM sessions
             WHERE started_at < ?2 AND (ended_at IS NULL OR ended_at >= ?1)",
     )?;
     let rows = stmt.query_map(params![scope.since, scope.until], |r| {
@@ -315,6 +317,7 @@ fn sessions_overlapping(conn: &Connection, scope: &Scope) -> Result<Vec<Row>> {
             name: r.get(3)?,
             title: r.get(4)?,
             kind: r.get(5)?,
+            launched: r.get(8)?,
             started_at: r.get(6)?,
             ended_at: r.get(7)?,
         })

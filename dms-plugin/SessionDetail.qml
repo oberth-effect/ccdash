@@ -133,9 +133,9 @@ Column {
         spacing: Theme.spacingS
 
         DankButton {
-            text: root.s.window || Cc.isAgent(root.s) ? "Focus" : "Focus (no window)"
+            text: root.s.window || Cc.isBackground(root.s) ? "Focus" : "Focus (no window)"
             iconName: "select_window"
-            enabled: !!root.s.window || Cc.isAgent(root.s)
+            enabled: !!root.s.window || Cc.isBackground(root.s)
             onClicked: root.focusRequested()
         }
 

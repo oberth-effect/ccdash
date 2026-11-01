@@ -40,22 +40,36 @@ on the chosen host. The collector then runs, in the workspace's directory:
 
 `claude --bg` prints the session's id, and the session's hooks carry the
 launch id (`CCDASH_LAUNCH` in the settings file's `env`: background
-sessions run in Claude Code's background daemon, which never sees the
+sessions run under Claude Code's supervisor, which never sees the
 collector's environment), so the hub finds the session either way. With
 `launch.direnv` set, the collector first runs it (`direnv export json`) in
 the directory and puts the variables matching the `launch.env` globs into
 the same `env`, so a launched session has what the workspace's `.envrc`
 gives a terminal there; a direnv failure fails the launch. The file is
-owner-only and pruned after a day. `--settings` replaces an earlier one,
-so `launch.command` must not carry its own. Nothing else is passed: never
-`--dangerously-skip-permissions`.
+owner-only and kept as long as Claude Code lists the job, whose saved
+options name it, and 30 days otherwise. `--settings` replaces an earlier
+one, so `launch.command` must not carry its own. Nothing else is
+passed: never `--dangerously-skip-permissions`.
+
+A host has to trust the workspace first: `--bg` refuses a directory nobody
+accepted the trust prompt for, and the failure shows in the start sheet.
+Run `claude` once in the workspace's directory on a new machine.
 
 ## 2. Continue
 
-An ended session's page offers **Continue** (`claude --bg --resume`) on
-any connected machine that [syncs](state-sync.md): the collector fetches
-the transcript first. Claude Code may continue a stopped background session
-as a copy under a new id; the page follows it.
+An ended session's page offers **Continue** on any connected machine that
+[syncs](state-sync.md): the collector fetches the transcript first.
+
+| Where, how                                                           | What runs                               | Session                    |
+| -------------------------------------------------------------------- | --------------------------------------- | -------------------------- |
+| its job is on that machine, nothing changed                          | `claude --bg --resume <id> -- <prompt>` | the same one, same options |
+| another machine, another model or mode, or its settings file is gone | the command of [Start](#1-start)        | a copy under a new id      |
+
+Claude Code keeps a job's options itself: with any flag it starts a copy
+instead, so a job of that machine runs with none, `launch.command`'s
+included. Those options name the launch's settings file, and without it the
+job fails to restart, so ccdash notes which job a file belongs to and takes
+the copy when it cannot tell. The page follows a copy.
 
 ## 3. Resolve
 
@@ -87,7 +101,9 @@ working queues the prompt after its current turn.
 | closing fails (the process won't exit)  | your turn, with why                                |
 | the hub restarts                        | the mark comes back from the stored events         |
 
-Resolve needs the ccdash channel; without it the action shows disabled.
+Resolve needs the ccdash channel; without it the action shows disabled. A
+[sleeping](#7-background-sessions) session has none: send it a message
+first, or Kill it.
 
 ## 4. Interrupt
 
@@ -129,6 +145,10 @@ SIGKILL.
 Why the escalation: Claude Code acts on SIGTERM only once an editor it
 opened for the prompt (Ctrl+G), or a running command, has finished.
 
+A killed session stays ended: Claude Code goes on listing its job as
+`done`, and a listed job only keeps an open session open. **Continue**
+brings it back.
+
 ## 6. Open on the desktop, forget
 
 - **Open on** (the host's name) focuses the session's terminal window, or
@@ -139,21 +159,58 @@ opened for the prompt (Ctrl+G), or a running command, has finished.
 
 ## 7. Background sessions
 
-Claude Code keeps listing a background session whose turn ended and that
-waits for your answer (`blocked`), often with no process left, sometimes
-for weeks. ccdash shows it as your turn right after its turn ends and as
-parked otherwise; finished ones (`done`, `stopped`) end.
+A session you started, from the panel or with `claude --bg` in a terminal,
+is yours like any other: it shows in Working, Needs you and Parked, and a
+finished turn notifies. **Background agents** are only the sessions Claude
+started; they report to the session that started them, and end with their
+job.
+
+At each turn's end Claude Code labels the job from Claude's closing words
+([`claude agents --json`](https://code.claude.com/docs/en/agent-view#read-session-state-from-a-script)).
+Both labels mean a turn ended and the session waits for you, so ccdash
+treats them alike:
+
+| `state`             | Claude Code means                                  | ccdash shows           |
+| ------------------- | -------------------------------------------------- | ---------------------- |
+| `working`           | a turn is running                                  | Working                |
+| `blocked`           | it needs something from you                        | your turn, then parked |
+| `done`              | finished what you asked, ready for the next prompt | your turn, then parked |
+| `failed`, `stopped` | it ended                                           | ended, with Continue   |
+
+**Asleep.** After about an hour unattached (8 h with Remote Control, a
+minute when memory runs low) Claude Code stops an idle session's process
+and keeps its job. The session stays open, marked asleep, and the composer
+stays: a message runs `claude --bg --resume <id>`, the session comes back on
+its saved options, channel included, and reads the message as its prompt
+(or as a copy, as with [Continue](#2-continue); the old row then ends). If
+that fails, the session says why and your text stays on the page. An
+asleep `done` session stops showing as open after 7 days; Continue still
+brings it back. A job Claude Code no longer lists ends its session.
+
+The supervisor that runs these sessions is its own user service (see
+[Configuration](#8-configuration)), so a collector restart leaves them
+alone, and so does restarting the service: the next supervisor adopts them.
+A machine shutdown still stops them; they show as ended, and Continue
+resumes the conversation.
 
 ## 8. Configuration
 
 The Home Manager module fills these in with the Claude Code binary and the
-ccdash plugin, so the channel, the knowledge tools and the wrap-up skill
-load as in a terminal.
+ccdash plugin, so the channel, the knowledge tools and the skills load as
+in a terminal. It also runs `claude daemon run` as the user service
+`claude-daemon` (`services.ccdash.claudeCode.daemon.enable`): started on
+demand from the panel, the supervisor would live in the collector's cgroup
+and die with it. The service starts with `default.target`, so a machine
+nobody logs in to needs `loginctl enable-linger`.
+
+A session runs with the `PATH` of whatever dispatched it, so sessions from
+the panel get the collector's, which keeps the user manager's.
 
 ```toml
 # collector config
 [launch]
-command = ["claude"]                  # + the arguments above; [] turns starting off
+command = ["claude"]                  # + the arguments above; [] turns starting off; a job
+                                      # continued on this machine runs without its arguments
 stop = ["claude", "stop", "{id}"]
 remove = ["claude", "rm", "{id}"]     # when stop fails on a job nothing runs
 

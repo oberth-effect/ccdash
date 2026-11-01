@@ -118,6 +118,7 @@ mod tests {
                 remote_id: None,
                 applied_title: None,
                 launch: None,
+                project: None,
                 branch: None,
                 payload: json!({ "n": n }),
             },

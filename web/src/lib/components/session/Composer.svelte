@@ -1,7 +1,8 @@
 <script lang="ts">
-	// Text for the session: Send starts a turn through the channel, Next
-	// prompt leaves it as context for the next prompt (also for sessions
-	// without the channel); Stop interrupts a turn, so the correction typed
+	// Text for the session: Send starts a turn through the channel, or wakes
+	// a sleeping session with it; Next prompt leaves it as context for the
+	// next prompt (also for sessions without the channel); Stop interrupts a
+	// turn, so the correction typed
 	// next is what Claude reads. Quick replies send at once; the field
 	// (history, templates, note links, fence, preview) is `PromptField`; the
 	// draft survives reloads.
@@ -29,7 +30,7 @@
 	let busy = $state(false);
 	let error = $state('');
 
-	const canReply = $derived(s.channel && s.activity !== 'gone');
+	const canReply = $derived((s.channel || s.asleep) && s.activity !== 'gone');
 	const canStop = $derived(working(s) && s.hooked && live.connected(s.host));
 	let stopping = $state(false);
 
@@ -102,7 +103,11 @@
 		{prompts}
 		historyNote="This session's prompts, then the workspace's."
 		session={s.id}
-		placeholder={canReply ? 'Message Claude…' : 'Note for the next prompt…'}
+		placeholder={s.asleep
+			? 'Message Claude… (wakes the session)'
+			: canReply
+				? 'Message Claude…'
+				: 'Note for the next prompt…'}
 		label="Message to Claude"
 		disabled={busy}
 		onsubmit={() => submit(canReply ? 'reply' : 'message')}
@@ -135,7 +140,7 @@
 		{/snippet}
 	</PromptField>
 	{#if error}<p class="text-xs text-critical" role="alert">{error}</p>{/if}
-	{#if !s.channel && s.activity !== 'gone'}
+	{#if !s.channel && !s.asleep && s.activity !== 'gone'}
 		<p class="text-xs text-muted-foreground">
 			To start a turn from here, the session needs the ccdash channel: exit it and run
 			<code class="font-mono">claude --resume {s.id}</code>. A note still reaches it with its next

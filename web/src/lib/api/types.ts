@@ -620,7 +620,7 @@ export type Label = { label: string, };
 
 export type Lane = { id: string, label: string, host: string, cwd: string, live: boolean, 
 /**
- * Started by Claude or `claude --bg`; its finished time is not a wait on you.
+ * Started by Claude; its finished time is not a wait on you.
  */
 background: boolean, 
 /**
@@ -1062,6 +1062,11 @@ branch: string | null,
  * Started (or continued) from the panel: a finished turn notifies.
  */
 launched: boolean, 
+/**
+ * A background session Claude Code retired while idle: no process runs
+ * it, and a reply restarts it from its saved conversation.
+ */
+asleep: boolean, 
 /**
  * Name from `claude agents`.
  */

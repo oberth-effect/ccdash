@@ -46,6 +46,9 @@ const PROC_SAMPLE_EVERY_MS: i64 = 60_000;
 const SPAWN_LINK_MS: i64 = 60_000;
 const MAX_OUTBOX: usize = 10;
 const MAX_ASKS: usize = 8;
+/// A finished job left asleep this long stops showing as open; Continue
+/// still brings it back.
+const ASLEEP_KEEP_MS: i64 = 7 * 24 * 3_600_000;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Window {
@@ -81,9 +84,10 @@ pub struct AgentEntry {
     pub name: Option<String>,
     #[serde(default)]
     pub status: Option<String>,
-    /// A background session's job state: `working`, `blocked` (its turn
-    /// ended and it waits for an answer, often with no process left),
-    /// `done`, `stopped` (only listed with `--all`).
+    /// A background session's job state: `working`, `blocked` (it waits
+    /// for an answer), `done` (ready for the next prompt; finished jobs are
+    /// only listed with `--all`), `failed`, `stopped`. `blocked` and `done`
+    /// may have no process left: a reply restarts it.
     #[serde(default)]
     pub state: Option<String>,
     #[serde(default)]
@@ -94,6 +98,15 @@ pub struct AgentEntry {
     /// `claude agents`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub branch: Option<String>,
+}
+
+impl AgentEntry {
+    /// A background job waiting for its next prompt with no process left.
+    fn asleep(&self) -> bool {
+        self.kind.as_deref() == Some("background")
+            && self.pid.is_none()
+            && matches!(self.state.as_deref(), Some("done" | "blocked"))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -208,6 +221,8 @@ struct Aux {
     /// The time of the hook that stopped the turn for an interrupt from
     /// the panel: a PreToolUse from then arriving later changes nothing.
     interrupted_at: Option<i64>,
+    /// The last poll read this session's job as `done`.
+    job_done: bool,
 }
 
 /// Process samples collected since the last stored one.
@@ -249,6 +264,9 @@ pub struct State {
     channel_pids: HashSet<u32>,
     /// Pids the collector reported as no longer running.
     dead: HashSet<u32>,
+    /// Background sessions the store has open, until the poll lists them:
+    /// after a hub restart they are the sleeping jobs that come back.
+    open_jobs: HashSet<String>,
 }
 
 impl State {
@@ -266,12 +284,19 @@ impl State {
             spawns: Vec::new(),
             channel_pids: HashSet::new(),
             dead: HashSet::new(),
+            open_jobs: HashSet::new(),
         }
     }
 
     /// Caps the output stored with tool events; 0 keeps none.
     pub fn with_tool_output_bytes(mut self, bytes: usize) -> Self {
         self.tool_output_bytes = bytes;
+        self
+    }
+
+    /// Takes the background sessions the store has open (see `open_jobs`).
+    pub fn with_open_jobs(mut self, jobs: HashSet<String>) -> Self {
+        self.open_jobs = jobs;
         self
     }
 
@@ -386,6 +411,44 @@ impl State {
         self.mark_gone(id, now, "forgotten", fx);
     }
 
+    /// Ends the session its host stopped: Claude Code keeps listing a
+    /// stopped job as `done`, so the poll would not.
+    pub fn stopped(&mut self, id: &str, now: i64, fx: &mut Effects) {
+        self.mark_gone(id, now, "stopped", fx);
+    }
+
+    /// Waking it made a copy, which goes on under its own id.
+    pub fn replaced(&mut self, id: &str, now: i64, fx: &mut Effects) {
+        self.mark_gone(id, now, "copied", fx);
+    }
+
+    /// The owner's reply is on its way to a sleeping session as the prompt
+    /// that restarts it.
+    pub fn waking(&mut self, id: &str, text: &str, now: i64, fx: &mut Effects) {
+        let Some(s) = self.sessions.get_mut(id) else {
+            return;
+        };
+        s.outbox.clear();
+        s.waiting_for = None;
+        set_activity(s, Activity::Working, now, &mut fx.store);
+        // NOTE: the poll reads the job as finished until the process is back
+        self.aux.entry(id.to_owned()).or_default().last_hook_at = now;
+        self.sent_reply(id, text, now, fx);
+    }
+
+    /// Waking it failed: back on your turn, with why.
+    pub fn wake_failed(&mut self, id: &str, error: &str, now: i64, fx: &mut Effects) {
+        let Some(s) = self.sessions.get_mut(id) else {
+            return;
+        };
+        if s.activity == Activity::Gone {
+            return;
+        }
+        s.waiting_for = Some(format!("error: waking it failed: {error}"));
+        set_activity(s, Activity::YourTurn, now, &mut fx.store);
+        fx.touched.insert(id.to_owned());
+    }
+
     /// Shows the messages waiting for the session's next prompt; true
     /// when that changed anything.
     pub fn set_inbox(&mut self, id: &str, inbox: Vec<Message>, fx: &mut Effects) -> bool {
@@ -431,7 +494,12 @@ impl State {
         };
         let ts = env.ts;
         if event == "SessionEnd" {
-            self.mark_gone(id, ts, str_of(p, "reason").unwrap_or("ended"), fx);
+            // NOTE: Claude Code retires idle background processes: the job stays, the poll says
+            if self.sleeps_on_exit(id) {
+                self.fall_asleep(id, fx);
+            } else {
+                self.mark_gone(id, ts, str_of(p, "reason").unwrap_or("ended"), fx);
+            }
             return;
         }
         self.ensure(id, str_of(p, "cwd"), ts, ts, fx);
@@ -447,6 +515,7 @@ impl State {
                 s.opened_at = ts;
             }
             s.pid = Some(pid);
+            s.asleep = false;
             sync_channel(s, &self.channel_pids);
         }
         if let Some(remote) = &env.remote_id {
@@ -521,6 +590,10 @@ impl State {
                 let text = relayed.as_deref().unwrap_or(raw);
                 if relayed.is_some() {
                     s.outbox.clear();
+                } else if typed {
+                    // NOTE: a wake carries the reply as the session's prompt
+                    let sent = truncate(raw.trim(), PREVIEW_LEN);
+                    s.outbox.retain(|m| m.text != sent);
                 }
                 if relayed.as_deref().is_some_and(wrap_up::asked) {
                     if let Some(r) = &mut s.resolved {
@@ -915,6 +988,7 @@ impl State {
                 s.opened_at = ts;
             }
             s.pid = Some(pid);
+            s.asleep = false;
             sync_channel(s, &self.channel_pids);
         }
         if let Some(remote) = &env.remote_id {
@@ -1278,20 +1352,33 @@ impl State {
         let mut seen = HashSet::new();
         for e in list {
             let id = e.session_id.as_str();
-            // NOTE: a finished background session is listed, but over
             if let Some(state) = e.state.as_deref().filter(|s| ENDED_JOBS.contains(s)) {
                 self.mark_gone(id, now, state, fx);
                 continue;
+            }
+            let asleep = e.asleep();
+            if e.state.as_deref() == Some("done") {
+                // NOTE: an agent reports to its parent: its job is over
+                if self.sessions.get(id).is_some_and(Session::is_agent) {
+                    self.mark_gone(id, now, "done", fx);
+                    continue;
+                }
+                // NOTE: `--all` keeps every finished job: asleep, one only keeps a session open
+                if asleep && !self.job_open(id) {
+                    continue;
+                }
             }
             seen.insert(id);
             self.ensure(id, e.cwd.as_deref(), e.started_at.unwrap_or(now), now, fx);
             let aux = self.aux.entry(id.to_owned()).or_default();
             aux.kind_known = true;
             aux.missing_polls = 0;
+            aux.job_done = e.state.as_deref() == Some("done");
             let quiet = now - aux.last_hook_at > HOOK_QUIET_MS;
 
             let s = self.sessions.get_mut(id).expect("ensured above");
-            s.pid = e.pid.or(s.pid);
+            s.pid = if asleep { None } else { e.pid.or(s.pid) };
+            s.asleep = asleep && s.activity != Activity::Gone;
             sync_channel(s, &self.channel_pids);
             let kind = match e.kind.as_deref() {
                 Some("background") => Kind::Background,
@@ -1423,7 +1510,7 @@ impl State {
     /// and forgets old gone ones.
     pub fn tick(&mut self, now: i64, fx: &mut Effects) {
         for s in self.sessions.values_mut() {
-            if s.kind == Kind::Interactive
+            if !s.is_agent()
                 && s.activity == Activity::YourTurn
                 && now - s.activity_since >= PARKED_AFTER_MS
             {
@@ -1452,14 +1539,30 @@ impl State {
         for id in lapsed {
             self.set_claim(&id, None, fx);
         }
+        // NOTE: a background job outlives its process: the poll decides
         let dead: Vec<String> = self
             .sessions
             .values()
             .filter(|s| s.activity != Activity::Gone && s.pid.is_some() && !self.alive(s.pid))
+            .filter(|s| !sleeps(s))
             .map(|s| s.id.clone())
             .collect();
         for id in dead {
             self.mark_gone(&id, now, "exited", fx);
+        }
+        let forgotten: Vec<String> = self
+            .sessions
+            .values()
+            .filter(|s| {
+                s.asleep
+                    && s.activity == Activity::Parked
+                    && now - s.activity_since >= ASLEEP_KEEP_MS
+                    && self.aux.get(&s.id).is_some_and(|a| a.job_done)
+            })
+            .map(|s| s.id.clone())
+            .collect();
+        for id in forgotten {
+            self.mark_gone(&id, now, "asleep", fx);
         }
         let expired: Vec<String> = self
             .sessions
@@ -1502,6 +1605,7 @@ impl State {
             project_pinned: false,
             branch: None,
             launched: false,
+            asleep: false,
             name: None,
             title: None,
             activity: Activity::Idle,
@@ -1543,6 +1647,35 @@ impl State {
         self.aux.insert(id.to_owned(), Aux::default());
     }
 
+    /// Whether the poll may list this job with no process: an open
+    /// session, or one the store had open before a hub restart.
+    fn job_open(&mut self, id: &str) -> bool {
+        self.sessions
+            .get(id)
+            .is_some_and(|s| s.activity != Activity::Gone)
+            || self.open_jobs.remove(id)
+    }
+
+    fn sleeps_on_exit(&self, id: &str) -> bool {
+        self.sessions
+            .get(id)
+            .is_some_and(|s| s.activity != Activity::Gone && sleeps(s))
+    }
+
+    /// Its process ended and its job may stay. A poll that no longer
+    /// lists the job ends the session.
+    fn fall_asleep(&mut self, id: &str, fx: &mut Effects) {
+        let Some(s) = self.sessions.get_mut(id) else {
+            return;
+        };
+        s.pid = None;
+        s.asleep = true;
+        s.tool = None;
+        s.subagents.clear();
+        sync_channel(s, &self.channel_pids);
+        fx.touched.insert(id.to_owned());
+    }
+
     fn mark_gone(&mut self, id: &str, ts: i64, reason: &str, fx: &mut Effects) {
         let Some(s) = self.sessions.get_mut(id) else {
             return;
@@ -1554,6 +1687,7 @@ impl State {
         s.waiting_for = None;
         s.subagents.clear();
         s.resolved = None;
+        s.asleep = false;
         set_activity(s, Activity::Gone, ts, &mut fx.store);
         record(&mut fx.store, ts, id, "end", json!({ "reason": reason }));
         fx.store.push(session_row(s, Some(ts)));
@@ -1954,8 +2088,15 @@ fn session_row(s: &Session, ended_at: Option<i64>) -> StoreMsg {
 
 /// The poll's view of `s`, when it should override the hooks'. After a Stop,
 /// only hooks end the turn: the poll can report `busy` for minutes past it.
-/// Background job states of sessions that are over.
-const ENDED_JOBS: &[&str] = &["done", "stopped", "failed", "error", "cancelled"];
+/// Background job states of sessions that are over. Not `done`: that job
+/// is ready for its next prompt, whether or not its process is alive.
+const ENDED_JOBS: &[&str] = &["stopped", "failed", "error", "cancelled"];
+
+/// A session that sleeps when its process ends, instead of ending: Claude
+/// Code keeps the job, and an agent's belongs to the session that started it.
+fn sleeps(s: &Session) -> bool {
+    s.kind == Kind::Background && !s.is_agent()
+}
 
 fn agent_activity(e: &AgentEntry, s: &Session) -> Option<Activity> {
     // NOTE: wrapped up and being closed: only its end counts
@@ -1964,9 +2105,9 @@ fn agent_activity(e: &AgentEntry, s: &Session) -> Option<Activity> {
     }
     match e.state.as_deref() {
         Some("working") => return Some(Activity::Working),
-        // NOTE: a turn that ended here waits on you; one found blocked (a hub
+        // NOTE: a turn that ended here waits on you; one found so (a hub
         // restart, a job from weeks ago) is parked straight away
-        Some("blocked") => {
+        Some("blocked" | "done") => {
             return match s.activity {
                 Activity::Working | Activity::Permission => Some(Activity::YourTurn),
                 Activity::Idle => Some(Activity::Parked),
@@ -2157,6 +2298,7 @@ mod tests {
             remote_id: Some("session_remote".into()),
             applied_title: None,
             launch: None,
+            project: None,
             branch: None,
             payload,
         }
@@ -2694,16 +2836,240 @@ mod tests {
         assert_eq!(session(&st).activity, Activity::Working);
         st.agents(&[entry("blocked")], 102_000, &mut fx);
         assert_eq!(session(&st).activity, Activity::YourTurn);
-        // done: gone, and not brought back by the next poll
-        st.agents(&[entry("done")], 103_000, &mut fx);
-        assert_eq!(session(&st).activity, Activity::Gone);
-        st.agents(&[entry("done")], 104_000, &mut fx);
-        assert_eq!(session(&st).activity, Activity::Gone);
+        // done is ready for the next prompt, not over
+        st.agents(&[entry("working")], 103_000, &mut fx);
+        let live = AgentEntry {
+            pid: Some(4242),
+            status: Some("idle".into()),
+            ..entry("done")
+        };
+        st.agents(std::slice::from_ref(&live), 104_000, &mut fx);
+        assert_eq!(session(&st).activity, Activity::YourTurn);
+        assert_eq!(
+            (session(&st).pid, session(&st).asleep),
+            (Some(4242), false),
+            "its process still runs it"
+        );
+        // Claude Code retires the process: asleep, still open
+        st.agents(&[entry("done")], 105_000, &mut fx);
+        assert_eq!(session(&st).activity, Activity::YourTurn);
+        assert_eq!((session(&st).pid, session(&st).asleep), (None, true));
+        // jobs that are over end it, and stay out
+        for state_ in ["stopped", "failed"] {
+            let mut st = state();
+            let mut fx = Effects::default();
+            st.agents(std::slice::from_ref(&live), 100_000, &mut fx);
+            st.agents(&[entry(state_)], 101_000, &mut fx);
+            assert_eq!(session(&st).activity, Activity::Gone);
+            assert!(!session(&st).asleep);
+        }
         // a finished job the state never knew is not created at all
         let mut st = state();
         let mut fx = Effects::default();
         st.agents(&[entry("stopped")], 100_000, &mut fx);
         assert!(st.session(SID).is_none() && fx.created.is_empty());
+    }
+
+    fn job(state: &str, pid: Option<u32>) -> AgentEntry {
+        AgentEntry {
+            session_id: SID.into(),
+            id: Some("11111111".into()),
+            cwd: Some("/work/repo".into()),
+            kind: Some("background".into()),
+            state: Some(state.into()),
+            status: pid.map(|_| "idle".to_owned()),
+            pid,
+            ..Default::default()
+        }
+    }
+
+    /// A background session whose turn ended, its process still alive.
+    fn finished(st: &mut State) {
+        let mut fx = Effects::default();
+        st.agents(&[job("working", Some(7))], 1_000, &mut fx);
+        hook(st, 2_000, "Stop", json!({"last_assistant_message": "ok"}));
+        st.agents(&[job("done", Some(7))], 3_000, &mut fx);
+        assert_eq!(session(st).activity, Activity::YourTurn);
+    }
+
+    #[test]
+    fn a_listed_finished_job_never_brings_a_session_back() {
+        let asleep = job("done", None);
+        // `--all` lists every old job: none becomes a session
+        let mut st = state();
+        let mut fx = Effects::default();
+        st.agents(std::slice::from_ref(&asleep), 100_000, &mut fx);
+        assert!(st.session(SID).is_none() && fx.created.is_empty());
+        // one that ended stays ended, poll after poll
+        let mut st = state();
+        finished(&mut st);
+        let mut fx = Effects::default();
+        st.stopped(SID, 4_000, &mut fx);
+        for at in [5_000, 10_000, 15_000] {
+            st.agents(std::slice::from_ref(&asleep), at, &mut fx);
+        }
+        assert_eq!(session(&st).activity, Activity::Gone);
+        assert!(!session(&st).asleep);
+        // nor does a job still waiting for an answer reopen it
+        st.agents(&[job("blocked", None)], 20_000, &mut fx);
+        assert_eq!(session(&st).activity, Activity::Gone);
+        assert!(!session(&st).asleep);
+    }
+
+    #[test]
+    fn a_hub_restart_keeps_the_sessions_that_were_asleep() {
+        let open = HashSet::from([SID.to_owned()]);
+        let mut st = state().with_open_jobs(open);
+        let mut fx = Effects::default();
+        let other = AgentEntry {
+            session_id: "an-old-job".into(),
+            ..job("done", None)
+        };
+        st.agents(&[job("done", None), other], 100_000, &mut fx);
+        assert_eq!(fx.created, [SID]);
+        assert_eq!(session(&st).activity, Activity::Parked);
+        assert!(session(&st).asleep);
+        assert!(st.session("an-old-job").is_none());
+    }
+
+    #[test]
+    fn a_retired_process_puts_the_session_to_sleep() {
+        let mut st = state();
+        finished(&mut st);
+        hook(&mut st, 4_000, "SessionEnd", json!({"reason": "other"}));
+        assert_eq!(session(&st).activity, Activity::YourTurn);
+        assert!(session(&st).asleep && session(&st).pid.is_none());
+        let mut fx = Effects::default();
+        st.agents(&[job("done", None)], 5_000, &mut fx);
+        assert!(session(&st).asleep);
+        // the poll is the authority: a job no longer listed is over
+        st.agents(&[], 6_000, &mut fx);
+        st.agents(&[], 7_000, &mut fx);
+        assert_eq!(session(&st).activity, Activity::Gone);
+        assert!(!session(&st).asleep);
+    }
+
+    #[test]
+    fn an_exited_process_does_not_end_a_job_the_poll_still_lists() {
+        let mut st = state();
+        finished(&mut st);
+        st.report_dead(&[7]);
+        let mut fx = Effects::default();
+        st.tick(4_000, &mut fx);
+        assert_eq!(session(&st).activity, Activity::YourTurn);
+        st.agents(&[job("done", None)], 5_000, &mut fx);
+        st.tick(6_000, &mut fx);
+        assert_eq!(session(&st).activity, Activity::YourTurn);
+        assert!(session(&st).asleep);
+    }
+
+    #[test]
+    fn agents_end_with_their_job_and_park_never() {
+        let parent = |st: &mut State| {
+            let id = st.sessions.get_mut(SID).unwrap();
+            id.parent = Some("the-parent".into());
+        };
+        let mut st = state();
+        let mut fx = Effects::default();
+        st.agents(&[job("working", Some(7))], 1_000, &mut fx);
+        parent(&mut st);
+        assert!(session(&st).is_agent());
+        st.agents(&[job("done", Some(7))], 2_000, &mut fx);
+        assert_eq!(session(&st).activity, Activity::Gone);
+        // a process ending ends it too
+        let mut st = state();
+        let mut fx = Effects::default();
+        st.agents(&[job("working", Some(7))], 1_000, &mut fx);
+        parent(&mut st);
+        hook(&mut st, 2_000, "SessionEnd", json!({"reason": "other"}));
+        assert_eq!(session(&st).activity, Activity::Gone);
+        // started from the panel, it is the owner's whatever started it
+        let mut st = state();
+        finished(&mut st);
+        parent(&mut st);
+        let mut fx = Effects::default();
+        assert!(st.set_launched(SID, None, &mut fx));
+        assert!(!session(&st).is_agent());
+        st.tick(2_000 + PARKED_AFTER_MS + 1, &mut fx);
+        assert_eq!(session(&st).activity, Activity::Parked);
+    }
+
+    #[test]
+    fn a_reply_wakes_a_sleeping_session() {
+        let mut st = state();
+        finished(&mut st);
+        let mut fx = Effects::default();
+        st.agents(&[job("done", None)], 20_000, &mut fx);
+        st.waking(SID, "carry on", 30_000, &mut fx);
+        assert_eq!(session(&st).activity, Activity::Working);
+        assert_eq!(session(&st).outbox.len(), 1);
+        // the poll has not seen the new process yet
+        st.agents(&[job("done", None)], 31_000, &mut fx);
+        assert_eq!(session(&st).activity, Activity::Working);
+        assert!(session(&st).asleep, "until it reports");
+        // its hooks report it, and the prompt arrives
+        let mut start = envelope(
+            Source::Hook,
+            32_000,
+            json!({"session_id": SID, "cwd": "/work/repo", "hook_event_name": "SessionStart",
+                "source": "resume"}),
+        );
+        start.pid = Some(8);
+        st.apply(&start, &mut fx);
+        assert!(!session(&st).asleep);
+        assert_eq!(session(&st).pid, Some(8));
+        hook(
+            &mut st,
+            33_000,
+            "UserPromptSubmit",
+            json!({"prompt": "carry on"}),
+        );
+        assert_eq!(session(&st).activity, Activity::Working);
+        assert!(session(&st).outbox.is_empty(), "it was picked up");
+    }
+
+    #[test]
+    fn a_failed_wake_lands_on_the_session() {
+        let mut st = state();
+        finished(&mut st);
+        let mut fx = Effects::default();
+        st.agents(&[job("done", None)], 20_000, &mut fx);
+        st.waking(SID, "carry on", 30_000, &mut fx);
+        st.wake_failed(SID, "no such conversation", 31_000, &mut fx);
+        assert_eq!(session(&st).activity, Activity::YourTurn);
+        assert_eq!(
+            session(&st).waiting_for.as_deref(),
+            Some("error: waking it failed: no such conversation")
+        );
+        assert!(session(&st).asleep, "a reply can try again");
+        assert_eq!(session(&st).outbox.len(), 1, "the text is not lost");
+        // and the next try starts clean
+        st.waking(SID, "again", 40_000, &mut fx);
+        assert_eq!(session(&st).waiting_for, None);
+        assert_eq!(session(&st).outbox.len(), 1);
+    }
+
+    #[test]
+    fn a_finished_job_left_asleep_for_a_week_stops_showing_as_open() {
+        let mut st = state();
+        finished(&mut st);
+        let mut fx = Effects::default();
+        st.agents(&[job("done", None)], 20_000, &mut fx);
+        let parked = 2_000 + PARKED_AFTER_MS + 1;
+        st.tick(parked, &mut fx);
+        assert_eq!(session(&st).activity, Activity::Parked);
+        st.tick(2_000 + ASLEEP_KEEP_MS - 1, &mut fx);
+        assert_eq!(session(&st).activity, Activity::Parked);
+        st.tick(2_000 + ASLEEP_KEEP_MS + 1, &mut fx);
+        assert_eq!(session(&st).activity, Activity::Gone);
+        // a job waiting for an answer keeps waiting
+        let mut st = state();
+        finished(&mut st);
+        let mut fx = Effects::default();
+        st.agents(&[job("blocked", None)], 20_000, &mut fx);
+        st.tick(parked, &mut fx);
+        st.tick(2_000 + ASLEEP_KEEP_MS + 1, &mut fx);
+        assert_eq!(session(&st).activity, Activity::Parked);
     }
 
     #[test]

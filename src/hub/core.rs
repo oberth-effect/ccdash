@@ -433,6 +433,8 @@ struct Slot {
     cwd: String,
     /// The id `claude --bg` printed, until the session shows up.
     short: Option<String>,
+    /// The sleeping session this launch wakes: a failure lands on it.
+    wakes: Option<String>,
 }
 
 /// What answering an open ask needs and the session doesn't show.
@@ -528,6 +530,7 @@ impl Hub {
             cmds: tx.clone(),
             launches: HashMap::new(),
             stops: HashMap::new(),
+            refused_projects: HashMap::new(),
             dirs: HashMap::new(),
             workspace,
         };
@@ -771,6 +774,9 @@ struct Core {
     launches: HashMap<String, Slot>,
     /// Who waits for a session's host to report its stop.
     stops: HashMap<String, Vec<oneshot::Sender<Result<Session, String>>>>,
+    /// Why the project a session asked for at its start was refused, until
+    /// its startup context tells Claude.
+    refused_projects: HashMap<String, String>,
     /// The project directories each host reported.
     dirs: HashMap<String, Dirs>,
     /// The workspace sync, when it is on.
@@ -823,6 +829,7 @@ async fn run(mut core: Core, mut rx: mpsc::Receiver<Cmd>) {
                     continue;
                 };
                 let mut nonce = None;
+                let mut asked_project = None;
                 match input {
                     Input::Envelope(env) => {
                         state.apply(&env, &mut fx);
@@ -831,6 +838,7 @@ async fn run(mut core: Core, mut rx: mpsc::Receiver<Cmd>) {
                         {
                             nonce = Some((launch.clone(), id.to_owned()));
                         }
+                        asked_project = start_project(&env);
                     }
                     Input::Agents(list, now, dead) => {
                         state.report_dead(&dead);
@@ -853,6 +861,9 @@ async fn run(mut core: Core, mut rx: mpsc::Receiver<Cmd>) {
                 core.flush(&host, fx);
                 if let Some((launch, session)) = nonce {
                     core.link(&host, &launch, &session);
+                }
+                if let Some((session, project)) = asked_project {
+                    core.ask_project(&host, &session, project);
                 }
                 core.link_printed(&host);
             }
@@ -1352,10 +1363,22 @@ impl Core {
     ) {
         let now = now_ms();
         info!("collector {host} connected");
-        self.states.entry(host.clone()).or_insert_with(|| {
-            State::new(host.clone(), terminals, self.workspaces.clone())
+        if !self.states.contains_key(&host) {
+            let open = self
+                .reader
+                .as_ref()
+                .map(|conn| store::open_background(conn, &host))
+                .transpose()
+                .unwrap_or_else(|e| {
+                    warn!("reading the open sessions of {host}: {e:#}");
+                    None
+                })
+                .unwrap_or_default();
+            let state = State::new(host.clone(), terminals, self.workspaces.clone())
                 .with_tool_output_bytes(self.tool_output_bytes)
-        });
+                .with_open_jobs(open);
+            self.states.insert(host.clone(), state);
+        }
         self.links.insert(
             host.clone(),
             Link {
@@ -1941,6 +1964,15 @@ impl Core {
         })
     }
 
+    /// Places a session started with `claude --project`, or keeps why not
+    /// for its startup context: a bad name does not stop the session.
+    fn ask_project(&mut self, host: &str, session: &str, project: String) {
+        if let Err(e) = self.set_project(session, Some(project)) {
+            warn!("session {session} on {host}: {e}");
+            self.refused_projects.insert(session.to_owned(), e);
+        }
+    }
+
     /// The directory of `project` in the workspace holding `cwd`, else the
     /// workspace's, else `cwd` itself: the base claims resolve against and
     /// are shown relative to.
@@ -2109,6 +2141,10 @@ impl Core {
                     },
                     Injection::SessionStart => Around::default(),
                 };
+                let refused = (what == Injection::SessionStart)
+                    .then_some(c.session.as_ref())
+                    .flatten()
+                    .and_then(|s| self.refused_projects.remove(s));
                 tokio::spawn(async move {
                     let session = c.session.clone();
                     let result = store
@@ -2116,7 +2152,7 @@ impl Core {
                         .await;
                     let delivered = matches!(&result, Ok(Ok((_, true))));
                     answer(match result {
-                        Ok(Ok((text, _))) => Ok(Reply::Context(text)),
+                        Ok(Ok((text, _))) => Ok(Reply::Context(refused_note(refused, text))),
                         Ok(Err(e)) | Err(e) => Err(format!("{e:#}")),
                     });
                     if delivered && let Some(session) = session {
@@ -2594,6 +2630,7 @@ impl Core {
                 launch: launch.clone(),
                 cwd: req.cwd,
                 short: None,
+                wakes: None,
             },
         );
         let _ = self.updates.send(Update::Launch {
@@ -2640,15 +2677,19 @@ impl Core {
         if !pending {
             return;
         }
-        let project = self
-            .launches
-            .get(launch)
-            .and_then(|s| s.launch.project.clone());
+        let slot = self.launches.get(launch);
+        let project = slot.and_then(|s| s.launch.project.clone());
+        let woken = slot
+            .and_then(|s| s.wakes.clone())
+            .filter(|old| old != session);
         let mut fx = Effects::default();
-        let known = self
-            .states
-            .get_mut(host)
-            .is_some_and(|st| st.set_launched(session, project.as_deref(), &mut fx));
+        let known = self.states.get_mut(host).is_some_and(|st| {
+            let known = st.set_launched(session, project.as_deref(), &mut fx);
+            if let Some(old) = woken.as_deref().filter(|_| known) {
+                st.replaced(old, now_ms(), &mut fx);
+            }
+            known
+        });
         self.flush(host, fx);
         if known {
             self.settle(
@@ -2692,10 +2733,62 @@ impl Core {
         if let LaunchState::Failed { error } = &state {
             warn!("launch {launch} in {}: {error}", slot.cwd);
         }
+        let failed = match &state {
+            LaunchState::Failed { error } => slot
+                .wakes
+                .clone()
+                .map(|session| (slot.launch.host.clone(), session, error.clone())),
+            _ => None,
+        };
         slot.launch.state = state;
         let _ = self.updates.send(Update::Launch {
             launch: slot.launch.clone(),
         });
+        if let Some((host, session, error)) = failed {
+            let mut fx = Effects::default();
+            if let Some(state) = self.states.get_mut(&host) {
+                state.wake_failed(&session, &error, now_ms(), &mut fx);
+            }
+            self.flush(&host, fx);
+        }
+    }
+
+    /// Restarts a sleeping session with `text` as its prompt: `claude --bg
+    /// --resume`, which its host runs as a launch. Answers at once; a
+    /// failure lands on the session (see [`Self::settle`]).
+    fn wake(&mut self, host: &str, session: &Session, text: &str) -> Result<Session, String> {
+        let id = session.id.clone();
+        if !self.links.contains_key(host) {
+            return Err(format!("{host} is not connected"));
+        }
+        // NOTE: `--resume` of a job that is starting would make a copy of it
+        if session.activity == Activity::Working {
+            return Err("the session is waking up: send this once it has answered".into());
+        }
+        let workspace = session
+            .workspace
+            .clone()
+            .ok_or("the session ran outside every ccdash workspace: attach to it on its host")?;
+        info!("waking {id} on {host}");
+        let launch = self.launch(LaunchReq {
+            host: host.to_owned(),
+            workspace,
+            project: None,
+            cwd: session.cwd.clone(),
+            prompt: text.to_owned(),
+            model: None,
+            permission_mode: None,
+            resume: Some(id.clone()),
+        })?;
+        if let Some(slot) = self.launches.get_mut(&launch.id) {
+            slot.wakes = Some(id.clone());
+        }
+        let mut fx = Effects::default();
+        let state = self.states.get_mut(host).ok_or("session vanished")?;
+        state.waking(&id, text, now_ms(), &mut fx);
+        let woken = state.session(&id).cloned().ok_or("session vanished")?;
+        self.flush(host, fx);
+        Ok(woken)
     }
 
     /// Fails launches the session never reported for; forgets old ones.
@@ -2806,6 +2899,12 @@ impl Core {
     fn stopped(&mut self, host: &str, session: &str, error: Option<String>) {
         if let Some(e) = &error {
             self.close_failed(host, session, e);
+        } else {
+            let mut fx = Effects::default();
+            if let Some(state) = self.states.get_mut(host) {
+                state.stopped(session, now_ms(), &mut fx);
+            }
+            self.flush(host, fx);
         }
         let current = self
             .states
@@ -3072,6 +3171,13 @@ impl Core {
         if resolve && s.resolved.is_some() {
             return Err("the session is resolved already: it closes after its wrap-up".into());
         }
+        if s.asleep {
+            if resolve {
+                return Err("the session is asleep: send it a message first, or kill it".into());
+            }
+            let (host, s) = (host.to_owned(), s.clone());
+            return self.wake(&host, &s, text);
+        }
         let (host, id) = (host.to_owned(), s.id.clone());
         let pid = s
             .pid
@@ -3285,6 +3391,29 @@ fn recall(conn: &Connection, workspace: &str, query: &Query, now: i64) -> Result
     Ok(Reply::Hits(hits))
 }
 
+/// The session and the project its hooks ask for at its start (`claude
+/// --project`); a compaction or `/clear` also fires SessionStart, and must
+/// not undo a change made since.
+fn start_project(env: &Envelope) -> Option<(String, String)> {
+    let p = &env.payload;
+    let start = p["hook_event_name"] == "SessionStart"
+        && matches!(p["source"].as_str(), Some("startup" | "resume"));
+    let session = p["session_id"].as_str().filter(|_| start)?;
+    Some((session.to_owned(), env.project.clone()?))
+}
+
+/// The startup context, opening with why the asked project was refused.
+fn refused_note(refused: Option<String>, text: Option<String>) -> Option<String> {
+    let Some(why) = refused else {
+        return text;
+    };
+    let note = format!(
+        "The owner started this session for a project that could not be applied: {why}. \
+        Tell them in your first reply.\n"
+    );
+    Some(note + &text.unwrap_or_default())
+}
+
 /// The text a hook injects, and whether it hands over waiting messages.
 fn inject(
     conn: &Connection,
@@ -3401,6 +3530,7 @@ mod tests {
             remote_id: None,
             applied_title: None,
             launch: launch.map(str::to_owned),
+            project: None,
             branch: Some("main".into()),
             payload,
         }
@@ -3606,6 +3736,276 @@ mod tests {
             .unwrap();
         assert_eq!(forgot.host, "navi");
         assert_eq!(hub.holder("flat", sid).await.unwrap(), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A hub with host `navi` connected, knowing workspace `w`'s project `p`.
+    async fn hub_on_navi(name: &str) -> (Hub, mpsc::Receiver<ToCollector>, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(format!("ccdash-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let store = Store::open(&dir.join("t.db"), 30).unwrap();
+        let hub = Hub::spawn(
+            "hub".into(),
+            "http://hub".into(),
+            Workspaces::new(&["/w".into()], "/home"),
+            store,
+            None,
+            KnowledgeCfg::default(),
+            0,
+            None,
+        );
+        let (tx, rx) = mpsc::channel(64);
+        hub.send(Cmd::CollectorOpen {
+            host: "navi".into(),
+            conn: 1,
+            terminals: Vec::new(),
+            tx,
+        })
+        .await
+        .unwrap();
+        hub.send(Cmd::Dirs {
+            host: "navi".into(),
+            dirs: Dirs::from([("w".to_owned(), vec!["p".to_owned()])]),
+        })
+        .await
+        .unwrap();
+        (hub, rx, dir)
+    }
+
+    #[tokio::test]
+    async fn a_reply_to_a_sleeping_session_wakes_it_and_a_failure_lands_on_it() {
+        let (hub, mut rx, dir) = hub_on_navi("wake").await;
+        let id = "dddd0000-0000-4000-8000-000000000000";
+        let poll = |state: &str, pid: Option<u32>| {
+            Input::Agents(
+                vec![AgentEntry {
+                    session_id: id.into(),
+                    id: Some("dddd0000".into()),
+                    cwd: Some("/w".into()),
+                    kind: Some("background".into()),
+                    state: Some(state.into()),
+                    pid,
+                    ..AgentEntry::default()
+                }],
+                now_ms(),
+                Vec::new(),
+            )
+        };
+        hub.send(Cmd::Input(
+            "navi".into(),
+            poll("working", Some(std::process::id())),
+        ))
+        .await
+        .unwrap();
+        hub.send(Cmd::Input("navi".into(), poll("done", None)))
+            .await
+            .unwrap();
+        let asleep = hub.resolve(id).await.unwrap().unwrap();
+        assert!(asleep.asleep && asleep.activity != Activity::Gone);
+
+        // the wrap-up needs a live session
+        let resolved = hub
+            .session_cmd(|reply| Cmd::MarkResolved {
+                key: id.into(),
+                reply,
+            })
+            .await
+            .unwrap();
+        assert!(resolved.unwrap_err().contains("asleep"));
+
+        let waking = hub.reply(id, "carry on").await.unwrap().unwrap();
+        assert_eq!(waking.activity, Activity::Working);
+        let sent = next(&mut rx, |m| matches!(m, ToCollector::Launch { .. })).await;
+        let ToCollector::Launch {
+            launch,
+            cwd,
+            prompt,
+            model,
+            permission_mode,
+            resume,
+        } = sent
+        else {
+            unreachable!()
+        };
+        assert_eq!((cwd.as_str(), prompt.as_str()), ("/w", "carry on"));
+        assert_eq!((model, permission_mode), (None, None), "its saved options");
+        assert_eq!(resume.as_deref(), Some(id));
+
+        // one wake at a time
+        let twice = hub.reply(id, "and this").await.unwrap().unwrap_err();
+        assert!(twice.contains("waking up"), "{twice}");
+        assert_eq!(
+            hub.resolve(id).await.unwrap().unwrap().outbox.len(),
+            1,
+            "the refused text is not shown as sent"
+        );
+
+        hub.send(Cmd::Launched {
+            host: "navi".into(),
+            launch,
+            session: None,
+            error: Some("no conversation found".into()),
+        })
+        .await
+        .unwrap();
+        let failed = hub.resolve(id).await.unwrap().unwrap();
+        assert_eq!(failed.activity, Activity::YourTurn);
+        assert!(
+            failed
+                .waiting_for
+                .as_deref()
+                .is_some_and(|w| w.contains("no conversation found")),
+            "{failed:?}"
+        );
+
+        // a job that lost its settings file comes back as a copy
+        assert!(hub.reply(id, "again").await.unwrap().is_ok());
+        let ToCollector::Launch { launch, .. } =
+            next(&mut rx, |m| matches!(m, ToCollector::Launch { .. })).await
+        else {
+            unreachable!()
+        };
+        hub.send(Cmd::Launched {
+            host: "navi".into(),
+            launch,
+            session: Some("abcd0000".into()),
+            error: None,
+        })
+        .await
+        .unwrap();
+        let copy = AgentEntry {
+            session_id: "abcd0000-0000-4000-8000-000000000000".into(),
+            id: Some("abcd0000".into()),
+            cwd: Some("/w".into()),
+            kind: Some("background".into()),
+            state: Some("working".into()),
+            pid: Some(std::process::id()),
+            ..AgentEntry::default()
+        };
+        hub.send(Cmd::Input(
+            "navi".into(),
+            Input::Agents(vec![copy], now_ms(), Vec::new()),
+        ))
+        .await
+        .unwrap();
+        assert_eq!(
+            hub.resolve(id).await.unwrap().unwrap().activity,
+            Activity::Gone,
+            "the copy goes on, the old row does not hang as working"
+        );
+        assert!(hub.resolve("abcd0000").await.unwrap().unwrap().launched);
+
+        // with no link there is nobody to wake it
+        let (tx, mut rx) = mpsc::channel(64);
+        hub.send(Cmd::CollectorOpen {
+            host: "navi".into(),
+            conn: 2,
+            terminals: Vec::new(),
+            tx,
+        })
+        .await
+        .unwrap();
+        let sleeper = "bbbb0000-0000-4000-8000-000000000000";
+        hub.send(Cmd::Input(
+            "navi".into(),
+            Input::Agents(
+                vec![AgentEntry {
+                    session_id: sleeper.into(),
+                    id: Some("bbbb0000".into()),
+                    cwd: Some("/w".into()),
+                    kind: Some("background".into()),
+                    state: Some("blocked".into()),
+                    ..AgentEntry::default()
+                }],
+                now_ms(),
+                Vec::new(),
+            ),
+        ))
+        .await
+        .unwrap();
+        assert!(hub.resolve(sleeper).await.unwrap().unwrap().asleep);
+        rx.close();
+        hub.send(Cmd::CollectorClosed {
+            host: "navi".into(),
+            conn: 2,
+        })
+        .await
+        .unwrap();
+        let offline = hub.reply(sleeper, "hello").await.unwrap().unwrap_err();
+        assert!(offline.contains("not connected"), "{offline}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn the_project_a_session_starts_for_is_pinned_before_its_context() {
+        let (hub, mut rx, dir) = hub_on_navi("project").await;
+        let start = |id: &str, project: Option<&str>, source: &str| {
+            let mut env = envelope(
+                Source::Hook,
+                None,
+                json!({"session_id": id, "cwd": "/w", "hook_event_name": "SessionStart",
+                    "source": source}),
+            );
+            env.project = project.map(str::to_owned);
+            Cmd::Input("navi".into(), Input::Envelope(env))
+        };
+        let who = |id: &str| Who {
+            session: Some(id.to_owned()),
+            pid: None,
+            cwd: Some("/w".to_owned()),
+        };
+        let context = |id: u64, session: &str| Cmd::Call {
+            host: "navi".into(),
+            id,
+            call: Call::Inject {
+                who: who(session),
+                what: Injection::SessionStart,
+            },
+        };
+        async fn text(rx: &mut mpsc::Receiver<ToCollector>, want: u64) -> Option<String> {
+            match next(
+                rx,
+                |m| matches!(m, ToCollector::Result { id, .. } if *id == want),
+            )
+            .await
+            {
+                ToCollector::Result {
+                    result: Ok(Reply::Context(text)),
+                    ..
+                } => text,
+                other => panic!("{other:?}"),
+            }
+        }
+
+        let good = "eeee0000-0000-4000-8000-000000000000";
+        hub.send(start(good, Some("p"), "startup")).await.unwrap();
+        let session = hub.resolve(good).await.unwrap().unwrap();
+        assert_eq!(session.project.as_deref(), Some("p"));
+        assert!(session.project_pinned);
+
+        // a compaction fires SessionStart too: it must not undo the panel
+        hub.session_cmd(|reply| Cmd::SetProject {
+            key: good.into(),
+            project: None,
+            reply,
+        })
+        .await
+        .unwrap()
+        .unwrap();
+        hub.send(start(good, Some("p"), "compact")).await.unwrap();
+        assert!(!hub.resolve(good).await.unwrap().unwrap().project_pinned);
+
+        // a bad name leaves the session be, and Claude is told once
+        let bad = "ffff0000-0000-4000-8000-000000000000";
+        hub.send(start(bad, Some("nope"), "startup")).await.unwrap();
+        let session = hub.resolve(bad).await.unwrap().unwrap();
+        assert_eq!(session.project, None);
+        hub.send(context(1, bad)).await.unwrap();
+        let told = text(&mut rx, 1).await.unwrap_or_default();
+        assert!(told.contains("not a project of w"), "{told}");
+        hub.send(context(2, bad)).await.unwrap();
+        let again = text(&mut rx, 2).await.unwrap_or_default();
+        assert!(!again.contains("not a project of w"), "{again}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -3823,7 +4223,30 @@ mod tests {
         })
         .await
         .unwrap();
-        assert_eq!(waiting.await.unwrap().unwrap().id, bg.id);
+        let killed = waiting.await.unwrap().unwrap();
+        assert_eq!(
+            (killed.id.clone(), killed.activity),
+            (bg.id.clone(), Activity::Gone)
+        );
+        // Claude Code goes on listing a stopped job as finished
+        hub.send(Cmd::Input(
+            "navi".into(),
+            Input::Agents(
+                vec![AgentEntry {
+                    state: Some("done".into()),
+                    pid: None,
+                    ..poll_again()
+                }],
+                now_ms(),
+                Vec::new(),
+            ),
+        ))
+        .await
+        .unwrap();
+        assert_eq!(
+            hub.resolve("aaaabbbb").await.unwrap().unwrap().activity,
+            Activity::Gone
+        );
 
         let forgotten = hub
             .session_cmd(|reply| Cmd::Forget {

@@ -207,11 +207,20 @@
 				<p class="text-xs text-muted-foreground">
 					{#if parent}Started by <a class="underline" href="/sessions/{parent.id}"
 							>{label(parent)}</a
-						>{:else}Background session{/if}
+						>{:else}Started by session {s.parent?.slice(0, 8)}{/if}
+				</p>
+			{/if}
+			{#if s.asleep}
+				<p class="text-xs text-muted-foreground">
+					Asleep: Claude Code stopped its idle process. A message restarts it from its saved
+					conversation.
 				</p>
 			{/if}
 			{#if resolvedNote(s)}
 				<p class="text-xs font-medium text-your-turn">{resolvedNote(s)}</p>
+			{/if}
+			{#if s.waiting_for?.startsWith('error:')}
+				<p class="font-mono text-xs text-critical" role="alert">{s.waiting_for}</p>
 			{/if}
 			{#if s.claim && s.activity !== 'gone'}
 				<p class="truncate text-xs" title={claimPaths(s).join(', ')}>
@@ -265,13 +274,13 @@
 					{/if}
 				</div>
 			</footer>
-		{:else if s.asks.length || (s.hooked && !isAgent(s)) || s.channel}
+		{:else if s.asks.length || (s.hooked && !isAgent(s)) || s.channel || s.asleep}
 			<footer class="flex flex-col gap-2 border-t bg-background px-3 py-2 sm:px-4">
 				<div class="mx-auto flex w-full max-w-3xl flex-col gap-2">
 					{#if s.asks.length}
 						<AskCard session={s.id} ask={s.asks[0]} count={s.asks.length} />
 					{/if}
-					{#if (s.hooked && !isAgent(s)) || s.channel}
+					{#if (s.hooked && !isAgent(s)) || s.channel || s.asleep}
 						<Composer
 							session={s}
 							onsent={(kind) => {

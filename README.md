@@ -134,7 +134,8 @@ On a workstation:
 ccdash status               # this machine's sessions
 ccdash open <id>            # focus its window, or attach a background session
 ccdash rename <id> <name>   # Claude Code adopts it at the next prompt
-ccdash reply <id> <text>    # a message into the session (needs the channel)
+ccdash reply <id> <text>    # a message into the session (needs the channel); wakes a sleeping one
+claude --project ccdash     # a new session in this workspace, under that project
 ccdash url                  # the panel's address
 ccdash workspace status     # the workspace sync: where every unit stands here
 ```

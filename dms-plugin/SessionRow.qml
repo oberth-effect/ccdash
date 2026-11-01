@@ -84,7 +84,7 @@ Rectangle {
         StyledText {
             width: parent.width
             visible: !row.compact
-            text: [Cc.place(row.session.cwd), row.session.model, Cc.isAgent(row.session) ? "background" : ""].filter(p => p).join(" · ")
+            text: [Cc.place(row.session.cwd), row.session.model, Cc.isBackground(row.session) ? "background" : ""].filter(p => p).join(" · ")
             font.pixelSize: Theme.fontSizeSmall
             color: Theme.surfaceVariantText
             wrapMode: Text.NoWrap

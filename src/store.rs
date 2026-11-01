@@ -3,6 +3,7 @@
 //! (one thread); readers open their own read-only connections.
 
 use std::{
+    collections::HashSet,
     fs::{self, OpenOptions, Permissions},
     os::unix::fs::{OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
@@ -531,6 +532,17 @@ fn kind_name(kind: Kind) -> &'static str {
         Kind::Interactive => "interactive",
         Kind::Background => "background",
     }
+}
+
+/// The background sessions of `host` that never ended: the jobs a hub
+/// restart must not lose while they sleep.
+pub fn open_background(conn: &Connection, host: &str) -> Result<HashSet<String>> {
+    conn.prepare_cached(
+        "SELECT id FROM sessions WHERE host = ?1 AND kind = 'background' AND ended_at IS NULL",
+    )?
+    .query_map(params![host], |r| r.get(0))?
+    .collect::<rusqlite::Result<_>>()
+    .map_err(Into::into)
 }
 
 pub fn restored(conn: &Connection, session: &str) -> Result<Restored> {

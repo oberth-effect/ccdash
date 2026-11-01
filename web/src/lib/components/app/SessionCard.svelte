@@ -75,10 +75,11 @@
 			<span class="text-xs text-muted-foreground"
 				>{parent
 					? `Started by ${label(parent)}`
-					: s.parent
-						? `Started by session ${s.parent.slice(0, 8)}`
-						: 'Background session'}</span
+					: `Started by session ${s.parent?.slice(0, 8)}`}</span
 			>
+		{/if}
+		{#if s.asleep}
+			<span class="text-xs text-muted-foreground">Asleep: a message wakes it</span>
 		{/if}
 		{#if s.hooked || s.activity === 'gone'}
 			{#if s.waiting_for}

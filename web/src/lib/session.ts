@@ -16,9 +16,12 @@ export const ACTIVITY: Record<Shown, { label: string; rank: number }> = {
 };
 
 export const label = (s: Session) => s.title || s.name || s.id.slice(0, 8);
-export const isAgent = (s: Session) => s.kind === 'background';
+export const isBackground = (s: Session) => s.kind === 'background';
+/** Started by Claude, so it answers to that session. One you started, from
+ * the panel or a terminal, is yours like any other. */
+export const isAgent = (s: Session) => isBackground(s) && Boolean(s.parent) && !s.launched;
 
-/** Background sessions answer to their parent, so a done turn is "finished". */
+/** Agents answer to their parent, so a done turn is "finished". */
 export const shown = (s: Session): Shown =>
 	isAgent(s) && (s.activity === 'your_turn' || s.activity === 'parked') ? 'finished' : s.activity;
 

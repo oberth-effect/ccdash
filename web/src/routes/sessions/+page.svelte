@@ -44,7 +44,7 @@
 		[
 			'Background agents',
 			groups.agents,
-			'Started by Claude or with claude --bg; they report to the session that started them.',
+			'Started by Claude; they report to the session that started them.',
 			false
 		],
 		['Ended', groups.gone, null, true]

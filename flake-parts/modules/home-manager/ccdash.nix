@@ -30,6 +30,12 @@ let
   toml = pkgs.formats.toml { };
   configFile = toml.generate "ccdash-config.toml" cfg.settings;
   exe = getExe cfg.package;
+  # NOTE: sessions run with the `PATH` of whoever dispatched them, here the collector, so it
+  # keeps the user manager's: `Environment=PATH=` would replace it
+  collector = pkgs.writeShellScript "ccdash-collector" ''
+    PATH=${lib.makeBinPath [ pkgs.git ]}:$PATH
+    exec ${exe} collector
+  '';
   statusLineCommand = cfg.claudeCode.statusLine.command;
 
   hookEvents = [
@@ -76,15 +82,54 @@ let
   claudeWrapper = pkgs.writeShellScriptBin "claude" ''
     real=${getExe claudeCode.package}
     case "''${1-}" in
-      agents | attach | auth | auto-mode | doctor | gateway | import | install | logs | mcp | \
-        plugin | plugins | purge | rc | remote-control | respawn | rm | setup-token | stop | \
+      agents | attach | auth | auto-mode | daemon | doctor | gateway | import | install | logs | \
+        mcp | plugin | plugins | purge | rc | remote-control | respawn | rm | setup-token | stop | \
         kill | ultrareview | update | upgrade)
         exec "$real" "$@"
         ;;
     esac
+    # NOTE: ccdash's flag, not Claude Code's: the session's hooks hand it to the hub
+    project=
+    args=()
+    while [ $# -gt 0 ]; do
+      case $1 in
+        --)
+          args+=("$@")
+          break
+          ;;
+        --project=*)
+          project=''${1#--project=}
+          shift
+          ;;
+        --project)
+          if [ $# -lt 2 ]; then
+            echo "claude: --project needs a project name" >&2
+            exit 2
+          fi
+          project=$2
+          shift 2
+          ;;
+        *)
+          args+=("$1")
+          shift
+          ;;
+      esac
+    done
+    set -- "''${args[@]}"
+    if [ -n "$project" ]; then
+      export CCDASH_PROJECT=$project
+    fi
     for arg in "$@"; do
       case $arg in
-        -p | --print | --bg) exec "$real" "$@" ;;
+        --) break ;;
+        --bg | --background)
+          if [ -n "$project" ]; then
+            echo "claude: --project cannot reach a --bg session: start it from the panel" >&2
+            exit 2
+          fi
+          exec "$real" "$@"
+          ;;
+        -p | --print) exec "$real" "$@" ;;
       esac
     done
     exec "$real" ${
@@ -284,6 +329,22 @@ in
         '';
       };
 
+      daemon.enable = mkOption {
+        type = types.bool;
+        default = true;
+        description = ''
+          Whether Claude Code's background supervisor runs as its own user
+          service, instead of being started by the first `claude --bg`.
+          Started from the panel it would live in the collector's cgroup
+          and die with every collector restart, taking the background
+          sessions with it, and it would keep the environment of whatever
+          started it. Restarting this service keeps the sessions: the next
+          supervisor adopts them. It starts with {file}`default.target`, so
+          a host nobody logs in to needs `loginctl enable-linger`. Needs
+          {option}`programs.claude-code.package`.
+        '';
+      };
+
       asks.enable = mkOption {
         type = types.bool;
         default = true;
@@ -302,7 +363,9 @@ in
           Puts a `claude` wrapper first in `PATH` that starts interactive
           sessions with `--channels plugin:ccdash@inline --plugin-dir …`; subcommands,
           `-p` and `--bg` run unchanged (sessions started from the panel get
-          the plugin through `[launch] command`). Claude Code only loads the channel
+          the plugin through `[launch] command`). The wrapper also takes
+          `--project <name>`, which starts the session under that project of
+          the workspace. Claude Code only loads the channel
           when it is allowlisted (the NixOS module's
           {option}`programs.ccdash.channel.allow`) or with
           {option}`devFlag`
@@ -400,12 +463,11 @@ in
           X-Restart-Triggers = [ "${configFile}" ];
         };
         Service = {
-          ExecStart = "${exe} collector";
-          Restart = "on-failure";
-          RestartSec = 2;
           # NOTE: the workspace sync spawns git; measured 2026-10-30 under these
           # limits at < 1 % of a core during real work, a seed at ~40 %
-          Environment = mkIf cfg.workspace.enable [ "PATH=${lib.makeBinPath [ pkgs.git ]}" ];
+          ExecStart = if cfg.workspace.enable then "${collector}" else "${exe} collector";
+          Restart = "on-failure";
+          RestartSec = 2;
         }
         // optionalAttrs cfg.workspace.enable {
           CPUWeight = 20;
@@ -421,6 +483,7 @@ in
           (getExe claudeCode.package)
           "agents"
           "--json"
+          "--all"
         ];
         # NOTE: the real binary, not the channel wrapper; ccdash adds `-p /usage`
         usage.command = mkDefault [ (getExe claudeCode.package) ];
@@ -444,6 +507,23 @@ in
             "{id}"
           ];
         };
+      };
+
+      systemd.user.services.claude-daemon = mkIf cfg.claudeCode.daemon.enable {
+        Unit = {
+          Description = "Claude Code's supervisor of background sessions";
+          # NOTE: exits 1 while a supervisor started on demand still runs: wait it out
+          StartLimitIntervalSec = 0;
+        };
+        Service = {
+          ExecStart = "${getExe claudeCode.package} daemon run";
+          # NOTE: the supervisor only, the next one adopts the running sessions; the
+          # default kills them with it (both verified on 2.1.312)
+          KillMode = "process";
+          Restart = "always";
+          RestartSec = 5;
+        };
+        Install.WantedBy = [ "default.target" ];
       };
     })
     (mkIf cfg.claudeCode.hooks.enable {

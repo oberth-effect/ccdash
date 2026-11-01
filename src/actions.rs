@@ -2,7 +2,7 @@
 //! attach), start or continue one in the background, stop one.
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, HashSet},
     fs::{OpenOptions, Permissions},
     io::Write,
     os::unix::fs::{OpenOptionsExt, PermissionsExt},
@@ -14,7 +14,7 @@ use std::{
 use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
 use tokio::process::Command;
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::{
     collector::Local,
@@ -26,8 +26,10 @@ use crate::{
 
 /// How long `claude --bg` and `claude stop` may take.
 const RUN_TIMEOUT: Duration = Duration::from_secs(60);
-/// Settings files of launches older than this are pruned at the next launch.
-const SETTINGS_KEEP: Duration = Duration::from_secs(24 * 3600);
+/// Settings files of launches older than this are pruned at the next
+/// launch, unless their job is still listed: its saved options name the
+/// file, and Claude Code cannot restart the job without it.
+const SETTINGS_KEEP: Duration = Duration::from_secs(30 * 24 * 3600);
 /// What a launch may ask for besides the configured default.
 pub const PERMISSION_MODES: &[&str] = &["plan", "acceptEdits"];
 /// Longest prompt a launch takes, in characters.
@@ -83,6 +85,9 @@ pub struct LaunchSpec {
     pub resume: Option<String>,
     /// Handed to the session's hooks as `CCDASH_LAUNCH`.
     pub nonce: String,
+    /// `resume` is a job of this machine and nothing about it changes: it
+    /// continues on its saved options.
+    pub saved: bool,
 }
 
 impl LaunchSpec {
@@ -139,6 +144,18 @@ impl LaunchSpec {
         args
     }
 
+    /// The whole command line that continues a job on its saved options,
+    /// when that is what this launch does. No flags, `launch.command`'s
+    /// included: with any, Claude Code starts a copy under a new id.
+    fn saved_args(&self) -> Option<Vec<String>> {
+        let id = self.resume.as_ref().filter(|_| self.saved)?;
+        Some(
+            ["--bg", "--resume", id, "--", &self.prompt]
+                .map(String::from)
+                .to_vec(),
+        )
+    }
+
     /// The session's settings: the launch id and the direnv variables as
     /// `env`. Settings, not the process environment: the background daemon
     /// spawns the session with its own.
@@ -178,13 +195,21 @@ async fn direnv_env(cfg: &config::Launch, cwd: &str) -> Result<BTreeMap<String, 
     direnv_vars(&String::from_utf8_lossy(&output.stdout), &cfg.env)
 }
 
+fn launch_dir() -> PathBuf {
+    paths::state_dir().join("launch")
+}
+
 /// Writes the launch's settings file (owner-only) under the state dir and
 /// prunes the old ones; its path.
-fn write_settings(nonce: &str, settings: &Value) -> Result<PathBuf, String> {
-    let dir = paths::state_dir().join("launch");
+fn write_settings(
+    nonce: &str,
+    settings: &Value,
+    jobs: &HashSet<String>,
+) -> Result<PathBuf, String> {
+    let dir = launch_dir();
     std::fs::create_dir_all(&dir).map_err(|e| format!("creating {}: {e}", dir.display()))?;
     let _ = std::fs::set_permissions(&dir, Permissions::from_mode(0o700));
-    prune_settings(&dir);
+    prune_settings(&dir, jobs);
     let path = dir.join(format!("{nonce}.json"));
     let mut file = OpenOptions::new()
         .write(true)
@@ -198,19 +223,62 @@ fn write_settings(nonce: &str, settings: &Value) -> Result<PathBuf, String> {
     Ok(path)
 }
 
-fn prune_settings(dir: &Path) {
+/// Notes which launch job `short` came from (`<short>.job` holds its id).
+fn note_job(dir: &Path, short: &str, nonce: &str) {
+    let path = dir.join(format!("{short}.job"));
+    if let Err(e) = std::fs::write(&path, nonce) {
+        warn!("writing {}: {e}", path.display());
+    }
+}
+
+/// Whether the settings file job `id` was launched with is still there. A
+/// job launched before ccdash noted this may have lost its own.
+pub fn settings_kept(id: &str) -> bool {
+    settings_in(&launch_dir(), id)
+}
+
+fn settings_in(dir: &Path, id: &str) -> bool {
+    let short: String = id.chars().take(8).collect();
+    paths::plain_session_id(&short)
+        && std::fs::read_to_string(dir.join(format!("{short}.job")))
+            .is_ok_and(|nonce| dir.join(format!("{}.json", nonce.trim())).is_file())
+}
+
+/// Drops old settings files and notes, except those of `jobs`, the jobs
+/// Claude Code lists. Empty means no poll came yet: nothing can tell.
+fn prune_settings(dir: &Path, jobs: &HashSet<String>) {
+    let listed = |short: &str| jobs.iter().any(|id| id.starts_with(short));
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
+    if jobs.is_empty() {
+        return;
+    }
+    let entries: Vec<_> = entries.flatten().collect();
+    let in_use: HashSet<String> = entries
+        .iter()
+        .filter_map(|e| {
+            let name = e.file_name();
+            let short = name.to_str()?.strip_suffix(".job")?;
+            let nonce = std::fs::read_to_string(e.path()).ok()?;
+            listed(short).then(|| nonce.trim().to_owned())
+        })
+        .collect();
     let now = SystemTime::now();
-    for entry in entries.flatten() {
+    for entry in entries {
+        let name = entry.file_name();
+        let kept = match name.to_string_lossy().rsplit_once('.') {
+            Some((short, "job")) => listed(short),
+            Some((nonce, _)) => in_use.contains(nonce),
+            None => false,
+        };
         let old = entry
             .metadata()
             .and_then(|m| m.modified())
             .ok()
             .and_then(|at| now.duration_since(at).ok())
             .is_some_and(|age| age > SETTINGS_KEEP);
-        if old {
+        if old && !kept {
             let _ = std::fs::remove_file(entry.path());
         }
     }
@@ -229,8 +297,12 @@ pub fn valid_model(model: &str) -> bool {
 /// Starts the session with `cfg.command` (the Claude Code executable and
 /// its leading arguments) in its directory, with the directory's direnv
 /// variables when configured; the short id `claude --bg` printed, or why
-/// it failed (its stderr).
-pub async fn launch(cfg: &config::Launch, spec: &LaunchSpec) -> Result<String, String> {
+/// it failed (its stderr). `jobs` are the jobs Claude Code lists here.
+pub async fn launch(
+    cfg: &config::Launch,
+    spec: &LaunchSpec,
+    jobs: &HashSet<String>,
+) -> Result<String, String> {
     let (program, lead) = cfg
         .command
         .split_first()
@@ -238,6 +310,9 @@ pub async fn launch(cfg: &config::Launch, spec: &LaunchSpec) -> Result<String, S
     spec.check()?;
     if !Path::new(&spec.cwd).is_dir() {
         return Err(format!("{} is not a directory on this host", spec.cwd));
+    }
+    if let Some(args) = spec.saved_args() {
+        return started(run(Command::new(program).args(args).current_dir(&spec.cwd)).await?);
     }
     let env = direnv_env(cfg, &spec.cwd).await?;
     if !cfg.direnv.is_empty() {
@@ -250,12 +325,20 @@ pub async fn launch(cfg: &config::Launch, spec: &LaunchSpec) -> Result<String, S
             names.join(", ")
         );
     }
-    let settings = write_settings(&spec.nonce, &spec.settings(&env))?;
-    let output = run(Command::new(program)
-        .args(lead)
-        .args(spec.args(&settings))
-        .current_dir(&spec.cwd))
-    .await?;
+    let settings = write_settings(&spec.nonce, &spec.settings(&env), jobs)?;
+    let short = started(
+        run(Command::new(program)
+            .args(lead)
+            .args(spec.args(&settings))
+            .current_dir(&spec.cwd))
+        .await?,
+    )?;
+    note_job(&launch_dir(), &short, &spec.nonce);
+    Ok(short)
+}
+
+/// What `claude --bg` said: the id it printed, or why it failed.
+fn started(output: std::process::Output) -> Result<String, String> {
     let stdout = String::from_utf8_lossy(&output.stdout);
     if !output.status.success() {
         return Err(failure(&output));
@@ -545,6 +628,7 @@ mod tests {
             permission_mode: Some("plan".into()),
             resume: None,
             nonce: "0123abcd".into(),
+            saved: false,
         }
     }
 
@@ -577,6 +661,55 @@ mod tests {
             ["--bg", "--resume", "9c4719e5-9508-461b-b1f4-e7b5a4c26f9d"]
         );
         assert!(spec().check().is_ok());
+    }
+
+    #[test]
+    fn a_job_of_this_machine_continues_on_its_saved_options() {
+        let id = "9c4719e5-9508-461b-b1f4-e7b5a4c26f9d";
+        let waking = LaunchSpec {
+            resume: Some(id.into()),
+            model: None,
+            permission_mode: None,
+            saved: true,
+            ..spec()
+        };
+        assert_eq!(
+            waking.saved_args().unwrap(),
+            ["--bg", "--resume", id, "--", "-v fix it"]
+        );
+        assert!(spec().saved_args().is_none(), "nothing to continue");
+        let elsewhere = LaunchSpec {
+            saved: false,
+            ..waking
+        };
+        assert!(elsewhere.saved_args().is_none(), "needs the channel flags");
+    }
+
+    #[tokio::test]
+    async fn a_wake_runs_no_leading_flags_and_its_failure_is_the_launch_failure() {
+        let waking = |command: &[&str]| {
+            let cfg = config::Launch {
+                command: command.iter().map(|s| (*s).to_owned()).collect(),
+                ..config::Launch::default()
+            };
+            let spec = LaunchSpec {
+                cwd: "/tmp".into(),
+                resume: Some("9c4719e5".into()),
+                model: None,
+                permission_mode: None,
+                saved: true,
+                ..spec()
+            };
+            async move { launch(&cfg, &spec, &HashSet::new()).await }
+        };
+        // NOTE: `echo` prints what it was given, which then fails as no id
+        let echoed = waking(&["echo", "--plugin-dir", "/p"]).await.unwrap_err();
+        assert!(
+            echoed.ends_with("--bg --resume 9c4719e5 -- -v fix it"),
+            "{echoed}"
+        );
+        assert!(waking(&["false"]).await.is_err());
+        assert!(waking(&["/nonexistent/claude"]).await.is_err());
     }
 
     #[test]
@@ -647,16 +780,51 @@ mod tests {
         let old = launch.join("old.json");
         std::fs::write(&old, "{}").unwrap();
         let stale = SystemTime::now() - SETTINGS_KEEP - Duration::from_secs(60);
-        std::fs::File::open(&old)
-            .unwrap()
-            .set_modified(stale)
-            .unwrap();
-        prune_settings(&launch);
-        assert!(!old.exists(), "a day-old settings file is pruned");
+        let age = |path: &Path| {
+            std::fs::File::open(path)
+                .unwrap()
+                .set_modified(stale)
+                .unwrap();
+        };
+        age(&old);
+        let some_job = HashSet::from(["aaaabbbb-0000".to_owned()]);
+        prune_settings(&launch, &HashSet::new());
+        assert!(old.exists(), "no poll yet: nothing can tell");
+        prune_settings(&launch, &some_job);
+        assert!(!old.exists(), "an old settings file is pruned");
         let fresh = launch.join("fresh.json");
         std::fs::write(&fresh, "{}").unwrap();
-        prune_settings(&launch);
+        prune_settings(&launch, &some_job);
         assert!(fresh.exists());
+
+        // its job's saved options name it: it stays as long as the job
+        let settings = launch.join("nonce1.json");
+        std::fs::write(&settings, "{}").unwrap();
+        note_job(&launch, "aaaabbbb", "nonce1");
+        let note = launch.join("aaaabbbb.job");
+        age(&settings);
+        age(&note);
+        assert!(settings_in(&launch, "aaaabbbb-0000-4000-8000-000000000000"));
+        prune_settings(&launch, &some_job);
+        assert!(settings.exists() && note.exists());
+        prune_settings(&launch, &HashSet::from(["ffff0000-1111".to_owned()]));
+        assert!(!settings.exists() && !note.exists(), "the job is gone");
+        assert!(!settings_in(
+            &launch,
+            "aaaabbbb-0000-4000-8000-000000000000"
+        ));
+
+        // a job with no note, or that lost its file, is not known to have it
+        assert!(!settings_in(
+            &launch,
+            "cccc0000-0000-4000-8000-000000000000"
+        ));
+        note_job(&launch, "dddd0000", "nonce2");
+        assert!(!settings_in(
+            &launch,
+            "dddd0000-0000-4000-8000-000000000000"
+        ));
+        assert!(!settings_in(&launch, "../../etc/passwd"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -689,6 +857,8 @@ mod tests {
     fn the_printed_id_is_read() {
         let out = "backgrounded · 9c4719e5\n  claude agents             list sessions\n  claude attach 9c4719e5    open in this terminal\n";
         assert_eq!(launched_id(out).as_deref(), Some("9c4719e5"));
+        let woken = "note: woke session 9c4719e5 with its saved options (--model).\nbackgrounded · 9c4719e5 · a-name\n";
+        assert_eq!(launched_id(woken).as_deref(), Some("9c4719e5"));
         assert_eq!(launched_id("claude attach 9c4719e5\n"), None);
         assert_eq!(launched_id(""), None);
     }

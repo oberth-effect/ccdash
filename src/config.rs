@@ -408,7 +408,9 @@ impl Default for Queue {
 impl Default for Agents {
     fn default() -> Self {
         Self {
-            command: ["claude", "agents", "--json"].map(String::from).to_vec(),
+            command: ["claude", "agents", "--json", "--all"]
+                .map(String::from)
+                .to_vec(),
             interval_secs: 5,
         }
     }
