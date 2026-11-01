@@ -23,6 +23,7 @@ import type {
 	LaunchTarget,
 	Message,
 	Note,
+	NoteRef,
 	NoteOp,
 	NoteView,
 	Projects,
@@ -216,6 +217,16 @@ export const fetchAnalytics = (params: {
 	workspace?: string;
 	host?: string;
 }) => getJson<Analytics>(`analytics${query(params)}`);
+
+/** The notes as a `.zip`: markdown with frontmatter and an `INDEX.md`. */
+export async function exportNotes(notes: NoteRef[]): Promise<Blob> {
+	const res = await api('notes/export', {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify({ notes })
+	});
+	return res.blob();
+}
 
 /** Each limit's current window, for the Now page. */
 export const fetchLimitTracks = () => getJson<LimitTracks>('limits');

@@ -195,7 +195,15 @@ async fn handle(
             Ok(Request::Inject { envelope }) => {
                 if tool_hook(&envelope.payload)
                     && let Some(session) = envelope.payload["session_id"].as_str()
-                    && local.take_interrupt(session, envelope.ts).await?
+                    // NOTE: Claude carries on after a failed tool whatever this hook
+                    // answers (2.1.312): the stop has to land on its next try too
+                    && local
+                        .take_interrupt(
+                            session,
+                            envelope.ts,
+                            envelope.payload["hook_event_name"] == "PostToolUseFailure",
+                        )
+                        .await?
                 {
                     send(
                         &mut write,

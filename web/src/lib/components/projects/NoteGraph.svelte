@@ -1,8 +1,9 @@
 <script lang="ts">
-	// The note graph: d3 force layout drawn in SVG. Nodes are coloured by
-	// kind and sized by recalls (progress entries are small grey diamonds),
-	// edges styled by link kind. Wheel zooms, dragging the background pans,
-	// dragging a node moves it, a click opens the note.
+	// The note graph in 2D: a d3 force layout drawn in SVG. What it shows and
+	// emphasises comes from `GraphTab`; this draws it and takes the gestures.
+	// Wheel or two fingers zoom, dragging the background pans, dragging a
+	// note moves it, a click selects it and a double click opens it. Titles
+	// go where they fit, the best connected first (`placeLabels`).
 	import { untrack } from 'svelte';
 	import {
 		forceCenter,
@@ -10,28 +11,71 @@
 		forceLink,
 		forceManyBody,
 		forceSimulation,
+		forceX,
+		forceY,
 		type Simulation,
 		type SimulationLinkDatum,
 		type SimulationNodeDatum
 	} from 'd3-force';
-	import MinusIcon from '@lucide/svelte/icons/minus';
-	import PlusIcon from '@lucide/svelte/icons/plus';
-	import ScanIcon from '@lucide/svelte/icons/scan';
 	import type { GraphEdge, GraphNode, LinkKind } from '#lib/api/types.js';
-	import { Button } from '#lib/components/ui/button/index.js';
 	import { fmtDate, plural } from '#lib/format.js';
-	import { KIND_COLOR, KIND_LABEL } from '#lib/notes.js';
+	import { degree, edgeKey, placeLabels, type Adjacency } from '#lib/graph.js';
+	import { KIND_LABEL } from '#lib/notes.js';
+	import type { GraphLayout, GraphPhysics } from '#lib/prefs.svelte.js';
 
 	type N = SimulationNodeDatum & { id: number; node: GraphNode; r: number };
 	type L = SimulationLinkDatum<N> & { kind: LinkKind };
 	type Dot = { id: number; x: number; y: number; r: number; node: GraphNode };
-	type Line = { key: string; x1: number; y1: number; x2: number; y2: number; kind: LinkKind };
+	type Line = {
+		key: string;
+		a: number;
+		b: number;
+		x1: number;
+		y1: number;
+		x2: number;
+		y2: number;
+		kind: LinkKind;
+	};
+
+	/** Titles drawn at once, at most. */
+	const MAX_LABELS = 120;
+	const CLICK_MS = 280;
+	/** Less than this between press and release is a click, not a drag. */
+	const CLICK_PX = 4;
+	/** Timeline width in graph units per screen width, so it can be explored. */
+	const TIMELINE_STRETCH = 1.6;
+	const CLUSTER_RING = 0.42;
+	const REVEAL_MS = 350;
 
 	let {
 		nodes,
 		edges,
-		onpick
-	}: { nodes: GraphNode[]; edges: GraphEdge[]; onpick: (node: GraphNode) => void } = $props();
+		adj,
+		colour,
+		radius,
+		lit = null,
+		path = null,
+		selected = null,
+		layout = 'force',
+		physics,
+		onselect,
+		onopen
+	}: {
+		nodes: GraphNode[];
+		edges: GraphEdge[];
+		adj: Adjacency;
+		colour: (node: GraphNode) => string;
+		radius: (node: GraphNode) => number;
+		/** The notes to keep bright; everything else dims. Null: none dim. */
+		lit?: Set<number> | null;
+		/** The links of a found path. */
+		path?: Set<string> | null;
+		selected?: number | null;
+		layout?: GraphLayout;
+		physics: GraphPhysics;
+		onselect: (node: GraphNode | null) => void;
+		onopen: (node: GraphNode) => void;
+	} = $props();
 
 	let width = $state(600);
 	let height = $state(400);
@@ -46,8 +90,17 @@
 	const placed: Record<number, N> = {};
 	let fitted = false;
 
-	const radius = (n: GraphNode) =>
-		n.kind === 'progress' ? 3.5 : Math.min(14, 5 + Math.sqrt(n.recalls) * 2);
+	/** A centre per project, on a ring, for the Clusters layout. */
+	function clusterCentres(ns: N[]): Record<string, [number, number]> {
+		const names = [...new Set(ns.map((n) => n.node.project ?? ''))].sort();
+		const size = Math.min(width, height) * CLUSTER_RING;
+		return Object.fromEntries(
+			names.map((name, i) => {
+				const angle = (i / names.length) * Math.PI * 2;
+				return [name, [width / 2 + Math.cos(angle) * size, height / 2 + Math.sin(angle) * size]];
+			})
+		);
+	}
 
 	function rebuild() {
 		sim?.stop();
@@ -70,16 +123,39 @@
 				'link',
 				forceLink<N, L>(ls)
 					.id((d) => d.id)
-					.distance((l) => 30 + (l.source as N).r + (l.target as N).r)
-					.strength(0.6)
+					.distance((l) => physics.distance + (l.source as N).r + (l.target as N).r)
+					.strength(layout === 'force' ? 0.6 : 0.15)
 			)
-			.force('charge', forceManyBody<N>().strength(-40).distanceMax(250))
+			.force('charge', forceManyBody<N>().strength(-physics.repulsion).distanceMax(250))
 			.force('center', forceCenter(width / 2, height / 2).strength(0.05))
+			// NOTE: `forceCenter` only moves the mean: this is what keeps loose notes from drifting off
+			.force('x', forceX<N>(width / 2).strength(physics.gravity))
+			.force('y', forceY<N>(height / 2).strength(physics.gravity))
 			.force(
 				'collide',
 				forceCollide<N>((d) => d.r + 3)
-			)
-			.alpha(ns.some((n) => n.x === undefined) ? 1 : 0.4)
+			);
+		if (layout === 'clusters') {
+			const centres = clusterCentres(ns);
+			sim
+				.force('x', forceX<N>((d) => centres[d.node.project ?? ''][0]).strength(0.25))
+				.force('y', forceY<N>((d) => centres[d.node.project ?? ''][1]).strength(0.25));
+		} else if (layout === 'timeline') {
+			const times = ns.map((n) => n.node.created_at);
+			const [from, to] = [Math.min(...times), Math.max(...times)];
+			const stretch = width * TIMELINE_STRETCH;
+			sim
+				.force(
+					'x',
+					forceX<N>(
+						(d) => ((d.node.created_at - from) / Math.max(1, to - from)) * stretch
+					).strength(0.9)
+				)
+				.force('y', forceY<N>(height / 2).strength(0.06))
+				.force('center', null);
+		}
+		sim
+			.alpha(ns.some((n) => n.x === undefined) ? 1 : 0.5)
 			.on('end', () => {
 				if (!fitted) {
 					fitted = true;
@@ -93,6 +169,8 @@
 					const t = l.target as N;
 					return {
 						key: `${s.id}-${t.id}-${l.kind}`,
+						a: s.id,
+						b: t.id,
 						x1: s.x ?? 0,
 						y1: s.y ?? 0,
 						x2: t.x ?? 0,
@@ -106,34 +184,67 @@
 	$effect(() => {
 		void nodes;
 		void edges;
+		void layout;
+		void physics.repulsion;
+		void physics.distance;
+		void physics.gravity;
 		untrack(rebuild);
 		return () => sim?.stop();
 	});
 
-	// --- pan, zoom, drag -----------------------------------------------------
+	// A new size changes what "fit" means, as entering full screen does.
+	$effect(() => {
+		void width;
+		void height;
+		untrack(() => {
+			if (fitted && !userMoved) fit();
+		});
+	});
 
-	let pointer = $state.raw<
-		{ kind: 'pan'; x: number; y: number } | { kind: 'node'; n: N; moved: boolean } | null
-	>(null);
+	// --- camera --------------------------------------------------------------
 
-	/** Graph coordinates of a client point. */
-	function toGraph(event: PointerEvent | WheelEvent): [number, number] {
-		const box = svg!.getBoundingClientRect();
-		return [
-			(event.clientX - box.left - view.x) / view.k,
-			(event.clientY - box.top - view.y) / view.k
-		];
+	/** The user panned or zoomed: nothing re-fits behind their back. */
+	let userMoved = false;
+	let flight = 0;
+
+	function animateTo(target: { k: number; x: number; y: number }) {
+		cancelAnimationFrame(flight);
+		const from = view;
+		const start = performance.now();
+		const step = (now: number) => {
+			const t = Math.min(1, (now - start) / REVEAL_MS);
+			const eased = t * (2 - t);
+			view = {
+				k: from.k + (target.k - from.k) * eased,
+				x: from.x + (target.x - from.x) * eased,
+				y: from.y + (target.y - from.y) * eased
+			};
+			if (t < 1) flight = requestAnimationFrame(step);
+		};
+		flight = requestAnimationFrame(step);
 	}
 
-	function zoomBy(factor: number, at?: [number, number]) {
+	/** Brings a note to the middle, a little closer if the view is far out. */
+	export function reveal(id: number) {
+		const d = dots.find((dot) => dot.id === id);
+		if (!d) return;
+		userMoved = true;
 		fitted = true;
-		const k = Math.min(6, Math.max(0.2, view.k * factor));
+		const k = Math.max(view.k, 1);
+		animateTo({ k, x: width / 2 - d.x * k, y: height / 2 - d.y * k });
+	}
+
+	export function zoomBy(factor: number, at?: [number, number]) {
+		fitted = true;
+		userMoved = true;
+		const k = Math.min(6, Math.max(0.1, view.k * factor));
 		const [cx, cy] = at ?? [width / 2, height / 2];
 		// keep the point under the cursor fixed
 		view = { k, x: cx - ((cx - view.x) * k) / view.k, y: cy - ((cy - view.y) * k) / view.k };
 	}
 
-	function fit() {
+	export function fit() {
+		userMoved = false;
 		if (!dots.length) return void (view = { k: 1, x: 0, y: 0 });
 		const xs = dots.map((d) => d.x);
 		const ys = dots.map((d) => d.y);
@@ -145,60 +256,129 @@
 		view = { k, x: width / 2 - ((x0 + x1) / 2) * k, y: height / 2 - ((y0 + y1) / 2) * k };
 	}
 
+	/** A point in the SVG's own coordinates. */
+	function local(event: { clientX: number; clientY: number }): [number, number] {
+		const box = svg!.getBoundingClientRect();
+		return [event.clientX - box.left, event.clientY - box.top];
+	}
+
 	$effect(() => {
 		const el = svg;
 		if (!el) return;
 		const onwheel = (event: WheelEvent) => {
 			event.preventDefault();
-			const box = el.getBoundingClientRect();
-			zoomBy(event.deltaY < 0 ? 1.15 : 1 / 1.15, [
-				event.clientX - box.left,
-				event.clientY - box.top
-			]);
+			zoomBy(event.deltaY < 0 ? 1.15 : 1 / 1.15, local(event));
 		};
 		// NOTE: wheel listeners are passive by default, which forbids preventDefault
 		el.addEventListener('wheel', onwheel, { passive: false });
 		return () => el.removeEventListener('wheel', onwheel);
 	});
 
+	// --- pointers ------------------------------------------------------------
+
+	type Drag =
+		| { kind: 'pan'; x: number; y: number; startX: number; startY: number }
+		| { kind: 'node'; n: N; dot: Dot; moved: boolean }
+		| { kind: 'pinch'; distance: number; at: [number, number] };
+
+	let pointer = $state.raw<Drag | null>(null);
+	/** The fingers down, for a pinch. */
+	const fingers: Record<number, [number, number]> = {};
+	let lastClick = { id: -1, at: 0 };
+
+	const pinchOf = (): { distance: number; at: [number, number] } | null => {
+		const [a, b] = Object.values(fingers);
+		if (!a || !b) return null;
+		return {
+			distance: Math.hypot(a[0] - b[0], a[1] - b[1]),
+			at: [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2]
+		};
+	};
+
 	function down(event: PointerEvent, dot?: Dot) {
 		if (event.button !== 0) return;
 		(event.currentTarget as Element).setPointerCapture(event.pointerId);
+		fingers[event.pointerId] = local(event);
+		const pinch = pinchOf();
+		if (pinch) {
+			// NOTE: a second finger takes over from whatever the first one started
+			if (pointer?.kind === 'node') release(pointer.n);
+			pointer = { kind: 'pinch', ...pinch };
+			return;
+		}
 		if (dot) {
 			const n = placed[dot.id];
-			pointer = { kind: 'node', n, moved: false };
+			pointer = { kind: 'node', n, dot, moved: false };
 			n.fx = n.x;
 			n.fy = n.y;
 			sim?.alphaTarget(0.3).restart();
 		} else {
 			fitted = true;
-			pointer = { kind: 'pan', x: event.clientX - view.x, y: event.clientY - view.y };
+			pointer = {
+				kind: 'pan',
+				x: event.clientX - view.x,
+				y: event.clientY - view.y,
+				startX: event.clientX,
+				startY: event.clientY
+			};
 		}
 	}
 
 	function move(event: PointerEvent) {
+		if (event.pointerId in fingers) fingers[event.pointerId] = local(event);
 		if (!pointer) return;
-		if (pointer.kind === 'pan') {
+		if (pointer.kind === 'pinch') {
+			const pinch = pinchOf();
+			if (!pinch) return;
+			view = {
+				...view,
+				x: view.x + pinch.at[0] - pointer.at[0],
+				y: view.y + pinch.at[1] - pointer.at[1]
+			};
+			zoomBy(pinch.distance / Math.max(1, pointer.distance), pinch.at);
+			pointer = { kind: 'pinch', ...pinch };
+		} else if (pointer.kind === 'pan') {
+			userMoved = true;
 			view = { ...view, x: event.clientX - pointer.x, y: event.clientY - pointer.y };
 		} else {
-			const [x, y] = toGraph(event);
-			pointer.n.fx = x;
-			pointer.n.fy = y;
+			const [x, y] = local(event);
+			pointer.n.fx = (x - view.x) / view.k;
+			pointer.n.fy = (y - view.y) / view.k;
 			pointer.moved = true;
 		}
 	}
 
-	function up(event: PointerEvent, dot?: Dot) {
+	function release(n: N) {
+		n.fx = null;
+		n.fy = null;
+		sim?.alphaTarget(0);
+	}
+
+	function up(event: PointerEvent) {
+		delete fingers[event.pointerId];
 		if (!pointer) return;
-		if (pointer.kind === 'node') {
-			pointer.n.fx = null;
-			pointer.n.fy = null;
-			sim?.alphaTarget(0);
-			if (!pointer.moved && dot) onpick(dot.node);
+		if (pointer.kind === 'pinch') {
+			// the finger left behind must not pan from where the pinch began
+			if (!pinchOf()) pointer = null;
+			return;
+		}
+		if (pointer.kind === 'pan') {
+			const travelled = Math.hypot(event.clientX - pointer.startX, event.clientY - pointer.startY);
+			if (travelled < CLICK_PX) onselect(null);
+		} else {
+			release(pointer.n);
+			if (!pointer.moved) {
+				const now = performance.now();
+				const again = lastClick.id === pointer.dot.id && now - lastClick.at < CLICK_MS;
+				lastClick = { id: pointer.dot.id, at: now };
+				if (again) onopen(pointer.dot.node);
+				else onselect(pointer.dot.node);
+			}
 		}
 		pointer = null;
-		void event;
 	}
+
+	// --- drawing -------------------------------------------------------------
 
 	const dash: Record<LinkKind, string | undefined> = {
 		mentions: undefined,
@@ -206,140 +386,173 @@
 		supersedes: '6 3',
 		blocks: undefined
 	};
-	/** Titles on every note while the graph is sparse or near 1:1 or closer
-	 * (zoomed out they would collide); else on the most recalled and the
-	 * hovered one. */
-	const named = $derived(dots.filter((d) => d.node.kind !== 'progress'));
+
+	/** What hovering adds to what is lit: the note and its neighbours. */
+	const glow = $derived.by(() => {
+		if (!hovered || pointer) return null;
+		const around = adj.get(hovered.id);
+		return new Set([hovered.id, ...(around ?? [])]);
+	});
+	// NOTE: a found path stays what is lit: it was hard enough to get
+	const bright = $derived(path ? lit : (glow ?? lit));
+	const opacityOf = (d: Dot) => {
+		if (bright && !bright.has(d.id)) return 0.12;
+		return d.node.status === 'archived' || d.node.status === 'superseded' ? 0.45 : 1;
+	};
+	const lineOpacity = (l: Line) => {
+		if (path?.has(edgeKey(l.a, l.b))) return 1;
+		if (bright) return bright.has(l.a) && bright.has(l.b) ? 0.8 : 0.05;
+		return l.kind === 'mentions' ? 0.3 : 0.6;
+	};
+	const lineColour = (l: Line) => {
+		if (path?.has(edgeKey(l.a, l.b))) return 'var(--primary)';
+		return l.kind === 'blocks' ? 'var(--critical)' : 'var(--muted-foreground)';
+	};
+	const lineWidth = (l: Line) =>
+		path?.has(edgeKey(l.a, l.b)) ? 3 : l.kind === 'supersedes' ? 2 : 1.2;
+
 	const labelled = $derived(
-		named.length <= 25 || view.k >= 0.8
-			? dots.filter((d) => d.node.kind !== 'progress' || d.id === hovered?.id)
-			: dots.filter((d) => d.r >= 9 || d.id === hovered?.id)
+		placeLabels(
+			dots
+				.filter(
+					(d) =>
+						d.id === hovered?.id ||
+						d.id === selected ||
+						(d.node.kind !== 'progress' && (!bright || bright.has(d.id))) ||
+						(bright?.has(d.id) ?? false)
+				)
+				.map((d) => ({
+					id: d.id,
+					x: d.x * view.k + view.x,
+					y: d.y * view.k + view.y - d.r - 3,
+					text: titleOf(d),
+					rank: degree(adj, d.id) * 2 + d.r + (bright?.has(d.id) ? 100 : 0),
+					must: d.id === hovered?.id || d.id === selected
+				})),
+			width,
+			height,
+			MAX_LABELS
+		)
 	);
+	function titleOf(d: Dot) {
+		return d.node.title.length > 32 && d.id !== hovered?.id && d.id !== selected
+			? `${d.node.title.slice(0, 31)}…`
+			: d.node.title;
+	}
 	const screen = (d: Dot) => [d.x * view.k + view.x, d.y * view.k + view.y] as const;
 </script>
 
-<div class="relative h-[60vh] min-h-72 w-full overflow-hidden rounded-lg border bg-card">
-	<div class="absolute inset-0" bind:clientWidth={width} bind:clientHeight={height}>
-		<svg
-			bind:this={svg}
-			{width}
-			{height}
-			class="touch-none select-none {pointer?.kind === 'pan' ? 'cursor-grabbing' : 'cursor-grab'}"
-			role="img"
-			aria-label="Note graph"
-			onpointerdown={(e) => down(e)}
-			onpointermove={move}
-			onpointerup={(e) => up(e)}
-			onpointercancel={(e) => up(e)}
-		>
-			<g transform="translate({view.x} {view.y}) scale({view.k})">
-				{#each lines as l (l.key)}
-					<line
-						x1={l.x1}
-						y1={l.y1}
-						x2={l.x2}
-						y2={l.y2}
-						stroke={l.kind === 'blocks' ? 'var(--color-critical)' : 'var(--color-muted-foreground)'}
-						stroke-opacity={l.kind === 'mentions' ? 0.3 : 0.6}
-						stroke-width={(l.kind === 'supersedes' ? 2 : 1.2) / view.k}
-						stroke-dasharray={dash[l.kind]}
-					/>
-				{/each}
-				{#each dots as d (d.id)}
-					{@const retired = d.node.status === 'archived' || d.node.status === 'superseded'}
-					<!-- marks keep their screen size at every zoom level -->
-					{@const r = d.r / view.k}
-					<g
-						transform="translate({d.x} {d.y})"
-						class="cursor-pointer"
-						opacity={retired ? 0.45 : 1}
-						role="button"
-						tabindex="-1"
-						aria-label={d.node.title}
-						onpointerdown={(e) => {
-							e.stopPropagation();
-							down(e, d);
-						}}
-						onpointerup={(e) => {
-							e.stopPropagation();
-							up(e, d);
-						}}
-						onpointerenter={() => (hovered = d)}
-						onpointerleave={() => (hovered = hovered?.id === d.id ? null : hovered)}
-					>
+<div class="absolute inset-0" bind:clientWidth={width} bind:clientHeight={height}>
+	<svg
+		bind:this={svg}
+		{width}
+		{height}
+		class="touch-none select-none {pointer?.kind === 'pan' ? 'cursor-grabbing' : 'cursor-grab'}"
+		role="img"
+		aria-label="Note graph"
+		onpointerdown={(e) => down(e)}
+		onpointermove={move}
+		onpointerup={up}
+		onpointercancel={up}
+	>
+		<!-- NOTE: marks keep their size through `--k`, so a zoom touches one element -->
+		<g transform="translate({view.x} {view.y}) scale({view.k})" style:--k={view.k}>
+			{#each lines as l (l.key)}
+				<line
+					x1={l.x1}
+					y1={l.y1}
+					x2={l.x2}
+					y2={l.y2}
+					stroke={lineColour(l)}
+					stroke-opacity={lineOpacity(l)}
+					stroke-width={lineWidth(l)}
+					stroke-dasharray={dash[l.kind]}
+					vector-effect="non-scaling-stroke"
+				/>
+			{/each}
+			{#each dots as d (d.id)}
+				<g
+					transform="translate({d.x} {d.y})"
+					class="cursor-pointer"
+					opacity={opacityOf(d)}
+					role="button"
+					tabindex="-1"
+					aria-label={d.node.title}
+					onpointerdown={(e) => {
+						e.stopPropagation();
+						down(e, d);
+					}}
+					onpointerenter={() => (hovered = d)}
+					onpointerleave={() => (hovered = hovered?.id === d.id ? null : hovered)}
+				>
+					<g class="graph-mark">
+						{#if d.id === selected}
+							<circle r={d.r + 4} fill="none" stroke="var(--primary)" stroke-width="2"></circle>
+						{/if}
 						{#if d.node.kind === 'progress'}
 							<rect
-								x={-r}
-								y={-r}
-								width={r * 2}
-								height={r * 2}
+								x={-d.r}
+								y={-d.r}
+								width={d.r * 2}
+								height={d.r * 2}
 								transform="rotate(45)"
-								fill={KIND_COLOR.progress}
-								stroke="var(--color-card)"
-								stroke-width={1.5 / view.k}
+								fill={colour(d.node)}
+								stroke="var(--card)"
+								stroke-width="1.5"
 							/>
 						{:else}
 							<circle
-								{r}
-								fill={KIND_COLOR[d.node.kind]}
-								stroke="var(--color-card)"
-								stroke-width={2 / view.k}
+								r={d.r}
+								fill={colour(d.node)}
+								stroke="var(--card)"
+								stroke-width="2"
 								stroke-dasharray={d.node.status === 'stale' ? '2 2' : undefined}
 							/>
 						{/if}
-						<circle r={Math.max(r, 10 / view.k)} fill="transparent" />
+						<circle r={Math.max(d.r, 10)} fill="transparent" />
 					</g>
-				{/each}
-				{#each labelled as d (d.id)}
-					<text
-						x={d.x}
-						y={d.y - (d.r + 3) / view.k}
-						text-anchor="middle"
-						font-size={10 / view.k}
-						class="pointer-events-none fill-foreground"
-						opacity={d.id === hovered?.id ? 1 : 0.85}
-						paint-order="stroke"
-						stroke="var(--color-card)"
-						stroke-width={3 / view.k}
-						>{d.node.title.length > 32 && d.id !== hovered?.id
-							? `${d.node.title.slice(0, 31)}…`
-							: d.node.title}</text
-					>
-				{/each}
-			</g>
-		</svg>
-	</div>
-	{#if hovered}
-		{@const [sx, sy] = screen(hovered)}
-		<div
-			class="pointer-events-none absolute z-10 max-w-64 rounded-md border bg-popover px-2 py-1.5 text-xs shadow"
-			style="left: {Math.min(sx + 12, width - 260)}px; top: {Math.max(sy + 12, 0)}px"
-		>
-			<span class="font-medium">{hovered.node.title}</span>
-			<span class="block text-muted-foreground"
-				>{KIND_LABEL[hovered.node.kind]}{hovered.node.project
-					? ` · ${hovered.node.project}`
-					: ''}{hovered.node.status !== 'active' ? ` · ${hovered.node.status}` : ''}</span
-			>
-			<span class="block text-muted-foreground"
-				>{plural(hovered.node.recalls, 'recall')} · created {fmtDate(hovered.node.created_at)}</span
-			>
-		</div>
-	{/if}
-	<div class="absolute top-2 right-2 flex flex-col gap-1">
-		<Button variant="outline" size="icon-sm" aria-label="Zoom in" onclick={() => zoomBy(1.3)}>
-			<PlusIcon />
-		</Button>
-		<Button variant="outline" size="icon-sm" aria-label="Zoom out" onclick={() => zoomBy(1 / 1.3)}>
-			<MinusIcon />
-		</Button>
-		<Button variant="outline" size="icon-sm" aria-label="Fit" title="Fit" onclick={fit}>
-			<ScanIcon />
-		</Button>
-	</div>
-	{#if !nodes.length}
-		<p class="absolute inset-0 grid place-items-center text-sm text-muted-foreground">
-			Nothing to show with these filters.
-		</p>
-	{/if}
+				</g>
+			{/each}
+			{#each dots as d (d.id)}
+				{#if labelled.has(d.id)}
+					<g transform="translate({d.x} {d.y})" class="pointer-events-none">
+						<text
+							y={-(d.r + 3)}
+							text-anchor="middle"
+							font-size="10"
+							class="graph-mark fill-foreground"
+							opacity={d.id === hovered?.id || d.id === selected ? 1 : 0.85}
+							paint-order="stroke"
+							stroke="var(--card)"
+							stroke-width="3">{titleOf(d)}</text
+						>
+					</g>
+				{/if}
+			{/each}
+		</g>
+	</svg>
 </div>
+{#if hovered && !pointer}
+	{@const [sx, sy] = screen(hovered)}
+	<div
+		class="pointer-events-none absolute z-10 max-w-64 rounded-md border bg-popover px-2 py-1.5 text-xs shadow"
+		style="left: {Math.min(sx + 12, width - 260)}px; top: {Math.max(sy + 12, 0)}px"
+	>
+		<span class="font-medium">{hovered.node.title}</span>
+		<span class="block text-muted-foreground"
+			>{KIND_LABEL[hovered.node.kind]}{hovered.node.project
+				? ` · ${hovered.node.project}`
+				: ''}{hovered.node.status !== 'active' ? ` · ${hovered.node.status}` : ''}</span
+		>
+		<span class="block text-muted-foreground"
+			>{plural(degree(adj, hovered.id), 'link')} · {plural(hovered.node.recalls, 'recall')} · created
+			{fmtDate(hovered.node.created_at)}</span
+		>
+	</div>
+{/if}
+
+<style>
+	.graph-mark {
+		transform: scale(calc(1 / var(--k)));
+	}
+</style>

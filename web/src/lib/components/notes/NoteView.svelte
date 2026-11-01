@@ -226,6 +226,12 @@
 						>Verify</Button
 					>
 				{/if}
+				<Button
+					size="sm"
+					variant="ghost"
+					href="{projectHref(ws, v.project)}?tab=graph&note={encodeURIComponent(slug)}"
+					onclick={() => notePanel.close()}>In the graph</Button
+				>
 				{#if v.kind === 'issue'}
 					{#if v.status !== 'archived'}
 						<WorkOnIssue {ws} issue={v} size="sm" onstart={() => notePanel.close()} />

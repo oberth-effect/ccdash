@@ -96,7 +96,23 @@ interrupts the turn, so what you type next is what Claude reads
 ([sessions](sessions.md#4-interrupt)). The composer walks the prompt
 history, inserts `[[note]]` links, keeps drafts, and when a message starts
 with `/` offers the skills Claude Code loads for that session (the
-machine's, the plugins', the workspace's), as the terminal does. The title
+machine's, the plugins', the workspace's), as the terminal does. Its keyboard
+button lists the shortcuts:
+
+| Keys             | Does                                          |
+| ---------------- | --------------------------------------------- |
+| `Enter`          | Send (`Shift Enter` breaks the line)          |
+| `Ctrl Enter`     | Next prompt instead of a turn                 |
+| `Ctrl Shift 1–9` | That quick reply                              |
+| `Ctrl .`         | Stop the turn                                 |
+| `Ctrl J`         | Go to the open question                       |
+| `↑` `↓`          | Walk the prompt history                       |
+| `Ctrl R`         | Search the prompt history                     |
+| `Ctrl E`         | Code fence around the selection               |
+| `Ctrl P`         | Preview                                       |
+| `Esc`, then `i`  | Back to your text, leave the field, come back |
+
+The title
 renames in
 place; **Open on** and **Resolved** sit beside it, the other actions in its
 **Actions** menu, **Continue** at the foot once it ended
@@ -116,6 +132,30 @@ newest or most recalled, and leave out retired notes, which otherwise come
 after the live ones. `Ctrl K` finds sessions and pages too, and a note opens
 beside the page you are on. Typing `[[` in the composer searches the same way
 and inserts the link.
+
+**Graph** is for exploring what the notes say about each other.
+
+- **Search** (`/`) is the same full-text search: matches stay bright and the
+  rest dims, `n` steps through them, **Only matches** hides the others.
+- A click selects a note: it and its neighbours stay bright, and the panel
+  beside the graph shows its links to walk along. A double click, or
+  **Open**, reads it. With nothing selected, the panel has the numbers and the
+  most linked notes.
+- **Local graph** (`l`) keeps only what is within 1 to 4 links of the note.
+- **Path from here** (`p`), then a click on another note, finds the shortest
+  way between them.
+- The bar filters by kind, project, retired notes and notes without links; the
+  slider goes back in time and plays the growth.
+- **Display** sets the colour (kind, project, age, links, recalls), the size,
+  the layout (free, by project, along a timeline), which kinds of link count
+  and the physics. It is remembered on the device.
+- **2D or 3D** (`d`). 3D uses WebGL and is fetched the first time it is
+  asked for; drag rotates, the wheel zooms, right drag pans. Layouts are 2D's.
+- **Full screen** (`f`). Notes and the start sheet open on top of it.
+- `0` fits the view, Esc steps back: the path, the selection, the local graph,
+  then full screen. Two fingers zoom on a phone.
+
+**In the graph**, on any note, opens the graph with that note selected.
 
 **Work on this**, on an open issue's card and in the issue itself, opens the
 start sheet with its workspace and project picked and a prompt written, to

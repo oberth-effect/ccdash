@@ -16,18 +16,21 @@
 	// it with search. Templates, `[[` for a note link, a code fence around
 	// the selection, a markdown preview. A message that starts with `/`
 	// opens the skills of the field's host and workspace, as the terminal
-	// does; arrows, Enter, Tab or a tap complete one.
+	// does; arrows, Enter, Tab or a tap complete one. The keyboard button
+	// lists the rest (`KEYS`).
 	import type { Snippet } from 'svelte';
 	import ChevronDownIcon from '@lucide/svelte/icons/chevron-down';
 	import CodeIcon from '@lucide/svelte/icons/code';
 	import EyeIcon from '@lucide/svelte/icons/eye';
 	import HistoryIcon from '@lucide/svelte/icons/history';
+	import KeyboardIcon from '@lucide/svelte/icons/keyboard';
 	import LinkIcon from '@lucide/svelte/icons/link';
 	import { marked } from 'marked';
 	import { Unauthorized } from '#lib/api/client.js';
 	import { fetchSkills, type Prompt } from '#lib/api/index.js';
 	import { Button } from '#lib/components/ui/button/index.js';
 	import * as DropdownMenu from '#lib/components/ui/dropdown-menu/index.js';
+	import * as Popover from '#lib/components/ui/popover/index.js';
 	import * as Sheet from '#lib/components/ui/sheet/index.js';
 	import { Input } from '#lib/components/ui/input/index.js';
 	import { fmtStamp } from '#lib/format.js';
@@ -47,6 +50,9 @@
 		disabled = false,
 		rows = 1,
 		onsubmit,
+		onalternate,
+		onquick,
+		onstop,
 		actions
 	}: {
 		text?: string;
@@ -63,6 +69,12 @@
 		disabled?: boolean;
 		rows?: number;
 		onsubmit: () => void;
+		/** Ctrl Enter on the desktop: the other way to send, if there is one. */
+		onalternate?: () => void;
+		/** Ctrl Shift and a digit: quick reply number `index`, from 0. */
+		onquick?: (index: number) => void;
+		/** Ctrl . : stop what the session is doing. */
+		onstop?: () => void;
 		/** Buttons at the end of the toolbar. */
 		actions: Snippet;
 	} = $props();
@@ -83,6 +95,26 @@
 	let pick = $state(0);
 
 	const touch = () => matchMedia('(pointer: coarse)').matches;
+	/** The shortcuts this field has, for the keyboard button. */
+	const KEYS = $derived(
+		[
+			['Enter', 'Send'],
+			['Shift Enter', 'New line'],
+			onalternate ? ['Ctrl Enter', 'Next prompt'] : null,
+			onquick ? ['Ctrl Shift 1–9', 'Quick reply'] : null,
+			onstop ? ['Ctrl .', 'Stop the turn'] : null,
+			['Ctrl J', 'Go to the open question'],
+			['↑ ↓', 'Prompt history'],
+			['Ctrl R', 'Search the prompt history'],
+			['Ctrl E', 'Code fence around the selection'],
+			['Ctrl P', 'Preview'],
+			['[[', 'Link a note'],
+			['/', 'Skills, at the start'],
+			['Esc', 'Back to your text, or leave the field'],
+			onquick ? ['i', 'Back into the field'] : null,
+			['Ctrl K', 'Search everything']
+		].filter((row): row is string[] => row !== null)
+	);
 	/** What follows a leading slash while nothing else was typed; else null. */
 	const slash = $derived(/^\/(\S*)$/.exec(text)?.[1] ?? null);
 	const choices = $derived.by(() => {
@@ -218,8 +250,36 @@
 		});
 	}
 
+	/** Shortcuts with Ctrl or ⌘. NOTE: digits by position: a Czech keyboard
+	 * types `+ě` there. Not Alt: on Linux Firefox it switches tabs. */
+	function shortcut(event: KeyboardEvent): boolean {
+		const key = event.key.toLowerCase();
+		if (event.shiftKey) {
+			const digit = /^Digit([1-9])$/.exec(event.code);
+			if (!digit || !onquick) return false;
+			onquick(Number(digit[1]) - 1);
+			return true;
+		}
+		if (key === 'e') fence();
+		else if (key === 'p') preview = !preview;
+		else if (key === 'r') {
+			historyOpen = true;
+			loadHistory();
+		} else if (key === 'j') {
+			const answer = document.querySelector<HTMLElement>('[data-ask] button');
+			if (!answer) return false;
+			answer.focus();
+		} else if (event.code === 'Period' && onstop) onstop();
+		else return false;
+		return true;
+	}
+
 	function onkeydown(event: KeyboardEvent) {
 		if (event.isComposing) return;
+		if ((event.ctrlKey || event.metaKey) && shortcut(event)) {
+			event.preventDefault();
+			return;
+		}
 		if (choices.length) {
 			if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
 				event.preventDefault();
@@ -241,9 +301,20 @@
 			}
 		}
 		if (event.key === 'Enter' && !event.shiftKey) {
-			if (touch() && !event.ctrlKey && !event.metaKey) return;
+			const held = event.ctrlKey || event.metaKey;
+			if (touch() && !held) return;
 			event.preventDefault();
-			onsubmit();
+			if (held && onalternate && !touch()) onalternate();
+			else onsubmit();
+			return;
+		}
+		if (event.key === 'Escape') {
+			if (cursor === -1) return void area?.blur();
+			// NOTE: a dialog around the field closes on a document-level Escape
+			event.stopPropagation();
+			cursor = -1;
+			text = stash;
+			requestAnimationFrame(grow);
 			return;
 		}
 		if ((event.key === 'ArrowUp' || event.key === 'ArrowDown') && area) {
@@ -265,6 +336,17 @@
 		}
 	}
 
+	/** NOTE: the field is hidden during a preview, so its own keys stop: Ctrl P
+	 * would reach the browser and print. */
+	function onwindowkey(event: KeyboardEvent) {
+		if (!preview || event.defaultPrevented) return;
+		const again = (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'p';
+		if (!again && event.key !== 'Escape') return;
+		event.preventDefault();
+		preview = false;
+		requestAnimationFrame(() => area?.focus());
+	}
+
 	function pickHistory(p: Prompt) {
 		text = p.text;
 		cursor = -1;
@@ -275,6 +357,8 @@
 		});
 	}
 </script>
+
+<svelte:window onkeydown={onwindowkey} />
 
 {#if preview}
 	<div class="max-h-56 overflow-auto rounded-md border bg-card p-3 text-sm">
@@ -385,6 +469,30 @@
 		>
 			<HistoryIcon />
 		</Button>
+		<Popover.Root>
+			<Popover.Trigger class="hidden sm:block">
+				{#snippet child({ props })}
+					<Button
+						variant="ghost"
+						size="icon-sm"
+						type="button"
+						title="Keyboard shortcuts"
+						aria-label="Keyboard shortcuts"
+						{...props}
+					>
+						<KeyboardIcon />
+					</Button>
+				{/snippet}
+			</Popover.Trigger>
+			<Popover.Content align="start" class="w-72 p-2">
+				<dl class="grid grid-cols-[auto_1fr] items-baseline gap-x-3 gap-y-1 text-xs">
+					{#each KEYS as [keys, what] (keys)}
+						<dt class="font-mono whitespace-nowrap text-muted-foreground">{keys}</dt>
+						<dd>{what}</dd>
+					{/each}
+				</dl>
+			</Popover.Content>
+		</Popover.Root>
 		{#if prefs.templates.length}
 			<DropdownMenu.Root>
 				<DropdownMenu.Trigger>

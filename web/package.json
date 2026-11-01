@@ -45,10 +45,12 @@
 		"#lib/*": "./src/lib/*"
 	},
 	"dependencies": {
+		"3d-force-graph": "^1.80.1",
 		"d3-force": "^3.0.0",
 		"highlight.js": "^11.12.0",
 		"layerchart": "^2.8.1",
-		"marked": "^18.1.1"
+		"marked": "^18.1.1",
+		"three-spritetext": "^1.10.0"
 	},
 	"description": "The ccdash panel"
 }

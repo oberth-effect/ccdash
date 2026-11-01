@@ -43,6 +43,7 @@ mod tests {
         crate::hub::http::Unsubscribe::export_all(&cfg).unwrap();
         crate::hub::http::Label::export_all(&cfg).unwrap();
         crate::hub::http::LaunchBody::export_all(&cfg).unwrap();
+        crate::hub::http::ExportBody::export_all(&cfg).unwrap();
         crate::model::LaunchTarget::export_all(&cfg).unwrap();
         crate::sync::SyncView::export_all(&cfg).unwrap();
         crate::sync::SyncStats::export_all(&cfg).unwrap();

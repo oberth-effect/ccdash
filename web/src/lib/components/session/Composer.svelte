@@ -4,8 +4,9 @@
 	// next prompt (also for sessions without the channel); Stop interrupts a
 	// turn, so the correction typed
 	// next is what Claude reads. Quick replies send at once; the field
-	// (history, templates, note links, fence, preview) is `PromptField`; the
-	// draft survives reloads.
+	// (history, templates, note links, fence, preview, its shortcuts) is
+	// `PromptField`; the draft survives reloads. `i` anywhere on the page
+	// goes back to the field, as Esc left it.
 	import OctagonXIcon from '@lucide/svelte/icons/octagon-x';
 	import { Unauthorized } from '#lib/api/client.js';
 	import {
@@ -52,6 +53,21 @@
 		prefs.setDraft(s.id, text);
 	});
 
+	function quickReply(index: number) {
+		const q = prefs.quick[index];
+		if (!q || busy) return;
+		text = q;
+		submit(canReply ? 'reply' : 'message');
+	}
+
+	function onwindowkey(event: KeyboardEvent) {
+		if (event.key !== 'i' || event.ctrlKey || event.metaKey || event.altKey) return;
+		const target = event.target as HTMLElement;
+		if (target.closest('input, textarea, select, [contenteditable], [role=dialog]')) return;
+		event.preventDefault();
+		field?.focus();
+	}
+
 	async function prompts() {
 		const own = (await fetchPrompts({ session: s.id, limit: 50 })).prompts;
 		const ws = s.workspace
@@ -80,19 +96,19 @@
 	}
 </script>
 
+<svelte:window onkeydown={onwindowkey} />
+
 <div class="flex flex-col gap-1.5">
 	{#if prefs.quick.length}
 		<div class="flex gap-1.5 overflow-x-auto pb-0.5">
-			{#each prefs.quick as q (q)}
+			{#each prefs.quick as q, i (q)}
 				<Button
 					variant="outline"
 					size="xs"
 					class="shrink-0"
 					disabled={busy}
-					onclick={() => {
-						text = q;
-						submit(canReply ? 'reply' : 'message');
-					}}>{q}</Button
+					title={i < 9 ? `Ctrl Shift ${i + 1}` : undefined}
+					onclick={() => quickReply(i)}>{q}</Button
 				>
 			{/each}
 		</div>
@@ -113,6 +129,9 @@
 		label="Message to Claude"
 		disabled={busy}
 		onsubmit={() => submit(canReply ? 'reply' : 'message')}
+		onalternate={canReply ? () => submit('message') : undefined}
+		onquick={quickReply}
+		onstop={canStop ? stop : undefined}
 	>
 		{#snippet actions()}
 			{#if canStop}
@@ -136,7 +155,7 @@
 				size="sm"
 				variant={canReply ? 'outline' : 'default'}
 				disabled={busy || !text.trim()}
-				title="Hand the text to Claude as context with its next prompt, without starting a turn"
+				title="Hand the text to Claude as context with its next prompt, without starting a turn (Ctrl Enter)"
 				onclick={() => submit('message')}>Next prompt</Button
 			>
 		{/snippet}

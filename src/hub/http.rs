@@ -53,6 +53,7 @@ use crate::{
     history::{self, History},
     knowledge::{
         self, Filter, NoteKind, NoteOp, Status, Upsert,
+        export::NoteRef,
         projects::{self, Graph, Projects},
     },
     messages,
@@ -74,6 +75,8 @@ const DAY_MS: i64 = 86_400_000;
 const HOUR_MS: i64 = 3_600_000;
 /// Messages shown with a session's conversation.
 const SESSION_MESSAGES: usize = 50;
+/// Notes in one export.
+const MAX_EXPORT: usize = 500;
 /// How long a stop waits for the session's host.
 const STOP_WAIT: Duration = Duration::from_secs(30);
 
@@ -158,6 +161,7 @@ pub async fn serve(
         .route("/projects", get(projects_view))
         .route("/graph", get(graph))
         .route("/notes", get(notes))
+        .route("/notes/export", post(export_notes))
         .route("/notes/{workspace}/{slug}", get(note).put(put_note))
         .route("/notes/{workspace}/{slug}/op", post(note_op))
         .route("/push", get(push_info))
@@ -1263,6 +1267,47 @@ async fn notes(
     .await
     .map_err(anyhow::Error::from)??;
     Ok(Json(json!({ "hits": hits })))
+}
+
+#[derive(Deserialize, TS)]
+#[ts(export_to = "types.ts")]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ExportBody {
+    notes: Vec<NoteRef>,
+}
+
+/// The picked notes as a `.zip` to hand to a colleague.
+async fn export_notes(
+    State(app): State<App>,
+    Json(body): Json<ExportBody>,
+) -> Result<Response, ApiError> {
+    if body.notes.is_empty() {
+        return Err(ApiError(StatusCode::BAD_REQUEST, "pick some notes".into()));
+    }
+    if body.notes.len() > MAX_EXPORT {
+        return Err(ApiError(
+            StatusCode::BAD_REQUEST,
+            format!("at most {MAX_EXPORT} notes at a time"),
+        ));
+    }
+    let store = app.store.clone();
+    let zip = tokio::task::spawn_blocking(move || {
+        knowledge::export::archive(&store.reader()?, &body.notes)
+    })
+    .await
+    .map_err(anyhow::Error::from)??
+    .ok_or(ApiError(
+        StatusCode::NOT_FOUND,
+        "one of the notes no longer exists".into(),
+    ))?;
+    let headers = [
+        (header::CONTENT_TYPE, "application/zip"),
+        (
+            header::CONTENT_DISPOSITION,
+            "attachment; filename=\"ccdash-notes.zip\"",
+        ),
+    ];
+    Ok((headers, zip).into_response())
 }
 
 /// One note with its rendered body, links and backlinks.

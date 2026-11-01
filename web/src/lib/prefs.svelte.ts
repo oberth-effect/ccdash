@@ -19,6 +19,7 @@ const QUICK_KEY = 'ccdash.quick';
 const TEMPLATES_KEY = 'ccdash.templates';
 const DRAFT_KEY = 'ccdash.draft.';
 const START_KEY = 'ccdash.start';
+const GRAPH_KEY = 'ccdash.graph';
 
 export const DEFAULT_QUICK = [
 	'Continue',
@@ -32,6 +33,27 @@ export type Template = { name: string; text: string };
 
 /** What the start sheet picked last; empty strings are the host's defaults. */
 export type StartChoice = { host: string; model: string; mode: string };
+
+export type GraphColour = 'kind' | 'project' | 'age' | 'links' | 'recalls';
+export type GraphSize = 'recalls' | 'links' | 'same';
+export type GraphLayout = 'force' | 'clusters' | 'timeline';
+export type GraphPhysics = { repulsion: number; distance: number; gravity: number };
+/** How the note graph is drawn, not what it is filtered to. */
+export type GraphLook = {
+	view: '2d' | '3d';
+	colour: GraphColour;
+	size: GraphSize;
+	layout: GraphLayout;
+	physics: GraphPhysics;
+};
+
+export const DEFAULT_GRAPH: GraphLook = {
+	view: '2d',
+	colour: 'kind',
+	size: 'recalls',
+	layout: 'force',
+	physics: { repulsion: 40, distance: 30, gravity: 0.05 }
+};
 
 /** The wallpaper colours in use: kept, so the theme is there before the
  * hub answers and when no machine reports. */
@@ -64,6 +86,7 @@ class Prefs {
 	quick = $state<string[]>(load(QUICK_KEY, DEFAULT_QUICK));
 	templates = $state<Template[]>(load(TEMPLATES_KEY, []));
 	start = $state<StartChoice>(load(START_KEY, { host: '', model: '', mode: '' }));
+	graph = $state<GraphLook>({ ...DEFAULT_GRAPH, ...load<Partial<GraphLook>>(GRAPH_KEY, {}) });
 
 	setTheme(theme: Theme) {
 		this.theme = theme;
@@ -134,6 +157,11 @@ class Prefs {
 	setTemplates(list: Template[]) {
 		this.templates = list.filter((t) => t.name.trim() && t.text.trim());
 		localStorage.setItem(TEMPLATES_KEY, JSON.stringify(this.templates));
+	}
+
+	setGraph(changes: Partial<GraphLook>) {
+		this.graph = { ...this.graph, ...changes };
+		localStorage.setItem(GRAPH_KEY, JSON.stringify(this.graph));
 	}
 
 	setStart(choice: StartChoice) {

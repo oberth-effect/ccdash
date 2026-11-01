@@ -21,6 +21,11 @@ workspace.
 | doc      | plans, specs, anything long |
 
 The **Projects** page shows every project's notes, searches and edits them.
+Tick notes in its search results, across searches, and **Export** gives a
+`.zip` for someone without ccdash: markdown with frontmatter under
+`<kind>/<slug>.md` and an `INDEX.md`, so their Claude can read it like a memory
+directory. Links inside the selection stay `[[slug]]`; a link out of it
+becomes that note's title.
 
 ## 2. Tools
 

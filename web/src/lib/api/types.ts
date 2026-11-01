@@ -432,6 +432,8 @@ agent?: AgentMessage, items: Array<Item>,
  */
 omitted: number, };
 
+export type ExportBody = { notes: Array<NoteRef>, };
+
 export type Forecast = { used_pct: number, 
 /**
  * When the window resets, in ms.
@@ -837,6 +839,11 @@ project?: string, } | { "op": "progress", text: string, issue: string | null, pr
  * document, refused when it moved on.
  */
 base_version: number | null, };
+
+/**
+ * A note to export.
+ */
+export type NoteRef = { workspace: string, slug: string, };
 
 /**
  * A note with its neighbourhood.

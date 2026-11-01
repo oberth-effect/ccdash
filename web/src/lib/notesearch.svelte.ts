@@ -27,6 +27,8 @@ export type SearchInput = {
 	workspace?: string;
 	/** False keeps it quiet (a closed palette). */
 	enabled?: boolean;
+	/** Hits at most. */
+	limit?: number;
 };
 
 export class NoteSearch {
@@ -50,7 +52,7 @@ export class NoteSearch {
 	 * long as that component lives. */
 	constructor(read: () => SearchInput) {
 		$effect(() => {
-			const { text, workspace, enabled = true } = read();
+			const { text, workspace, enabled = true, limit = LIMIT } = read();
 			const q = text.trim();
 			const [kind, retired] = [this.kind, this.retired];
 			const asked = ++this.#asked;
@@ -60,7 +62,7 @@ export class NoteSearch {
 				return;
 			}
 			const timer = setTimeout(
-				() => untrack(() => this.#search(asked, q, workspace, kind, retired)),
+				() => untrack(() => this.#search(asked, q, workspace, kind, retired, limit)),
 				WAIT_MS
 			);
 			return () => clearTimeout(timer);
@@ -72,7 +74,8 @@ export class NoteSearch {
 		q: string,
 		workspace: string | undefined,
 		kind: NoteKind | '',
-		retired: boolean
+		retired: boolean,
+		limit: number
 	) {
 		this.searching = true;
 		const prefix = q.match(KIND_PREFIX);
@@ -82,7 +85,7 @@ export class NoteSearch {
 				kind: prefix?.[1] ?? (kind || undefined),
 				workspace,
 				status: retired ? 'active,stale,archived,superseded' : 'active,stale',
-				limit: LIMIT
+				limit
 			});
 			// NOTE: a slow answer must not replace the one to a newer question
 			if (asked === this.#asked) this.hits = hits;

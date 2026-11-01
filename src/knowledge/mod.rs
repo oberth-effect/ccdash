@@ -4,6 +4,7 @@
 //! connection; the hub calls it on the writer thread, the panel on a
 //! reader. `tools` turns tool calls into operations and results into text.
 
+pub mod export;
 pub mod projects;
 pub mod tools;
 

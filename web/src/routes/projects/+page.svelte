@@ -1,9 +1,13 @@
 <script lang="ts">
 	// The Projects overview: per workspace in scope, the flagged notes and
 	// a card per project; a search box over every note with kind, sort
-	// and retired-notes toggles.
+	// and retired-notes toggles. Results can be picked across searches and
+	// exported as an archive for someone without ccdash.
 	import ChevronDownIcon from '@lucide/svelte/icons/chevron-down';
+	import DownloadIcon from '@lucide/svelte/icons/download';
 	import PlusIcon from '@lucide/svelte/icons/plus';
+	import { Unauthorized } from '#lib/api/client.js';
+	import { exportNotes, type Hit } from '#lib/api/index.js';
 	import NoteRow from '#lib/components/notes/NoteRow.svelte';
 	import SearchFilters from '#lib/components/notes/SearchFilters.svelte';
 	import ProjectCard from '#lib/components/projects/ProjectCard.svelte';
@@ -20,6 +24,47 @@
 
 	let query = $state('');
 	const search = new NoteSearch(() => ({ text: query, workspace: scope.params().workspace }));
+
+	/** The notes picked for an export, across searches. */
+	let picked = $state<Record<string, Hit>>({});
+	let exporting = $state(false);
+	let exportError = $state('');
+	const pickKey = (hit: Hit) => `${hit.workspace}/${hit.slug}`;
+	const pickedCount = $derived(Object.keys(picked).length);
+	const allPicked = $derived(search.shown?.every((hit) => picked[pickKey(hit)]) ?? false);
+
+	function togglePick(hit: Hit) {
+		const key = pickKey(hit);
+		if (picked[key]) delete picked[key];
+		else picked[key] = hit;
+	}
+
+	function pickAll() {
+		const hits = search.shown ?? [];
+		if (allPicked) for (const hit of hits) delete picked[pickKey(hit)];
+		else for (const hit of hits) picked[pickKey(hit)] = hit;
+	}
+
+	async function runExport() {
+		exporting = true;
+		exportError = '';
+		try {
+			const blob = await exportNotes(
+				Object.values(picked).map(({ workspace, slug }) => ({ workspace, slug }))
+			);
+			const link = document.createElement('a');
+			link.href = URL.createObjectURL(blob);
+			link.download = 'ccdash-notes.zip';
+			link.click();
+			URL.revokeObjectURL(link.href);
+			picked = {};
+		} catch (e) {
+			if (e instanceof Unauthorized) live.needToken = true;
+			else exportError = (e as Error).message;
+		} finally {
+			exporting = false;
+		}
+	}
 
 	$effect(() => {
 		void live.notes.n;
@@ -44,21 +89,44 @@
 	</div>
 	{#if search.shown}
 		<section class="flex flex-col gap-2">
-			<h2 class="text-base font-semibold">
-				{search.searching ? 'Searching…' : `Results (${search.shown.length})`}
-			</h2>
+			<div class="flex flex-wrap items-center gap-2">
+				<h2 class="text-base font-semibold">
+					{search.searching ? 'Searching…' : `Results (${search.shown.length})`}
+				</h2>
+				{#if search.shown.length}
+					<Button variant="ghost" size="xs" onclick={pickAll}
+						>{allPicked ? 'Unpick these' : 'Pick these'}</Button
+					>
+				{/if}
+				{#if pickedCount}
+					<Button size="xs" class="ml-auto" disabled={exporting} onclick={runExport}>
+						<DownloadIcon /> Export {plural(pickedCount, 'note')}
+					</Button>
+					<Button variant="ghost" size="xs" onclick={() => (picked = {})}>Clear</Button>
+				{/if}
+			</div>
+			{#if exportError}<p class="text-xs text-critical" role="alert">{exportError}</p>{/if}
 			{#if search.shown.length}
 				<ul class="divide-y rounded-lg border bg-card">
 					{#each search.shown as hit (hit.workspace + hit.slug)}
-						<li>
-							<NoteRow
-								card={hit}
-								kind
-								workspace
-								project
-								snippet={hit.snippet}
-								onclick={() => notePanel.show(hit.workspace, hit.slug)}
+						<li class="flex min-w-0 items-start">
+							<input
+								type="checkbox"
+								class="mt-2.5 ml-3 accent-primary"
+								aria-label="Pick {hit.title}"
+								checked={Boolean(picked[pickKey(hit)])}
+								onchange={() => togglePick(hit)}
 							/>
+							<div class="min-w-0 flex-1">
+								<NoteRow
+									card={hit}
+									kind
+									workspace
+									project
+									snippet={hit.snippet}
+									onclick={() => notePanel.show(hit.workspace, hit.slug)}
+								/>
+							</div>
 						</li>
 					{/each}
 				</ul>

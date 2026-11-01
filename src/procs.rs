@@ -16,9 +16,18 @@ const CMD_LEN: usize = 160;
 /// PSS costs ~1.5 ms per large process to read, so it is refreshed less often.
 const MEM_EVERY_MS: i64 = 30_000;
 const SECRET_WORDS: &[&str] = &["token", "secret", "passw", "apikey", "api-key", "api_key"];
+/// In the command line of the shell Claude Code runs a Bash call in.
+const SHELL_MARK: &str = "/shell-snapshots/";
+/// A shell may have started this long before its call's PreToolUse was
+/// stamped: start times come in ticks, and the stamps from another process.
+const SHELL_SLACK_MS: i64 = 2_000;
+/// How long a command gets to honour SIGTERM.
+const TERM_GRACE: Duration = Duration::from_secs(3);
 
 struct Stat {
     ppid: u32,
+    /// The process group.
+    pgrp: u32,
     comm: String,
     /// utime + stime + cutime + cstime. A reaped child's total moves into its
     /// parent's cutime, so the sum over a tree only grows.
@@ -42,20 +51,13 @@ pub struct Poller {
 
 impl Poller {
     pub fn new() -> Self {
-        let boot_ms = fs::read_to_string("/proc/stat")
-            .ok()
-            .and_then(|stat| {
-                stat.lines()
-                    .find_map(|line| line.strip_prefix("btime ")?.trim().parse::<i64>().ok())
-            })
-            .map_or(0, |secs| secs * 1000);
         Self {
             procs: HashMap::new(),
             mem: HashMap::new(),
             forks: HashMap::new(),
             trees: HashMap::new(),
             last: None,
-            boot_ms,
+            boot_ms: boot_ms(),
         }
     }
 
@@ -186,6 +188,78 @@ pub async fn run(local: Local, every: Duration) {
     }
 }
 
+fn boot_ms() -> i64 {
+    fs::read_to_string("/proc/stat")
+        .ok()
+        .and_then(|stat| {
+            stat.lines()
+                .find_map(|line| line.strip_prefix("btime ")?.trim().parse::<i64>().ok())
+        })
+        .map_or(0, |secs| secs * 1000)
+}
+
+/// A child of a Claude process, as `running_shells` judges it.
+struct Child {
+    pid: u32,
+    pgrp: u32,
+    /// Ticks since boot: with the pid, who this is.
+    start: u64,
+    started_ms: i64,
+    args: String,
+}
+
+/// Which children are the shells of the Bash calls running since `since_ms`.
+/// Claude Code starts each call's shell in a process group of its own, and
+/// the shell sources its snapshot first; its MCP servers stay in Claude's
+/// group, and a background shell from earlier is older than the running call.
+fn running_shells(children: &[Child], since_ms: i64) -> Vec<(u32, u64)> {
+    children
+        .iter()
+        .filter(|c| c.pid == c.pgrp && c.args.contains(SHELL_MARK))
+        .filter(|c| c.started_ms >= since_ms - SHELL_SLACK_MS)
+        .map(|c| (c.pid, c.start))
+        .collect()
+}
+
+fn signal_group(pgrp: u32, signal: i32) {
+    // SAFETY: `kill` takes plain integers; a gone group is an error we ignore
+    unsafe { libc::kill(-(pgrp as i32), signal) };
+}
+
+/// Ends the Bash calls the Claude process `claude` is waiting on, as Esc in
+/// the terminal does: the shell's whole group, so the command goes too, and
+/// by force if it ignores the request. A background shell stays. How many
+/// were asked to stop.
+pub async fn end_tool_shells(claude: u32, since_ms: i64) -> usize {
+    let boot = boot_ms();
+    let children: Vec<Child> = scan()
+        .into_iter()
+        .filter(|(_, stat)| stat.ppid == claude)
+        .map(|(pid, stat)| Child {
+            pid,
+            pgrp: stat.pgrp,
+            start: stat.start,
+            started_ms: boot + (stat.start as f64 / TICKS_PER_SEC * 1000.0) as i64,
+            args: args(pid).join(" "),
+        })
+        .collect();
+    let shells = running_shells(&children, since_ms);
+    for &(pid, _) in &shells {
+        signal_group(pid, libc::SIGTERM);
+    }
+    let count = shells.len();
+    tokio::spawn(async move {
+        tokio::time::sleep(TERM_GRACE).await;
+        for (pid, start) in shells {
+            // NOTE: the start time tells a stubborn shell from a reused pid
+            if read_stat(pid).is_some_and(|stat| stat.start == start) {
+                signal_group(pid, libc::SIGKILL);
+            }
+        }
+    });
+    count
+}
+
 fn scan() -> HashMap<u32, Stat> {
     let Ok(dir) = fs::read_dir("/proc") else {
         return HashMap::new();
@@ -213,6 +287,7 @@ fn parse_stat(raw: &str) -> Option<Stat> {
         .sum::<Option<u64>>()?;
     Some(Stat {
         ppid: u32::try_from(field(4)?).ok()?,
+        pgrp: u32::try_from(field(5)?).ok()?,
         comm: raw[open + 1..close].to_owned(),
         ticks,
         start: u64::try_from(field(22)?).ok()?,
@@ -337,6 +412,36 @@ mod tests {
         let stat = parse_stat(raw).unwrap();
         assert_eq!(stat.comm, "tmux: server (1)");
         assert_eq!((stat.ppid, stat.ticks, stat.start), (1, 310, 1_234_567));
+        assert_eq!(stat.pgrp, 4242);
+    }
+
+    #[test]
+    fn only_the_running_call_s_shell_is_ended() {
+        const SHELL: &str = "bash -c source ~/.claude/shell-snapshots/snapshot-bash-1.sh && eval x";
+        let child = |pid, pgrp, started_ms, args: &str| Child {
+            pid,
+            pgrp,
+            start: u64::from(pid),
+            started_ms,
+            args: args.to_owned(),
+        };
+        let since = 100_000;
+        let picked = running_shells(
+            &[
+                child(10, 10, since + 50, SHELL),
+                child(11, 11, since - 500, SHELL),
+                child(20, 5, since + 50, "ccdash channel"),
+                child(21, 21, since + 50, "node mcp-server.js"),
+                child(22, 5, since + 50, SHELL),
+                child(30, 30, since - 60_000, SHELL),
+            ],
+            since,
+        );
+        assert_eq!(
+            picked,
+            [(10, 10), (11, 11)],
+            "not an MCP server, a shell in Claude's group, or an older background shell"
+        );
     }
 
     #[test]

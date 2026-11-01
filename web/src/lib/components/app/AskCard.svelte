@@ -39,6 +39,7 @@
 </script>
 
 <div
+	data-ask
 	class="flex flex-col gap-2 rounded-lg border bg-card p-3 text-sm"
 	role="group"
 	aria-label={TITLES[ask.kind]}

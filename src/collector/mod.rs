@@ -94,7 +94,9 @@ pub enum LocalCmd {
     AskGone(String),
     /// A tool hook of the session asks whether an interrupt is pending
     /// (`i64`: the hook payload's time); taking it reports to the hub.
-    TakeInterrupt(String, i64, oneshot::Sender<bool>),
+    /// A tool hook takes the pending interrupt; `keep` leaves it for the
+    /// next hook as well.
+    TakeInterrupt(String, i64, bool, oneshot::Sender<bool>),
     LinkUp,
     LinkDown,
     FromHub(Box<ToCollector>),
@@ -179,9 +181,9 @@ impl Local {
 
     /// Whether an interrupt from the panel waits for `session`'s next tool
     /// hook; true takes it, and the hook must stop the turn.
-    pub async fn take_interrupt(&self, session: &str, at: i64) -> Result<bool> {
+    pub async fn take_interrupt(&self, session: &str, at: i64, keep: bool) -> Result<bool> {
         let (tx, rx) = oneshot::channel();
-        self.send(LocalCmd::TakeInterrupt(session.to_owned(), at, tx))
+        self.send(LocalCmd::TakeInterrupt(session.to_owned(), at, keep, tx))
             .await?;
         rx.await.context("collector stopped")
     }
@@ -589,13 +591,18 @@ impl Actor {
 
     /// Takes the pending interrupt of `session` for the tool hook at `at`,
     /// telling the hub; false when none waits, or it waited too long.
-    fn take_interrupt(&mut self, session: &str, at: i64) -> bool {
+    /// With `keep` it stays for the next tool hook too, until a turn
+    /// boundary drops it.
+    fn take_interrupt(&mut self, session: &str, at: i64, keep: bool) -> bool {
         let Some(asked) = self.interrupts.remove(session) else {
             return false;
         };
         if at - asked > INTERRUPT_KEEP_MS {
             info!("interrupt of {session} expired untaken");
             return false;
+        }
+        if keep {
+            self.interrupts.insert(session.to_owned(), asked);
         }
         info!("interrupt of {session} taken by its hook");
         self.to_hub(ToHub::Interrupted {
@@ -1085,7 +1092,18 @@ impl Actor {
             }
             ToCollector::Stop { session, .. } => self.stop(session),
             ToCollector::Interrupt { session, at } => {
+                let call = self.sessions.get(&session).and_then(|s| {
+                    let tool = s.tool.as_ref().filter(|t| t.name == "Bash")?;
+                    Some((s.pid?, tool.started_at))
+                });
                 self.interrupts.insert(session, at);
+                // NOTE: its exit fires the tool hook that takes the interrupt
+                if let Some((pid, since)) = call {
+                    tokio::spawn(async move {
+                        let ended = procs::end_tool_shells(pid, since).await;
+                        info!("interrupt: asked {ended} shell(s) of {pid} to stop");
+                    });
+                }
             }
             ToCollector::Open { session } => self.open(&session),
             ToCollector::SyncChanged { .. } => self.kick_sync(SyncCmd::Changed),
@@ -1278,8 +1296,8 @@ async fn run_actor(mut a: Actor, mut rx: mpsc::Receiver<LocalCmd>) {
             LocalCmd::Resolve(key, reply) => {
                 let _ = reply.send(a.resolve(&key).cloned());
             }
-            LocalCmd::TakeInterrupt(session, at, reply) => {
-                let _ = reply.send(a.take_interrupt(&session, at));
+            LocalCmd::TakeInterrupt(session, at, keep, reply) => {
+                let _ = reply.send(a.take_interrupt(&session, at, keep));
             }
             LocalCmd::Pids(reply) => {
                 let pids = a

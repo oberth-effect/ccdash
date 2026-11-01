@@ -92,7 +92,11 @@
 </svelte:head>
 
 <div class="min-h-full" class:board-grid={prefs.grid}>
-	<div class="mx-auto flex max-w-6xl flex-col gap-3 p-3 sm:p-4">
+	<div
+		class="mx-auto flex {tab === 'graph'
+			? 'max-w-[120rem]'
+			: 'max-w-6xl'} flex-col gap-3 p-3 sm:p-4"
+	>
 		<header class="flex flex-wrap items-center gap-2">
 			<nav class="flex min-w-0 items-baseline gap-1.5 text-sm" aria-label="Breadcrumb">
 				<a class="text-muted-foreground hover:underline" href="/projects">Projects</a>
