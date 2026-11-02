@@ -130,6 +130,16 @@ label: string,
  */
 live: boolean, };
 
+export type Battery = { pct: number, 
+/**
+ * The kernel's word: `Charging`, `Discharging`, `Full`, `Not charging`.
+ */
+status: string, 
+/**
+ * On mains power; None without a mains supply to ask.
+ */
+ac: boolean | null, };
+
 export type Bucket = { 
 /**
  * Local midnight (or the hour), as a timestamp.
@@ -363,12 +373,40 @@ status: string, decision: Decision,
  */
 reason: string | null, };
 
+export type Cpu = { cores: number, 
+/**
+ * Busy share of all cores since the previous reading; None on the first.
+ */
+usage_pct: number | null, 
+/**
+ * Load average over 1, 5 and 15 minutes.
+ */
+load: [number, number, number], 
+/**
+ * Package temperature (`k10temp` Tctl, `coretemp` package,
+ * `cpu_thermal`), when a known sensor is there.
+ */
+temp_c: number | null, };
+
 /**
  * What the globs decided for one unit, and by which rule.
  */
 export type Decision = { "kind": "selected", rule: string | null, } | { "kind": "forced_in" } | { "kind": "forced_out" } | { "kind": "excluded", rule: string, } | { "kind": "unmatched" };
 
 export type DecisionUse = { source: string, decision: string, count: number, };
+
+/**
+ * One file system, in bytes.
+ */
+export type Disk = { 
+/**
+ * The path it was measured at.
+ */
+path: string, total: number, used: number, 
+/**
+ * What an unprivileged user may still write.
+ */
+avail: number, };
 
 /**
  * A branch that moved on both sides.
@@ -531,7 +569,8 @@ issue: string | null, excerpt: string, };
 export type HomeDir = { unit: string, path: string, bytes: number, files: number, hosts: Array<string>, carried: boolean, };
 
 /**
- * A machine whose collector reports to the hub.
+ * A machine whose collector reports to the hub. The hub keeps every one
+ * it has seen, across restarts, until the owner forgets it.
  */
 export type HostStatus = { name: string, connected: boolean, 
 /**
@@ -545,7 +584,19 @@ rtt_ms: number | null,
 /**
  * The colours of the machine's desktop; kept while it is offline.
  */
-palette: Palette | null, };
+palette: Palette | null, 
+/**
+ * What the machine last said about itself; kept while it is offline.
+ */
+machine: MachineReport | null, 
+/**
+ * Asleep (suspended from the panel) or waking; None otherwise.
+ */
+power: Power | null, 
+/**
+ * Whether and how the hub can wake the machine.
+ */
+wake: Wake | null, };
 
 export type HostTotals = { host: string, sessions: number, working_ms: number, permission_ms: number, 
 /**
@@ -562,6 +613,15 @@ answers: number, answer_p50_ms: number | null, sessions: number, working_ms: num
  * Waits on you; parked time is apart.
  */
 your_turn_ms: number, parked_ms: number, prompts: number, cost_usd: number, lines_added: number, lines_removed: number, tools: number, tool_failures: number, compactions: number, tokens: number, cpu_secs: number, peak_mem_bytes: number, };
+
+/**
+ * The hub's own machine.
+ */
+export type HubStatus = { name: string, 
+/**
+ * When the hub process started.
+ */
+started_at: number, machine: MachineReport | null, };
 
 /**
  * A gitignored file or directory that travels anyway.
@@ -752,6 +812,60 @@ export type LinkRef = { slug: string, kind: LinkKind,
 title: string | null, note_kind: NoteKind | null, status: Status | null, };
 
 /**
+ * How a machine is doing, as it last said.
+ */
+export type MachineReport = { 
+/**
+ * When it was read.
+ */
+at: number, boot_at: number, 
+/**
+ * Time spent asleep since the boot.
+ */
+slept_ms: number, 
+/**
+ * The last resume the reporter saw; it only sees those while it runs.
+ */
+resumed_at: number | null, 
+/**
+ * `PRETTY_NAME` from os-release.
+ */
+os: string | null, kernel: string, 
+/**
+ * NixOS: the running kernel, initrd or modules are not the current
+ * system's. None elsewhere.
+ */
+reboot_pending: boolean | null, cpu: Cpu, memory: Memory, disks: Array<Disk>, battery: Battery | null, 
+/**
+ * Physical wired network cards.
+ */
+nics: Array<Nic>, 
+/**
+ * The collector suspends the machine when the hub asks (`[power]
+ * suspend`).
+ */
+can_suspend: boolean, 
+/**
+ * The collector locks the user's graphical session when the hub asks
+ * (`[power] lock`).
+ */
+can_lock: boolean, 
+/**
+ * Whether the user's graphical session is locked (logind's
+ * `LockedHint`, which the screen locker sets); None without one.
+ */
+locked: boolean | null, };
+
+/**
+ * Bytes.
+ */
+export type Memory = { total: number, 
+/**
+ * Total minus available: what the page cache cannot give back.
+ */
+used: number, swap_total: number, swap_used: number, };
+
+/**
  * A message from one session, or from the owner in the panel, to a
  * session: handed to the recipient as context at its next prompt, never
  * as a turn of its own.
@@ -796,6 +910,17 @@ state: string, at: number,
  * Why it can never travel, when `unsyncable`.
  */
 reason: string | null, };
+
+export type Nic = { name: string, mac: string, 
+/**
+ * `address/prefix`.
+ */
+ipv4: Array<string>, 
+/**
+ * The card may wake the machine (sysfs `power/wakeup`), which is what
+ * enabling wake-on-LAN turns on.
+ */
+wake: boolean, };
 
 /**
  * A note as stored, body included.
@@ -932,6 +1057,11 @@ blocked: Array<[string, number]>,
  * Most asked first.
  */
 rules: Array<RuleStat>, };
+
+/**
+ * Asleep or waking, as far as the hub knows.
+ */
+export type Power = { "state": "asleep", since: number, } | { "state": "waking", since: number, };
 
 /**
  * `POST /api/v1/workspace/config/preview`: what a configuration would
@@ -1264,7 +1394,11 @@ workspaces: Array<string>,
 /**
  * Machines with sessions, for filtering.
  */
-hosts: Array<HostStatus>, sessions: Array<Session>, rate_limits: RateLimits | null, };
+hosts: Array<HostStatus>, sessions: Array<Session>, rate_limits: RateLimits | null, 
+/**
+ * The hub's own machine; None from a collector's mirror.
+ */
+hub: HubStatus | null, };
 
 export type SourceUse = { source: string, requests: number, tokens: number, };
 
@@ -1644,7 +1778,7 @@ refs: { [key in string]: string }, paused: boolean, };
 
 export type Unsubscribe = { endpoint: string, };
 
-export type Update = { "type": "session", session: Session, } | { "type": "removed", host: string, id: string, } | { "type": "rate_limits", rate_limits: RateLimits, } | { "type": "hosts", hosts: Array<HostStatus>, } | { "type": "notes", workspace: string, } | { "type": "launch", launch: Launch, };
+export type Update = { "type": "session", session: Session, } | { "type": "removed", host: string, id: string, } | { "type": "rate_limits", rate_limits: RateLimits, } | { "type": "hosts", hosts: Array<HostStatus>, } | { "type": "hub", hub: HubStatus, } | { "type": "notes", workspace: string, } | { "type": "launch", launch: Launch, };
 
 /**
  * A full write of one note, as the importer and the tools produce it;
@@ -1693,6 +1827,11 @@ answer_p50_ms: number | null, answer_p90_ms: number | null,
 late: Array<LateWait>, };
 
 export type WaitingTally = { waits: number, ms: number, };
+
+/**
+ * Whether the hub can wake a machine.
+ */
+export type Wake = { "kind": "ready", mac: string, to: string, } | { "kind": "unavailable", why: string, };
 
 export type Window = { start: number, end: number, peak: number, };
 

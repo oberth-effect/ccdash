@@ -318,7 +318,8 @@ impl Composer {
     }
 }
 
-fn label(s: &Session) -> String {
+/// A session's name for a line of text: its title, name or directory.
+pub fn label(s: &Session) -> String {
     let label = s
         .title
         .clone()

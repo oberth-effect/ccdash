@@ -46,6 +46,11 @@ and notes in step across machines.
   ([knowledge](docs/knowledge.md))
 - **Look back:** history lanes and analytics (waits, limits, turns,
   tokens, permissions). ([panel](docs/panel.md#4-history-and-analytics))
+- **Machines:** uptime, CPU, temperature, memory, disks and battery of
+  the hub and every machine; **lock** a screen left unlocked, **suspend**
+  a machine from the phone and **wake** it again over the LAN, without
+  ever typing a MAC.
+  ([machines](docs/machines.md))
 - **On the desktop:** a DankMaterialShell bar pill and dash tab, and a key
   to focus the session that waited longest.
   ([panel](docs/panel.md#7-desktop-dankmaterialshell))
@@ -199,6 +204,7 @@ the real one): [development](docs/development.md).
 | [state sync](docs/state-sync.md)                               | `~/.claude` on every machine, the one-machine rule, conflicts |
 | [workspace](docs/workspace.md)                                 | the workspace root on every machine: units, snapshots, merges |
 | [knowledge](docs/knowledge.md)                                 | notes, tools, injections, import and export                   |
+| [machines](docs/machines.md)                                   | uptime and basic numbers, lock, suspend, wake-on-LAN          |
 | [security](docs/security.md)                                   | tokens, devices, what can reach the hub                       |
 | [data](docs/data.md)                                           | what is stored where, retention, backups                      |
 | [configuration](docs/configuration.md)                         | every configuration key                                       |

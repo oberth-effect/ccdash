@@ -228,9 +228,11 @@ in
           ProtectKernelTunables = true;
           ProtectKernelModules = true;
           ProtectControlGroups = true;
+          # NOTE: AF_NETLINK for getifaddrs: the hub matches a machine's network to its own to wake it
           RestrictAddressFamilies = [
             "AF_INET"
             "AF_INET6"
+            "AF_NETLINK"
             "AF_UNIX"
           ];
           LockPersonality = true;

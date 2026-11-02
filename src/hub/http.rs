@@ -34,7 +34,10 @@ use axum::{
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
-use tokio::{net::TcpListener, sync::broadcast};
+use tokio::{
+    net::TcpListener,
+    sync::{broadcast, oneshot},
+};
 use tokio_stream::{StreamExt, wrappers::BroadcastStream};
 use tracing::warn;
 use ts_rs::TS;
@@ -56,6 +59,7 @@ use crate::{
         export::NoteRef,
         projects::{self, Graph, Projects},
     },
+    machine::PowerAction,
     messages,
     model::{Activity, LaunchTarget, Session, Snapshot, TargetWorkspace},
     paths,
@@ -79,6 +83,9 @@ const SESSION_MESSAGES: usize = 50;
 const MAX_EXPORT: usize = 500;
 /// How long a stop waits for the session's host.
 const STOP_WAIT: Duration = Duration::from_secs(30);
+/// A suspend hands over pending state (up to 12 s) and runs its command
+/// (up to 15 s) before the collector answers.
+const POWER_WAIT: Duration = Duration::from_secs(40);
 
 #[derive(Clone)]
 pub struct App {
@@ -149,6 +156,10 @@ pub async fn serve(
         .route("/sessions/{id}/resolved", post(resolve).delete(keep_open))
         .route("/sessions/{id}/forget", post(forget))
         .route("/sessions/{id}/open", post(open))
+        .route("/machines/{host}", delete(forget_machine))
+        .route("/machines/{host}/suspend", post(suspend_machine))
+        .route("/machines/{host}/lock", post(lock_machine))
+        .route("/machines/{host}/wake", post(wake_machine))
         .route("/launches", post(launch))
         .route("/launch-targets", get(launch_targets))
         .route("/skills", get(skills))
@@ -797,6 +808,88 @@ async fn forget(State(app): State<App>, Path(id): Path<String>) -> Result<Json<V
         .await?
         .map_err(|e| ApiError(StatusCode::CONFLICT, e))?;
     Ok(Json(json!({ "session": session })))
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct SuspendBody {
+    /// Suspend even while sessions there work or wait on a prompt.
+    force: bool,
+}
+
+/// Suspends a machine whose collector allows it (`[power] suspend`) and
+/// answers with its status once it is on its way to sleep.
+async fn suspend_machine(
+    State(app): State<App>,
+    Path(host): Path<String>,
+    Json(body): Json<SuspendBody>,
+) -> Result<Json<Value>, ApiError> {
+    power(app, host, PowerAction::Suspend, body.force).await
+}
+
+/// Locks the graphical session of a machine whose collector allows it
+/// (`[power] lock`).
+async fn lock_machine(
+    State(app): State<App>,
+    Path(host): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    power(app, host, PowerAction::Lock, false).await
+}
+
+async fn power(
+    app: App,
+    host: String,
+    action: PowerAction,
+    force: bool,
+) -> Result<Json<Value>, ApiError> {
+    let (reply, rx) = oneshot::channel();
+    app.hub
+        .send(Cmd::Power {
+            host,
+            action,
+            force,
+            reply,
+        })
+        .await?;
+    let status = tokio::time::timeout(POWER_WAIT, rx)
+        .await
+        .map_err(|_| {
+            ApiError(
+                StatusCode::GATEWAY_TIMEOUT,
+                "the machine did not answer".into(),
+            )
+        })?
+        .context("hub stopped")?
+        .map_err(|e| ApiError(StatusCode::CONFLICT, e))?;
+    Ok(Json(json!({ "host": status })))
+}
+
+/// Sends wake-on-LAN magic packets to an offline machine.
+async fn wake_machine(
+    State(app): State<App>,
+    Path(host): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    let (reply, rx) = oneshot::channel();
+    app.hub.send(Cmd::Wake { host, reply }).await?;
+    let status = rx
+        .await
+        .context("hub stopped")?
+        .map_err(|e| ApiError(StatusCode::CONFLICT, e))?;
+    Ok(Json(json!({ "host": status })))
+}
+
+/// Drops an offline machine from the list the hub keeps; it comes back
+/// when its collector connects again.
+async fn forget_machine(
+    State(app): State<App>,
+    Path(host): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    let (reply, rx) = oneshot::channel();
+    app.hub.send(Cmd::ForgetHost { host, reply }).await?;
+    rx.await
+        .context("hub stopped")?
+        .map_err(|e| ApiError(StatusCode::CONFLICT, e))?;
+    Ok(Json(json!({})))
 }
 
 /// Focuses the session's window on its host, or attaches a background

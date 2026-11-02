@@ -9,9 +9,9 @@ use crate::{
     agent_message,
     ask::Answer,
     model::{
-        Activity, Ask, AskKind, Claim, Kind, Limit, Message, PARKED_AFTER_MS, ProcInfo, RateLimits,
-        Resolved, Resources, ScopedLimit, Session, Stamped, Step, Subagent, Task, TaskStatus,
-        ToolRun, Turn, WindowRef,
+        Activity, Ask, AskKind, Claim, HostStatus, Kind, Limit, Message, PARKED_AFTER_MS, ProcInfo,
+        RateLimits, Resolved, Resources, ScopedLimit, Session, Stamped, Step, Subagent, Task,
+        TaskStatus, ToolRun, Turn, WindowRef,
     },
     task_notification,
     util::{tail, truncate},
@@ -163,6 +163,10 @@ pub enum StoreMsg {
         name: String,
         data: Value,
     },
+    /// The host's status as the hub keeps it across restarts.
+    Host(Box<HostStatus>),
+    /// The owner forgot the host.
+    ForgetHost,
 }
 
 /// What an input changed; the hub turns this into broadcasts and writes.

@@ -1,7 +1,8 @@
 <script lang="ts">
-	// One machine: its link, the sessions on it now, Claude's usage there
-	// over the range in the bar, its copy of Claude's state, and its share
-	// of the workspace sync (what moved, what it cost, what is not in step).
+	// One machine: how it is doing and its power, its link, the sessions on
+	// it now, Claude's usage there over the range in the bar, its copy of
+	// Claude's state, and its share of the workspace sync (what moved, what
+	// it cost, what is not in step).
 	import { untrack } from 'svelte';
 	import { page } from '$app/state';
 	import { Unauthorized } from '#lib/api/client.js';
@@ -18,6 +19,7 @@
 		type WorkspaceView
 	} from '#lib/api/index.js';
 	import SessionCard from '#lib/components/app/SessionCard.svelte';
+	import Power from '#lib/components/machines/Power.svelte';
 	import Columns from '#lib/components/charts/Columns.svelte';
 	import Figure from '#lib/components/charts/Figure.svelte';
 	import StatTile from '#lib/components/charts/StatTile.svelte';
@@ -27,6 +29,7 @@
 	import { COLOR, fmtCpu, fmtHoursAxis, fmtTokens, STATES, stateLegend } from '#lib/charts.js';
 	import { fmtBytes, fmtDuration, fmtStamp, fmtUsd, plural } from '#lib/format.js';
 	import { live } from '#lib/live/store.svelte.js';
+	import { stateDot, stateLine, systemLine, tiles } from '#lib/machines.js';
 	import { rangeLabel, reachesNow } from '#lib/range.js';
 	import { rangeState } from '#lib/range.svelte.js';
 	import { ACTIVITY } from '#lib/session.js';
@@ -96,13 +99,20 @@
 
 	const link = $derived(live.hosts.find((x) => x.name === host) ?? null);
 	const linkLine = $derived.by(() => {
-		if (!link) return 'not connected since the hub started';
-		const parts = [
-			`${link.connected ? 'connected' : 'offline'} for ${fmtDuration(live.now - link.since)}`
-		];
+		if (!link) return 'never connected';
+		const parts = [stateLine(link, live.now)];
 		if (link.connected && link.rtt_ms !== null) parts.push(`${fmtRtt(link.rtt_ms)} round trip`);
 		return parts.join(' · ');
 	});
+	const report = $derived(link?.machine ?? null);
+	/** "NixOS 26.11 · kernel 7.2.11", and how old the numbers are while it is down. */
+	const reportLine = $derived(
+		report
+			? [systemLine(report), link?.connected ? null : `as of ${fmtStamp(report.at)}`]
+					.filter(Boolean)
+					.join(' · ')
+			: ''
+	);
 	const sessions = $derived(
 		live.list
 			.filter((s) => s.host === host && s.activity !== 'gone')
@@ -132,9 +142,7 @@
 		<a href="/machines" class="text-sm text-muted-foreground hover:underline">Machines</a>
 		<h1 class="flex items-center gap-2 text-lg font-semibold">
 			<i
-				class="inline-block size-2.5 rounded-full {link?.connected
-					? 'bg-your-turn'
-					: 'bg-critical'}"
+				class="inline-block size-2.5 rounded-full {link ? stateDot(link, live.now) : 'bg-critical'}"
 				aria-hidden="true"
 			></i>
 			{host}
@@ -142,6 +150,29 @@
 		<span class="text-xs text-muted-foreground">{linkLine}</span>
 	</div>
 	{#if error}<p class="text-sm text-critical" role="alert">{error}</p>{/if}
+
+	<section class="flex flex-col gap-2">
+		<div class="flex flex-wrap items-baseline gap-x-2">
+			<h2 class="text-base font-semibold">This machine</h2>
+			{#if report}
+				<span class="text-xs text-muted-foreground">{reportLine}</span>
+			{/if}
+		</div>
+		{#if report}
+			<div class={link?.connected ? '' : 'opacity-60'}>
+				<Tiles>
+					{#each tiles(report, link?.connected ? live.now : report.at) as t (t.name)}
+						<StatTile name={t.name} value={t.value} sub={t.sub} />
+					{/each}
+				</Tiles>
+			</div>
+		{:else if link}
+			<p class="text-sm text-muted-foreground">
+				The machine has not reported yet (a collector older than this hub reports nothing).
+			</p>
+		{/if}
+		{#if link}<Power host={link} />{/if}
+	</section>
 
 	<section class="flex flex-col gap-2">
 		<h2 class="text-base font-semibold">Sessions now</h2>

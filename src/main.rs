@@ -16,6 +16,7 @@ mod git;
 mod history;
 mod hub;
 mod knowledge;
+mod machine;
 mod markdown;
 mod messages;
 mod model;

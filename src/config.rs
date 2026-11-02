@@ -25,6 +25,7 @@ pub struct HubConfig {
     pub knowledge: Knowledge,
     pub sync: HubSync,
     pub workspace: HubWorkspace,
+    pub wake: HubWake,
 }
 
 /// `ccdash collector`: the hub link plus everything read on this machine.
@@ -47,6 +48,40 @@ pub struct CollectorConfig {
     pub inject: Inject,
     pub sync: Sync,
     pub workspace: Workspace,
+    pub power: Power,
+}
+
+/// Waking machines over the LAN. The hub sends the magic packet to the
+/// broadcast address of a network it shares with the machine's wake-on-LAN
+/// card, learned from the machine's reports.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct HubWake {
+    /// Host → where its magic packet goes when the hub shares no network
+    /// with it: an address the hub routes to, `ip` or `ip:port` (port 9 by
+    /// default). Either the machine's own address, when its router keeps a
+    /// permanent ARP entry for it (a sleeping machine answers no ARP), or
+    /// its network's broadcast address, when the router forwards directed
+    /// broadcasts.
+    pub via: BTreeMap<String, String>,
+}
+
+/// What the panel may do to this machine's power.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Power {
+    /// Suspend the machine when the panel asks.
+    pub suspend: bool,
+    /// Suspends the machine; it must return once the sleep is on its way
+    /// (`systemctl suspend` does). logind allows it to the user of an
+    /// active seat session.
+    pub suspend_command: Vec<String>,
+    /// Lock the user's graphical session when the panel asks.
+    pub lock: bool,
+    /// Locks it; `{session}` is replaced with the session's id (logind's
+    /// `Display`). `loginctl lock-session` reaches any locker that listens
+    /// to logind, DankMaterialShell's included.
+    pub lock_command: Vec<String>,
 }
 
 /// Where the hub keeps Claude Code's state for the collectors.
@@ -408,6 +443,17 @@ impl Default for Http {
     }
 }
 
+impl Default for Power {
+    fn default() -> Self {
+        Self {
+            suspend: false,
+            suspend_command: vec!["systemctl".into(), "suspend".into()],
+            lock: false,
+            lock_command: vec!["loginctl".into(), "lock-session".into(), "{session}".into()],
+        }
+    }
+}
+
 impl Default for Queue {
     fn default() -> Self {
         Self {
@@ -659,6 +705,18 @@ mod tests {
                 .workspace
                 .enable
         );
+        assert!(!off.power.suspend);
+        assert_eq!(off.power.suspend_command, ["systemctl", "suspend"]);
+        let power: CollectorConfig = toml::from_str("[power]\nsuspend = true\n").unwrap();
+        assert!(power.power.suspend);
+        assert!(!power.power.lock);
+        assert_eq!(
+            power.power.lock_command,
+            ["loginctl", "lock-session", "{session}"]
+        );
+        let wake: HubConfig =
+            toml::from_str("[wake.via]\nkrupikbundle = \"192.168.31.136\"\n").unwrap();
+        assert_eq!(wake.wake.via["krupikbundle"], "192.168.31.136");
     }
 
     #[test]

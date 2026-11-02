@@ -24,7 +24,7 @@ use serde_json::Value;
 use tokio::{
     net::{TcpListener, UnixDatagram, UnixListener},
     signal::unix::{SignalKind, signal},
-    sync::{broadcast, mpsc, oneshot},
+    sync::{Notify, broadcast, mpsc, oneshot},
 };
 use tracing::{debug, info, warn};
 
@@ -32,9 +32,10 @@ use crate::{
     actions::{self, LaunchSpec},
     agents,
     channel::ToChannel,
-    config::{CollectorConfig, Launch},
+    config::{CollectorConfig, Launch, Power},
     git,
     knowledge::{self, Note, Query},
+    machine::{MachineReport, PowerAction, Sampler, display_session},
     model::{HostStatus, Palette, RateLimits, ScopedLimit, Session, Skill, Snapshot, Update},
     niri, otlp, palette, paths, procs,
     protocol::{Call, Injection, Reply, TelemetryRecord, ToCollector, ToHub, Who, WorkspaceDir},
@@ -58,6 +59,8 @@ pub enum LocalCmd {
     Usage(Vec<ScopedLimit>, i64),
     /// Time to look at the desktop's colours again.
     PaletteTick,
+    /// How this machine is doing (`machine_loop`).
+    Machine(Box<MachineReport>),
     Telemetry(Vec<StoreMsg>),
     Snapshot(oneshot::Sender<Snapshot>),
     Resolve(String, oneshot::Sender<Option<Session>>),
@@ -204,6 +207,16 @@ const PALETTE_EVERY: Duration = Duration::from_secs(3);
 /// A pending interrupt that no tool hook took within this (a turn of text
 /// alone, a lost hook) is dropped; the hub's mark went with the turn.
 const INTERRUPT_KEEP_MS: i64 = 10 * 60_000;
+/// How often the machine's report goes to the hub, and how often the
+/// clocks are compared for a sleep in between.
+const MACHINE_EVERY: Duration = Duration::from_secs(30);
+const SLEEP_CHECK_EVERY: Duration = Duration::from_secs(5);
+/// A sleep this long has most likely cost the hub link (the hub drops a
+/// collector after 90 s of silence): reconnect at once instead of waiting
+/// for the next ping to fail.
+const RECONNECT_AFTER_SLEEP_MS: i64 = 30_000;
+/// After a lock, the next report waits this long for the locker to say so.
+const LOCKED_REPORT_AFTER: Duration = Duration::from_millis(1500);
 pub const TIMED_OUT: &str = "the hub did not answer in time";
 
 /// What the collector keeps on disk of the hub's notes.
@@ -238,6 +251,7 @@ async fn serve(cfg: Arc<CollectorConfig>) -> Result<()> {
     let host = cfg.host();
     let (hub_tx, hub_rx) = mpsc::unbounded_channel();
     let (local, rx) = Local::spawn();
+    let report_now = Arc::new(Notify::new());
     let sync = start_sync(&cfg, &host, &hub_tx);
     let workspace = start_workspace(&cfg, &host, &hub_tx);
     tokio::spawn(run_actor(
@@ -250,18 +264,29 @@ async fn serve(cfg: Arc<CollectorConfig>) -> Result<()> {
         .with_commands(cfg.launch.clone(), cfg.attach.command.clone())
         .with_skills(cfg.skills.plugin_dirs.clone())
         .with_sync(sync.clone())
-        .with_workspace(workspace.clone()),
+        .with_workspace(workspace.clone())
+        .with_power(cfg.power.clone(), report_now.clone()),
         rx,
     ));
+    let resumed = Arc::new(Notify::new());
     tokio::spawn(link::run(
         link::Link {
             cfg: cfg.hub.clone(),
             host: host.clone(),
             terminals: cfg.niri.terminals.clone(),
             queue: queue::Queue::open(paths::outbox_file(), cfg.queue.max_bytes),
+            resumed: resumed.clone(),
         },
         hub_rx,
         local.sender(),
+    ));
+    let mut disks = vec![PathBuf::from("/")];
+    disks.extend(std::env::var_os("HOME").map(PathBuf::from));
+    tokio::spawn(machine_loop(
+        Sampler::new(disks).collector(cfg.power.suspend, cfg.power.lock),
+        local.sender(),
+        resumed,
+        report_now,
     ));
 
     let ingest = UnixDatagram::bind(replace(&ingest_path)?)
@@ -333,6 +358,49 @@ async fn serve(cfg: Arc<CollectorConfig>) -> Result<()> {
     let _ = std::fs::remove_file(&ingest_path);
     let _ = std::fs::remove_file(&api_path);
     Ok(())
+}
+
+/// Reports the machine every `MACHINE_EVERY`, when asked (`report_now`),
+/// and at once after a sleep, which also makes the link reconnect when the
+/// sleep was long.
+async fn machine_loop(
+    mut sampler: Sampler,
+    tx: mpsc::Sender<LocalCmd>,
+    resumed: Arc<Notify>,
+    report_now: Arc<Notify>,
+) {
+    let mut checks = tokio::time::interval(SLEEP_CHECK_EVERY);
+    checks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut due = tokio::time::Instant::now();
+    loop {
+        tokio::select! {
+            _ = checks.tick() => {}
+            () = report_now.notified() => due = tokio::time::Instant::now(),
+        }
+        if let Some(slept) = sampler.woke() {
+            info!("woke after {} s asleep", slept / 1000);
+            if slept >= RECONNECT_AFTER_SLEEP_MS {
+                resumed.notify_waiters();
+            }
+            due = tokio::time::Instant::now();
+        }
+        if tokio::time::Instant::now() < due {
+            continue;
+        }
+        due += MACHINE_EVERY;
+        let Ok((back, report)) = tokio::task::spawn_blocking(move || {
+            let report = sampler.read();
+            (sampler, report)
+        })
+        .await
+        else {
+            return;
+        };
+        sampler = back;
+        if tx.send(LocalCmd::Machine(Box::new(report))).await.is_err() {
+            return;
+        }
+    }
 }
 
 /// Starts keeping Claude Code's state in step with the hub (`[sync]`).
@@ -527,6 +595,12 @@ struct Actor {
     /// Background jobs Claude Code lists on this machine: a session
     /// continued here keeps its saved options.
     jobs: HashSet<String>,
+    /// What the panel may do to this machine's power (`[power]`).
+    power: Power,
+    /// The machine's last report, sent again after each welcome.
+    machine: Option<MachineReport>,
+    /// Asks `machine_loop` for a report now.
+    report_now: Arc<Notify>,
 }
 
 impl Actor {
@@ -586,6 +660,9 @@ impl Actor {
             workspace: None,
             interrupts: HashMap::new(),
             jobs: HashSet::new(),
+            power: Power::default(),
+            machine: None,
+            report_now: Arc::new(Notify::new()),
         }
     }
 
@@ -690,6 +767,12 @@ impl Actor {
 
     fn with_skills(mut self, plugin_dirs: Vec<PathBuf>) -> Self {
         self.plugin_dirs = plugin_dirs;
+        self
+    }
+
+    fn with_power(mut self, power: Power, report_now: Arc<Notify>) -> Self {
+        self.power = power;
+        self.report_now = report_now;
         self
     }
 
@@ -835,6 +918,60 @@ impl Actor {
         });
     }
 
+    /// Carries out the hub's `Power` `id` and answers with `PowerDone`.
+    /// A suspend lets the state sync hand over what is pending first and
+    /// answers before the freeze; a lock makes the machine report again at
+    /// once, with the session locked.
+    fn power(&self, id: String, action: PowerAction) {
+        let hub = self.hub.clone();
+        let allowed = match action {
+            PowerAction::Suspend => self.power.suspend,
+            PowerAction::Lock => self.power.lock,
+        };
+        if !allowed {
+            let _ = hub.send(ToHub::PowerDone {
+                id,
+                error: Some(format!(
+                    "this machine does not allow it (`[power] {}`)",
+                    action.name()
+                )),
+            });
+            return;
+        }
+        let power = self.power.clone();
+        let sync = self.sync.clone();
+        let report_now = self.report_now.clone();
+        tokio::spawn(async move {
+            let result = match action {
+                PowerAction::Suspend => {
+                    if let Some(sync) = sync
+                        && !sync.flush(STOP_FLUSH_WAIT).await
+                    {
+                        warn!("suspend: the sync pass did not finish in time");
+                    }
+                    actions::suspend(&power.suspend_command).await
+                }
+                PowerAction::Lock => match tokio::task::spawn_blocking(display_session).await {
+                    Ok(Some(session)) => actions::lock(&power.lock_command, &session.id).await,
+                    _ => Err("no graphical session to lock on this machine".into()),
+                },
+            };
+            match &result {
+                Ok(()) => info!("{} for the panel", action.name()),
+                Err(e) => warn!("{}: {e}", action.name()),
+            }
+            let _ = hub.send(ToHub::PowerDone {
+                id,
+                error: result.err(),
+            });
+            if action == PowerAction::Lock {
+                // NOTE: the locker sets LockedHint once its surface is up
+                tokio::time::sleep(LOCKED_REPORT_AFTER).await;
+                report_now.notify_one();
+            }
+        });
+    }
+
     fn to_hub(&self, msg: ToHub) {
         let _ = self.hub.send(msg);
     }
@@ -937,9 +1074,13 @@ impl Actor {
                 since: self.link_since,
                 rtt_ms: None,
                 palette: self.palette.clone(),
+                machine: self.machine.clone(),
+                power: None,
+                wake: None,
             }],
             sessions,
             rate_limits: self.rate_limits.clone(),
+            hub: None,
         }
     }
 
@@ -988,6 +1129,11 @@ impl Actor {
                 self.report_dirs(true);
                 self.report_skills(true);
                 self.report_palette(true);
+                if let Some(report) = &self.machine {
+                    self.to_hub(ToHub::Machine {
+                        report: Box::new(report.clone()),
+                    });
+                }
             }
             ToCollector::Notes { workspace, notes } => {
                 self.notes.insert(
@@ -1031,7 +1177,10 @@ impl Actor {
                     Update::RateLimits { rate_limits } => {
                         self.rate_limits = Some(rate_limits.clone());
                     }
-                    Update::Hosts { .. } | Update::Notes { .. } | Update::Launch { .. } => {
+                    Update::Hosts { .. }
+                    | Update::Hub { .. }
+                    | Update::Notes { .. }
+                    | Update::Launch { .. } => {
                         return;
                     }
                 }
@@ -1106,6 +1255,7 @@ impl Actor {
                 }
             }
             ToCollector::Open { session } => self.open(&session),
+            ToCollector::Power { id, action } => self.power(id, action),
             ToCollector::SyncChanged { .. } => self.kick_sync(SyncCmd::Changed),
             ToCollector::SyncResync => self.kick_sync(SyncCmd::Resync),
             ToCollector::WorkspaceSetup { setup } => self.kick_workspace(WsCmd::Setup(*setup)),
@@ -1266,6 +1416,10 @@ async fn run_actor(mut a: Actor, mut rx: mpsc::Receiver<LocalCmd>) {
             }
             LocalCmd::Procs(polls, at) => a.to_hub(ToHub::Procs { polls, at }),
             LocalCmd::Usage(limits, at) => a.to_hub(ToHub::Usage { limits, at }),
+            LocalCmd::Machine(report) => {
+                a.machine = Some((*report).clone());
+                a.to_hub(ToHub::Machine { report });
+            }
             LocalCmd::PaletteTick if a.connected => a.report_palette(false),
             LocalCmd::PaletteTick => {}
             LocalCmd::Telemetry(records) => {

@@ -21,12 +21,13 @@ use crate::{
     claims,
     config::Knowledge as KnowledgeCfg,
     knowledge::{self, Query},
+    machine::{self, MachineReport, Power, PowerAction, Wake},
     messages,
     model::{
-        Activity, Ask, HostStatus, Launch, LaunchState, Message, RateLimits, ScopedLimit, Session,
-        Snapshot, Update,
+        Activity, Ask, HostStatus, HubStatus, Launch, LaunchState, Message, RateLimits,
+        ScopedLimit, Session, Snapshot, Update,
     },
-    notify::{Category, Composer, Note},
+    notify::{self, Category, Composer, Note},
     paths,
     protocol::{Call, Injection, Reply, TelemetryRecord, ToCollector, Who},
     state::{AgentEntry, Effects, NiriEvent, PREVIEW_LEN, ProcPoll, State, StoreMsg},
@@ -56,6 +57,12 @@ const MINUTE_MS: i64 = 60_000;
 const LAUNCH_WAIT_MS: i64 = 2 * MINUTE_MS;
 /// Launches are kept this long for `GET /launches/{id}`.
 const LAUNCH_KEEP_MS: i64 = 15 * MINUTE_MS;
+/// A machine that has not connected this long after its magic packets is
+/// shown as offline again.
+const WAKING_KEEP_MS: i64 = 10 * MINUTE_MS;
+/// A report this long after a suspend says the machine did not sleep, or
+/// is awake again on the same link.
+const ASLEEP_STALE_MS: i64 = 15_000;
 
 /// What a collector reports about its host.
 pub enum Input {
@@ -325,6 +332,42 @@ pub enum Cmd {
         unit: String,
         error: Option<String>,
     },
+    /// How a collector's machine is doing.
+    Machine {
+        host: String,
+        report: Box<MachineReport>,
+    },
+    /// The hub's own machine.
+    HubMachine(Box<MachineReport>),
+    /// Suspends `host` or locks its session; a suspend with `force` even
+    /// while sessions there work.
+    Power {
+        host: String,
+        action: PowerAction,
+        force: bool,
+        reply: oneshot::Sender<Result<HostStatus, String>>,
+    },
+    /// What came of power action `id` on `host`.
+    PowerDone {
+        host: String,
+        id: String,
+        error: Option<String>,
+    },
+    /// Sends magic packets to `host`.
+    Wake {
+        host: String,
+        reply: oneshot::Sender<Result<HostStatus, String>>,
+    },
+    /// The magic packets for `host` went out.
+    WakeSent {
+        host: String,
+        reply: oneshot::Sender<Result<HostStatus, String>>,
+    },
+    /// Drops an offline host from the list the hub keeps.
+    ForgetHost {
+        host: String,
+        reply: oneshot::Sender<Result<(), String>>,
+    },
     /// The hub's ping to `host`'s collector came back.
     CollectorRtt {
         host: String,
@@ -503,6 +546,7 @@ impl Hub {
         knowledge: KnowledgeCfg,
         tool_output_bytes: usize,
         repos: Option<Arc<Repos>>,
+        wake_via: BTreeMap<String, String>,
     ) -> Self {
         let (tx, rx) = mpsc::channel(1024);
         let (updates, _) = broadcast::channel(256);
@@ -536,13 +580,39 @@ impl Hub {
                 held_waits: HashMap::new(),
             }
         });
-        let core = Core {
+        let started = now_ms();
+        // NOTE: a host connected when the hub stopped is offline from now on until it reconnects
+        let hosts = reader
+            .as_ref()
+            .map(store::hosts)
+            .transpose()
+            .unwrap_or_else(|e| {
+                warn!("reading the kept hosts: {e:#}");
+                None
+            })
+            .unwrap_or_default()
+            .into_iter()
+            .map(|mut h| {
+                if h.connected {
+                    h.connected = false;
+                    h.since = started;
+                }
+                h.rtt_ms = None;
+                (h.name.clone(), h)
+            })
+            .collect();
+        let mut core = Core {
+            hub: HubStatus {
+                name: host.clone(),
+                started_at: started,
+                machine: None,
+            },
             host,
             public_url,
             workspaces,
             states: HashMap::new(),
             links: HashMap::new(),
-            hosts: BTreeMap::new(),
+            hosts,
             channels: HashSet::new(),
             store,
             reader,
@@ -562,7 +632,14 @@ impl Hub {
             dirs: HashMap::new(),
             skills: HashMap::new(),
             workspace,
+            wake_via,
+            power_waits: HashMap::new(),
+            next_power: 0,
         };
+        let names: Vec<String> = core.hosts.keys().cloned().collect();
+        for name in names {
+            core.refresh_wake(&name);
+        }
         tokio::spawn(run(core, rx));
         Self { tx, updates }
     }
@@ -779,6 +856,13 @@ impl Hub {
     }
 }
 
+/// A power action a host is carrying out for the panel.
+struct PowerWait {
+    id: String,
+    action: PowerAction,
+    reply: oneshot::Sender<Result<HostStatus, String>>,
+}
+
 struct Core {
     host: String,
     /// Where the web UI lives, told to collectors for the links they open.
@@ -823,6 +907,13 @@ struct Core {
     skills: HashMap<String, Vec<crate::model::Skill>>,
     /// The workspace sync, when it is on.
     workspace: Option<WorkspaceCore>,
+    /// The hub's own machine.
+    hub: HubStatus,
+    /// `[wake] via`: where magic packets go for hosts on other networks.
+    wake_via: BTreeMap<String, String>,
+    /// The power action each host is carrying out, and who waits for it.
+    power_waits: HashMap<String, PowerWait>,
+    next_power: u64,
 }
 
 /// The session behind a knowledge call, placed in its workspace.
@@ -911,6 +1002,7 @@ async fn run(mut core: Core, mut rx: mpsc::Receiver<Cmd>) {
             }
             Cmd::Tick(now) => {
                 core.expire_launches(now);
+                core.expire_waking(now);
                 core.workspace_flush(now);
                 let hosts: Vec<String> = core.states.keys().cloned().collect();
                 for host in hosts {
@@ -1066,8 +1158,40 @@ async fn run(mut core: Core, mut rx: mpsc::Receiver<Cmd>) {
                     && status.palette != palette
                 {
                     status.palette = palette;
+                    core.save_host(&host);
                     core.hosts_changed();
                 }
+            }
+            Cmd::Machine { host, report } => core.machine_report(&host, *report),
+            Cmd::HubMachine(report) => {
+                core.hub.machine = Some(*report);
+                let _ = core.updates.send(Update::Hub {
+                    hub: core.hub.clone(),
+                });
+            }
+            Cmd::Power {
+                host,
+                action,
+                force,
+                reply,
+            } => {
+                if let Err(e) = core.power(&host, action, force, reply) {
+                    info!("no {} of {host}: {e}", action.name());
+                }
+            }
+            Cmd::PowerDone { host, id, error } => core.power_done(&host, &id, error),
+            Cmd::Wake { host, reply } => core.wake_machine(&host, reply),
+            Cmd::WakeSent { host, reply } => {
+                info!("magic packets sent for {host}");
+                if let Some(status) = core.hosts.get_mut(&host) {
+                    status.power = Some(Power::Waking { since: now_ms() });
+                }
+                core.save_host(&host);
+                core.hosts_changed();
+                let _ = reply.send(core.host_status(&host));
+            }
+            Cmd::ForgetHost { host, reply } => {
+                let _ = reply.send(core.forget_host(&host));
             }
             Cmd::HostSkills { host, reply } => {
                 let _ = reply.send(core.skills.get(&host).cloned().unwrap_or_default());
@@ -1259,6 +1383,7 @@ impl Core {
             hosts: self.hosts.values().cloned().collect(),
             sessions,
             rate_limits: self.rate_limits(),
+            hub: Some(self.hub.clone()),
         }
     }
 
@@ -1442,7 +1567,14 @@ impl Core {
                 tx: tx.clone(),
             },
         );
-        let palette = self.hosts.remove(&host).and_then(|h| h.palette);
+        let old = self.hosts.remove(&host);
+        if let Some(Power::Waking { since }) = old.as_ref().and_then(|h| h.power) {
+            info!(
+                "{host} is back {} s after the magic packets",
+                (now - since) / 1000
+            );
+        }
+        let (palette, machine) = old.map(|h| (h.palette, h.machine)).unwrap_or_default();
         self.hosts.insert(
             host.clone(),
             HostStatus {
@@ -1451,8 +1583,13 @@ impl Core {
                 since: now,
                 rtt_ms: None,
                 palette,
+                machine,
+                power: None,
+                wake: None,
             },
         );
+        self.refresh_wake(&host);
+        self.save_host(&host);
         let state = &self.states[&host];
         let mut sessions: Vec<Session> = state.sessions().cloned().collect();
         sessions.sort_by_key(|s| s.started_at);
@@ -3043,9 +3180,28 @@ impl Core {
                 let _ = reply.send(Err(format!("{host} disconnected")));
             }
         }
+        let now = now_ms();
+        let waiting = self.power_waits.remove(host);
+        let asleep = waiting
+            .as_ref()
+            .is_some_and(|w| w.action == PowerAction::Suspend);
         if let Some(status) = self.hosts.get_mut(host) {
             status.connected = false;
-            status.since = now_ms();
+            status.since = now;
+            // NOTE: the link died before the answer: the freeze came first
+            if asleep {
+                status.power = Some(Power::Asleep { since: now });
+            }
+        }
+        self.save_host(host);
+        if let Some(w) = waiting {
+            let result = if asleep {
+                info!("{host} went to sleep before it answered");
+                self.host_status(host)
+            } else {
+                Err(format!("{host} disconnected"))
+            };
+            let _ = w.reply.send(result);
         }
         let mut fx = Effects::default();
         if let Some(state) = self.states.get_mut(host) {
@@ -3078,6 +3234,241 @@ impl Core {
         let _ = self.updates.send(Update::Hosts {
             hosts: self.hosts.values().cloned().collect(),
         });
+    }
+
+    // ---- machines: reports, suspend, lock, wake ----
+
+    fn host_status(&self, host: &str) -> Result<HostStatus, String> {
+        self.hosts
+            .get(host)
+            .cloned()
+            .ok_or_else(|| format!("no machine called {host}"))
+    }
+
+    /// Keeps `host`'s status for the next start of the hub.
+    fn save_host(&self, host: &str) {
+        if let Some(status) = self.hosts.get(host) {
+            self.store
+                .send(host, StoreMsg::Host(Box::new(status.clone())));
+        }
+    }
+
+    /// Works out again whether and how the hub can wake `host`.
+    fn refresh_wake(&mut self, host: &str) {
+        let own = machine::ipv4_addresses();
+        let via = self.wake_via.get(host).cloned();
+        if let Some(status) = self.hosts.get_mut(host) {
+            let report = status.machine.as_ref();
+            // NOTE: the panel says why; a log line would repeat with every report
+            status.wake = Some(match &own {
+                Ok(own) => machine::wake_path(report, own, via.as_deref()),
+                Err(e) if via.is_none() => Wake::Unavailable {
+                    why: format!("the hub cannot list its own addresses ({e})"),
+                },
+                Err(_) => machine::wake_path(report, &[], via.as_deref()),
+            });
+        }
+    }
+
+    fn machine_report(&mut self, host: &str, mut report: MachineReport) {
+        let Some(status) = self.hosts.get_mut(host) else {
+            return;
+        };
+        if let Some(old) = &status.machine {
+            machine::keep_addresses(&mut report, old);
+        }
+        if let Some(Power::Asleep { since }) = status.power
+            && status.connected
+            && report.at > since + ASLEEP_STALE_MS
+        {
+            status.power = None;
+        }
+        status.machine = Some(report);
+        self.refresh_wake(host);
+        self.save_host(host);
+        self.hosts_changed();
+    }
+
+    /// Asks `host` to suspend or lock; the reply waits for its answer (or,
+    /// for a suspend, for the link to drop, which the freeze does). Refused
+    /// for a machine that is offline or has not opted in, and a suspend
+    /// while sessions there work or wait on a prompt, unless `force`.
+    fn power(
+        &mut self,
+        host: &str,
+        action: PowerAction,
+        force: bool,
+        reply: oneshot::Sender<Result<HostStatus, String>>,
+    ) -> Result<(), String> {
+        if let Some(why) = self.power_refusal(host, action, force) {
+            let _ = reply.send(Err(why.clone()));
+            return Err(why);
+        }
+        self.next_power += 1;
+        let id = format!("{}-{}", action.name(), self.next_power);
+        info!("{id}: {host}, for the panel");
+        self.power_waits.insert(
+            host.to_owned(),
+            PowerWait {
+                id: id.clone(),
+                action,
+                reply,
+            },
+        );
+        self.tell(host, ToCollector::Power { id, action });
+        Ok(())
+    }
+
+    fn power_refusal(&self, host: &str, action: PowerAction, force: bool) -> Option<String> {
+        let Some(status) = self.hosts.get(host) else {
+            return Some(format!("no machine called {host}"));
+        };
+        if !status.connected || !self.links.contains_key(host) {
+            return Some(format!("{host} is not connected"));
+        }
+        if let Some(w) = self.power_waits.get(host) {
+            return Some(match w.action {
+                PowerAction::Suspend => format!("{host} is already on its way to sleep"),
+                PowerAction::Lock => format!("{host} is locking already"),
+            });
+        }
+        let allowed = status.machine.as_ref().is_some_and(|m| match action {
+            PowerAction::Suspend => m.can_suspend,
+            PowerAction::Lock => m.can_lock,
+        });
+        if !allowed {
+            return Some(format!(
+                "{host} does not allow it: turn on `power.{}` in its collector's settings",
+                action.name()
+            ));
+        }
+        if force || action == PowerAction::Lock {
+            return None;
+        }
+        let busy: Vec<String> = self
+            .states
+            .get(host)
+            .map(|st| {
+                st.sessions()
+                    .filter(|s| matches!(s.activity, Activity::Working | Activity::Permission))
+                    .map(notify::label)
+                    .collect()
+            })
+            .unwrap_or_default();
+        (!busy.is_empty()).then(|| {
+            format!(
+                "{} on {host}: {}; suspend anyway to pause {}",
+                if busy.len() == 1 {
+                    "a session is working".to_owned()
+                } else {
+                    format!("{} sessions are working", busy.len())
+                },
+                busy.join(", "),
+                if busy.len() == 1 { "it" } else { "them" },
+            )
+        })
+    }
+
+    fn power_done(&mut self, host: &str, id: &str, error: Option<String>) {
+        if self.power_waits.get(host).is_none_or(|w| w.id != id) {
+            return;
+        }
+        let Some(w) = self.power_waits.remove(host) else {
+            return;
+        };
+        if let Some(e) = error {
+            warn!("{id}: {host} refused: {e}");
+            let _ = w.reply.send(Err(e));
+            return;
+        }
+        if w.action == PowerAction::Suspend {
+            info!("{host} is on its way to sleep");
+            if let Some(status) = self.hosts.get_mut(host) {
+                status.power = Some(Power::Asleep { since: now_ms() });
+            }
+            self.save_host(host);
+            self.hosts_changed();
+        } else {
+            info!("{host} locked its session");
+        }
+        let _ = w.reply.send(self.host_status(host));
+    }
+
+    /// Sends magic packets to `host` (in a task: they go out a few hundred
+    /// milliseconds apart); `WakeSent` marks it waking.
+    fn wake_machine(&mut self, host: &str, reply: oneshot::Sender<Result<HostStatus, String>>) {
+        self.refresh_wake(host);
+        let target = match self.hosts.get(host) {
+            None => Err(format!("no machine called {host}")),
+            Some(s) if s.connected && !matches!(s.power, Some(Power::Asleep { .. })) => {
+                Err(format!("{host} is awake"))
+            }
+            Some(s) => match &s.wake {
+                Some(Wake::Ready { mac, to }) => Ok((mac.clone(), to.clone())),
+                Some(Wake::Unavailable { why }) => {
+                    Err(format!("the hub cannot wake {host}: {why}"))
+                }
+                None => Err(format!("the hub cannot wake {host} yet")),
+            },
+        };
+        let (mac, to) = match target {
+            Ok(target) => target,
+            Err(e) => {
+                let _ = reply.send(Err(e));
+                return;
+            }
+        };
+        info!("waking {host}: magic packets for {mac} to {to}");
+        let (cmds, host) = (self.cmds.clone(), host.to_owned());
+        tokio::spawn(async move {
+            match machine::send_wake(&mac, &to).await {
+                Ok(()) => {
+                    let _ = cmds.send(Cmd::WakeSent { host, reply }).await;
+                }
+                Err(e) => {
+                    warn!("waking {host}: {e}");
+                    let _ = reply.send(Err(e));
+                }
+            }
+        });
+    }
+
+    fn expire_waking(&mut self, now: i64) {
+        let stale: Vec<String> = self
+            .hosts
+            .iter()
+            .filter(|(_, h)| {
+                matches!(h.power, Some(Power::Waking { since }) if now - since > WAKING_KEEP_MS)
+            })
+            .map(|(name, _)| name.clone())
+            .collect();
+        for host in &stale {
+            warn!("{host} did not come back after its magic packets");
+            if let Some(status) = self.hosts.get_mut(host) {
+                status.power = None;
+            }
+            self.save_host(host);
+        }
+        if !stale.is_empty() {
+            self.hosts_changed();
+        }
+    }
+
+    fn forget_host(&mut self, host: &str) -> Result<(), String> {
+        match self.hosts.get(host) {
+            None => return Err(format!("no machine called {host}")),
+            Some(s) if s.connected => {
+                return Err(format!(
+                    "{host} is connected: only an offline machine can be forgotten"
+                ));
+            }
+            Some(_) => {}
+        }
+        info!("forgetting the machine {host}");
+        self.hosts.remove(host);
+        self.store.send(host, StoreMsg::ForgetHost);
+        self.hosts_changed();
+        Ok(())
     }
 
     fn channel(&mut self, host: &str, pid: u32, up: bool) {
@@ -3715,6 +4106,7 @@ mod tests {
             KnowledgeCfg::default(),
             0,
             None,
+            BTreeMap::new(),
         );
         let mut rxs = HashMap::new();
         for (conn, host) in ["navi", "flat"].into_iter().enumerate() {
@@ -3829,6 +4221,7 @@ mod tests {
             KnowledgeCfg::default(),
             0,
             None,
+            BTreeMap::new(),
         );
         let (tx, rx) = mpsc::channel(64);
         hub.send(Cmd::CollectorOpen {
@@ -4099,6 +4492,7 @@ mod tests {
             KnowledgeCfg::default(),
             0,
             None,
+            BTreeMap::new(),
         );
         let (tx, _rx) = mpsc::channel(64);
         hub.send(Cmd::CollectorOpen {
@@ -4157,6 +4551,7 @@ mod tests {
             KnowledgeCfg::default(),
             0,
             None,
+            BTreeMap::new(),
         );
         let req = |resume: Option<&str>| LaunchReq {
             host: "navi".into(),
@@ -4410,6 +4805,7 @@ mod tests {
             KnowledgeCfg::default(),
             0,
             None,
+            BTreeMap::new(),
         );
         // as after a hub restart: in the table, not yet in the live state
         let now = now_ms();
@@ -4493,6 +4889,7 @@ mod tests {
             KnowledgeCfg::default(),
             0,
             None,
+            BTreeMap::new(),
         );
         let (tx, mut rx) = mpsc::channel(64);
         hub.send(Cmd::CollectorOpen {
@@ -4588,5 +4985,232 @@ mod tests {
         assert_eq!(note.project.as_deref(), Some("p"));
         assert!(knowledge::get(&conn, "w", "n--x").unwrap().is_none());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn report(can_suspend: bool, ipv4: &str) -> Box<MachineReport> {
+        Box::new(MachineReport {
+            at: now_ms(),
+            boot_at: 0,
+            slept_ms: 0,
+            resumed_at: None,
+            os: None,
+            kernel: "7.2".into(),
+            reboot_pending: None,
+            cpu: crate::machine::Cpu {
+                cores: 4,
+                usage_pct: None,
+                load: [0.0; 3],
+                temp_c: None,
+            },
+            memory: crate::machine::Memory::default(),
+            disks: Vec::new(),
+            battery: None,
+            nics: vec![crate::machine::Nic {
+                name: "enp1".into(),
+                mac: "30:56:0f:74:65:de".into(),
+                ipv4: vec![ipv4.into()],
+                wake: true,
+            }],
+            can_suspend,
+            can_lock: true,
+            locked: Some(false),
+        })
+    }
+
+    async fn ask<T>(hub: &Hub, make: impl FnOnce(oneshot::Sender<T>) -> Cmd) -> T {
+        let (reply, rx) = oneshot::channel();
+        hub.send(make(reply)).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(5), rx)
+            .await
+            .expect("an answer")
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn machines_suspend_wake_and_are_kept() {
+        let dir = std::env::temp_dir().join(format!("ccdash-power-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let store = Store::open(&dir.join("t.db"), 30).unwrap();
+        let listener = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        listener
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let via = BTreeMap::from([(
+            "navi".to_owned(),
+            listener.local_addr().unwrap().to_string(),
+        )]);
+        let spawn = |store: Store| {
+            Hub::spawn(
+                "hub".into(),
+                "http://hub".into(),
+                Workspaces::new(&["/w".into()], "/home"),
+                store,
+                None,
+                KnowledgeCfg::default(),
+                0,
+                None,
+                via.clone(),
+            )
+        };
+        let hub = spawn(store.clone());
+        let (tx, mut rx) = mpsc::channel(256);
+        hub.send(Cmd::CollectorOpen {
+            host: "navi".into(),
+            conn: 1,
+            terminals: Vec::new(),
+            tx,
+        })
+        .await
+        .unwrap();
+        let suspend = |force| {
+            move |reply| Cmd::Power {
+                host: "navi".into(),
+                action: PowerAction::Suspend,
+                force,
+                reply,
+            }
+        };
+
+        // before a report: suspend is refused, waking an awake machine too
+        let refused = ask(&hub, suspend(false)).await.unwrap_err();
+        assert!(refused.contains("power.suspend"), "{refused}");
+        let awake = ask(&hub, |reply| Cmd::Wake {
+            host: "navi".into(),
+            reply,
+        })
+        .await
+        .unwrap_err();
+        assert!(awake.contains("is awake"), "{awake}");
+
+        // a working session holds the suspend back unless forced
+        hub.send(Cmd::Machine {
+            host: "navi".into(),
+            report: report(true, "203.0.113.4/24"),
+        })
+        .await
+        .unwrap();
+        let sid = "5e3f1c2a-0000-4000-8000-0000000000aa";
+        for event in ["SessionStart", "UserPromptSubmit"] {
+            hub.send(Cmd::Input(
+                "navi".into(),
+                Input::Envelope(envelope(
+                    Source::Hook,
+                    None,
+                    json!({"session_id": sid, "cwd": "/w/p", "hook_event_name": event, "prompt": "go"}),
+                )),
+            ))
+            .await
+            .unwrap();
+        }
+        let busy = ask(&hub, suspend(false)).await.unwrap_err();
+        assert!(busy.contains("a session is working"), "{busy}");
+
+        // a lock ignores working sessions and leaves the machine awake
+        let (reply, answer) = oneshot::channel();
+        hub.send(Cmd::Power {
+            host: "navi".into(),
+            action: PowerAction::Lock,
+            force: false,
+            reply,
+        })
+        .await
+        .unwrap();
+        let ToCollector::Power { id, action } =
+            next(&mut rx, |m| matches!(m, ToCollector::Power { .. })).await
+        else {
+            unreachable!()
+        };
+        assert_eq!(action, PowerAction::Lock);
+        hub.send(Cmd::PowerDone {
+            host: "navi".into(),
+            id,
+            error: None,
+        })
+        .await
+        .unwrap();
+        assert!(answer.await.unwrap().is_ok_and(|s| s.power.is_none()));
+
+        // forced: the collector is asked, and its refusal comes back
+        let (reply, answer) = oneshot::channel();
+        hub.send(suspend(true)(reply)).await.unwrap();
+        let ToCollector::Power { id, .. } =
+            next(&mut rx, |m| matches!(m, ToCollector::Power { .. })).await
+        else {
+            unreachable!()
+        };
+        let again = ask(&hub, suspend(true)).await.unwrap_err();
+        assert!(again.contains("already on its way"), "{again}");
+        hub.send(Cmd::PowerDone {
+            host: "navi".into(),
+            id: id.clone(),
+            error: Some("Operation inhibited".into()),
+        })
+        .await
+        .unwrap();
+        assert_eq!(answer.await.unwrap().unwrap_err(), "Operation inhibited");
+
+        // accepted: asleep, then the link drops
+        let (reply, answer) = oneshot::channel();
+        hub.send(suspend(true)(reply)).await.unwrap();
+        let ToCollector::Power { id, .. } =
+            next(&mut rx, |m| matches!(m, ToCollector::Power { .. })).await
+        else {
+            unreachable!()
+        };
+        hub.send(Cmd::PowerDone {
+            host: "navi".into(),
+            id,
+            error: None,
+        })
+        .await
+        .unwrap();
+        let status = answer.await.unwrap().unwrap();
+        assert!(matches!(status.power, Some(Power::Asleep { .. })));
+        hub.send(Cmd::CollectorClosed {
+            host: "navi".into(),
+            conn: 1,
+        })
+        .await
+        .unwrap();
+
+        // no shared network, so `via` carries the packets
+        let snap = hub.snapshot().await.unwrap();
+        let navi = snap.hosts.iter().find(|h| h.name == "navi").unwrap();
+        assert!(!navi.connected);
+        assert!(matches!(&navi.wake, Some(Wake::Ready { to, .. }) if *to == via["navi"]));
+        let status = ask(&hub, |reply| Cmd::Wake {
+            host: "navi".into(),
+            reply,
+        })
+        .await
+        .unwrap();
+        assert!(matches!(status.power, Some(Power::Waking { .. })));
+        let mut buf = [0u8; 200];
+        let (n, _) = listener.recv_from(&mut buf).unwrap();
+        assert_eq!(n, 102);
+        assert_eq!(
+            &buf[..12],
+            &[
+                0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x30, 0x56, 0x0f, 0x74, 0x65, 0xde
+            ]
+        );
+
+        // a new hub knows the machine, offline, with its report and wake path
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let hub = spawn(store);
+        let snap = hub.snapshot().await.unwrap();
+        let navi = snap.hosts.iter().find(|h| h.name == "navi").expect("kept");
+        assert!(!navi.connected);
+        assert!(navi.machine.as_ref().is_some_and(|m| m.can_suspend));
+        assert!(matches!(navi.wake, Some(Wake::Ready { .. })));
+        assert!(snap.hub.is_some());
+        ask(&hub, |reply| Cmd::ForgetHost {
+            host: "navi".into(),
+            reply,
+        })
+        .await
+        .unwrap();
+        assert!(hub.snapshot().await.unwrap().hosts.is_empty());
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

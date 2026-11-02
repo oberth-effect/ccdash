@@ -13,6 +13,7 @@ use crate::state::Window;
 use crate::{
     ask::Answer,
     knowledge::{Hit, Note, NoteOp, NoteView, Query, Upsert, Written},
+    machine::{MachineReport, PowerAction},
     model::{Claim, Kind, Palette, RateLimits, ScopedLimit, Session, Skill, Update},
     state::{AgentEntry, NiriEvent, ProcPoll},
     sync::{Keep, SyncStatus},
@@ -22,6 +23,8 @@ use crate::{
     },
 };
 
+/// 13: the machine's report (`Machine` up) and its power from the panel
+/// (`Power` down, `PowerDone` up).
 /// 12: the desktop's colours (`Palette` up).
 /// 9: the sync's cost and coverage (`WorkspaceStatus.cost`,
 /// `SeenUnit.excluded`/`.unsyncable`) and held actions acknowledged
@@ -40,7 +43,7 @@ use crate::{
 /// `Stop`, `Open` down; `Launched`, `Stopped` up), `branch` and `launched`
 /// on sessions, `branch` on agents entries and envelopes, `launch` on
 /// envelopes.
-pub const VERSION: u32 = 12;
+pub const VERSION: u32 = 13;
 
 /// Collector → hub.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -192,6 +195,18 @@ pub enum ToHub {
     /// a setup without one (version 0); the hub keeps the first it gets.
     WorkspaceConfig {
         config: WorkspaceConfig,
+    },
+    /// How this machine is doing: after each welcome, every half minute
+    /// and right after a resume.
+    Machine {
+        report: Box<MachineReport>,
+    },
+    /// What came of `Power` `id`: done (a suspend: on its way to sleep,
+    /// sent before the freeze), or why not.
+    PowerDone {
+        id: String,
+        #[serde(default)]
+        error: Option<String>,
     },
 }
 
@@ -487,6 +502,12 @@ pub enum ToCollector {
     WorkspaceAdopt {
         #[serde(default)]
         unit: Option<String>,
+    },
+    /// Suspend this machine or lock its session (`[power]`); answered by
+    /// `PowerDone`.
+    Power {
+        id: String,
+        action: PowerAction,
     },
 }
 

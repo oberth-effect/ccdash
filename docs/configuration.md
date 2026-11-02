@@ -46,6 +46,7 @@ channel plugin in Claude Code's managed settings.
 | `workspace.syncIgnored`                    | `.env`, `.env.*`, `.envrc.local` | gitignored paths that travel anyway                                                                                                                   |
 | `workspace.maxFileMb`, `.autoIncludeMb`    | `64`, `500`                      | the untracked file cap, the new-directory threshold                                                                                                   |
 | `launch.direnv`, `launch.env`              | `programs.direnv.enable`, `[ ]`  | launched sessions get the matching direnv variables                                                                                                   |
+| `power.suspend`, `power.lock`              | `false`                          | the panel may suspend this machine, lock its screen ([machines](machines.md#2-lock))                                                                  |
 | `dms.enable`                               | `false`                          | the DankMaterialShell plugin                                                                                                                          |
 | `claudeCode.hooks.enable`                  | `true`                           | the hooks                                                                                                                                             |
 | `claudeCode.daemon.enable`                 | `true`                           | Claude Code's supervisor as its own user service, so a collector restart leaves background sessions running ([sessions](sessions.md#8-configuration)) |
@@ -59,28 +60,29 @@ channel plugin in Claude Code's managed settings.
 
 ## 3. Hub keys
 
-| Key                                                         | Default                        | Meaning                                                      |
-| ----------------------------------------------------------- | ------------------------------ | ------------------------------------------------------------ |
-| `host`                                                      | the kernel's host name         | the name the panel shows for the hub                         |
-| `http.listen`                                               | `["127.0.0.1:7837"]`           | addresses of the API and the panel                           |
-| `http.token_file`                                           | generated in the state dir     | the bootstrap token                                          |
-| `http.public_url`                                           | LAN address and first port     | where phones open the panel (links, pairing)                 |
-| `http.web_dir`                                              | the built panel                | the panel's files                                            |
-| `collect.tokens`                                            | `{}`                           | host name → collector token file                             |
-| `store.path`                                                | `<state dir>/ccdash.db`        | the database                                                 |
-| `store.retention_days`                                      | `30`                           | history kept                                                 |
-| `store.tool_output_bytes`                                   | `8192`                         | Bash output kept per call (0 keeps none)                     |
-| `workspaces.dirs`                                           | `[]`                           | top-level directories the panel scopes by                    |
-| `notify.delay_secs`, `.focused_delay_secs`                  | `15`, `120`                    | how long a prompt waits before it notifies                   |
-| `notify.permissions`, `.questions`, `.plans`, `.turns`      | `true`                         | what notifies                                                |
-| `notify.workspaces`                                         | `[]` (all)                     | only these workspaces notify                                 |
-| `notify.web_url`                                            | `http.public_url`              | where notification taps lead                                 |
-| `push.enabled`                                              | `true`                         | Web Push                                                     |
-| `push.subject`, `.ttl_secs`, `.key_file`                    | public URL, `3600`, state dir  | VAPID contact, message lifetime, key pair                    |
-| `knowledge.reflect`                                         | `true`                         | the daily staleness pass                                     |
-| `knowledge.stale_unverified_days`, `.stale_unrecalled_days` | `90`, `60`                     | when memories turn stale                                     |
-| `sync.dir`                                                  | `claude/` next to the database | the synced files                                             |
-| `workspace.enable`                                          | `false`                        | the workspace sync (repositories under `sync.dir/workspace`) |
+| Key                                                         | Default                        | Meaning                                                                                  |
+| ----------------------------------------------------------- | ------------------------------ | ---------------------------------------------------------------------------------------- |
+| `host`                                                      | the kernel's host name         | the name the panel shows for the hub                                                     |
+| `http.listen`                                               | `["127.0.0.1:7837"]`           | addresses of the API and the panel                                                       |
+| `http.token_file`                                           | generated in the state dir     | the bootstrap token                                                                      |
+| `http.public_url`                                           | LAN address and first port     | where phones open the panel (links, pairing)                                             |
+| `http.web_dir`                                              | the built panel                | the panel's files                                                                        |
+| `collect.tokens`                                            | `{}`                           | host name → collector token file                                                         |
+| `store.path`                                                | `<state dir>/ccdash.db`        | the database                                                                             |
+| `store.retention_days`                                      | `30`                           | history kept                                                                             |
+| `store.tool_output_bytes`                                   | `8192`                         | Bash output kept per call (0 keeps none)                                                 |
+| `workspaces.dirs`                                           | `[]`                           | top-level directories the panel scopes by                                                |
+| `notify.delay_secs`, `.focused_delay_secs`                  | `15`, `120`                    | how long a prompt waits before it notifies                                               |
+| `notify.permissions`, `.questions`, `.plans`, `.turns`      | `true`                         | what notifies                                                                            |
+| `notify.workspaces`                                         | `[]` (all)                     | only these workspaces notify                                                             |
+| `notify.web_url`                                            | `http.public_url`              | where notification taps lead                                                             |
+| `push.enabled`                                              | `true`                         | Web Push                                                                                 |
+| `push.subject`, `.ttl_secs`, `.key_file`                    | public URL, `3600`, state dir  | VAPID contact, message lifetime, key pair                                                |
+| `knowledge.reflect`                                         | `true`                         | the daily staleness pass                                                                 |
+| `knowledge.stale_unverified_days`, `.stale_unrecalled_days` | `90`, `60`                     | when memories turn stale                                                                 |
+| `sync.dir`                                                  | `claude/` next to the database | the synced files                                                                         |
+| `workspace.enable`                                          | `false`                        | the workspace sync (repositories under `sync.dir/workspace`)                             |
+| `wake.via.<host>`                                           | —                              | where magic packets go for a machine on another network ([machines](machines.md#4-wake)) |
 
 ## 4. Collector keys
 
@@ -110,3 +112,7 @@ channel plugin in Claude Code's managed settings.
 | `workspace.always_exclude`                  | see [workspace](workspace.md#4-what-stays-home) | directory names that never travel                                                        |
 | `workspace.sync_ignored`                    | `[".env", ".env.*", ".envrc.local"]`            | gitignored paths that travel anyway (`.devenv/state/*` quiescent)                        |
 | `workspace.max_file_mb`, `.auto_include_mb` | `64`, `500`                                     | the untracked file cap, the new-directory threshold                                      |
+| `power.suspend`                             | `false`                                         | carry out the panel's Suspend                                                            |
+| `power.suspend_command`                     | `["systemctl", "suspend"]`                      | suspends; returns once the sleep is on its way                                           |
+| `power.lock`                                | `false`                                         | carry out the panel's Lock                                                               |
+| `power.lock_command`                        | `["loginctl", "lock-session", "{session}"]`     | locks the user's display session (`{session}`: its id)                                   |

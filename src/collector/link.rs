@@ -2,11 +2,14 @@
 //! with backoff. Hook events wait in the on-disk queue while it is down;
 //! polls are dropped (the next one replaces them).
 
-use std::{path::PathBuf, time::Duration};
+use std::{path::PathBuf, sync::Arc, time::Duration};
 
 use anyhow::{Context, Result, bail};
 use futures_util::{SinkExt, StreamExt};
-use tokio::{net::TcpStream, sync::mpsc};
+use tokio::{
+    net::TcpStream,
+    sync::{Notify, mpsc},
+};
 use tokio_tungstenite::{
     MaybeTlsStream, WebSocketStream, connect_async,
     tungstenite::{Message, client::IntoClientRequest, http::header::AUTHORIZATION},
@@ -36,6 +39,9 @@ pub struct Link {
     pub host: String,
     pub terminals: Vec<String>,
     pub queue: Queue,
+    /// Fires when the machine woke from a long sleep: the socket is most
+    /// likely dead, so the link starts over at once.
+    pub resumed: Arc<Notify>,
 }
 
 /// Runs until `rx` closes.
@@ -56,6 +62,7 @@ pub async fn run(
                     None => return,
                 },
                 () = &mut wait => break,
+                () = link.resumed.notified() => break,
             }
         }
         backoff = (backoff * 2).clamp(Duration::from_secs(1), MAX_BACKOFF);
@@ -164,6 +171,7 @@ async fn session(
         info!("replayed {} queued events", parked.len());
     }
     local.send(LocalCmd::LinkUp).await?;
+    let resumed = link.resumed.clone();
     let mut ping = tokio::time::interval(PING_EVERY);
     ping.tick().await;
     loop {
@@ -190,6 +198,7 @@ async fn session(
                 }
             }
             _ = ping.tick() => ws.send(Message::Ping(Vec::new().into())).await?,
+            () = resumed.notified() => bail!("the machine woke from sleep: connecting again"),
         }
     }
 }

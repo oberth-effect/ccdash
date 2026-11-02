@@ -2,7 +2,9 @@
 
 Anyone holding a panel token can read your sessions, answer their prompts,
 start and stop sessions in your projects and, with the channel, prompt
-them. Treat a token like an SSH key and keep the hub on your LAN or VPN.
+them. They can also lock or suspend the machines that allow it
+(`power.lock`, `power.suspend`) and wake machines over the LAN. Treat a
+token like an SSH key and keep the hub on your LAN or VPN.
 
 1. [Tokens](#1-tokens)
 2. [Pairing a device](#2-pairing-a-device)
@@ -44,6 +46,11 @@ token" there and can take one of its own.
   checked to stay inside the synced directories.
 - The OpenTelemetry receiver on a workstation takes no token, so the
   collector binds it to loopback only.
+- Lock and suspend reach only a machine whose collector has `power.lock`
+  or `power.suspend` on; the collector checks that again itself. Magic
+  packets go only to the broadcast address of a network the hub is on,
+  or to a `wake.via` address in the hub's own configuration
+  ([machines](machines.md#4-wake)).
 - Nothing leaves the hub except Web Push to subscribed devices, encrypted
   for the device: the push service sees only ciphertext.
 - The hub keeps the synced `~/.claude` as plain files: put its directory in

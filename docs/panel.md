@@ -206,13 +206,28 @@ redacted, as Claude Code sends it by default.
 
 ## 5. Machines, Claude state and Workspace
 
-**Machines** lists every host with a collector (its link and round trip,
-the sessions on it, its copy of Claude's state, its share of the workspace
-sync); a machine's page gathers what the other areas know about it: the
-sessions on it now, Claude's usage there over the range in the bar
-(sessions, working time, cost, lines, CPU, activity by state), its copy of
-Claude's state, and its workspace sync (units in step, what moved and what
-it cost in the range, the units not in step there, its large transfers).
+**Machines** shows the hub's own machine (uptime, CPU, temperature,
+memory, disks, system), then every node, that is every machine with a
+collector. A node's card has how it is doing (up, CPU, temperature,
+memory, battery), its link and round trip, the sessions on it, its copy
+of Claude's state, its share of the workspace sync, whether its screen is
+unlocked (with **Lock**), and **Wake** while it is down. A node's page
+starts with the machine itself:
+
+- tiles for uptime (with the time slept and the last resume), CPU,
+  memory, each disk and the battery
+- the OS, the kernel and whether a reboot is pending
+- its power: Lock, Suspend, Wake, Forget ([machines and power](machines.md))
+
+Then it gathers what the other areas know about the node:
+
+- the sessions on it now
+- Claude's usage there over the range in the bar (sessions, working time,
+  cost, lines, CPU, activity by state)
+- its copy of Claude's state
+- its workspace sync (units in step, what moved and what it cost in the
+  range, the units not in step there, its large transfers)
+
 Host names on the Now page and in the Workspace area open it.
 
 **Claude state** is each machine's copy of `~/.claude` (the [state

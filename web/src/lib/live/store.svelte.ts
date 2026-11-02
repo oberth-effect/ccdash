@@ -5,7 +5,15 @@
 import { browser } from '$app/env';
 import { SvelteMap } from 'svelte/reactivity';
 import { Unauthorized, api, getJson, token } from '../api/client';
-import type { HostStatus, Launch, RateLimits, Session, Snapshot, Update } from '../api/types';
+import type {
+	HostStatus,
+	HubStatus,
+	Launch,
+	RateLimits,
+	Session,
+	Snapshot,
+	Update
+} from '../api/types';
 
 const STALE_STREAM_MS = 45_000;
 
@@ -21,6 +29,8 @@ class Live {
 	rateLimits = $state<RateLimits | null>(null);
 	workspaces = $state<string[]>([]);
 	hosts = $state<HostStatus[]>([]);
+	/** The hub's own machine. */
+	hub = $state<HubStatus | null>(null);
 	conn = $state<{ kind: ConnKind; text: string }>({ kind: 'connecting', text: 'connecting' });
 	/** The token was rejected or is missing; the shell asks for one. */
 	needToken = $state(false);
@@ -162,6 +172,7 @@ class Live {
 		this.rateLimits = snapshot.rate_limits;
 		this.workspaces = snapshot.workspaces ?? [];
 		this.hosts = snapshot.hosts ?? [];
+		this.hub = snapshot.hub ?? null;
 		this.ready = true;
 	}
 
@@ -179,6 +190,9 @@ class Live {
 			case 'hosts':
 				this.hosts = update.hosts;
 				break;
+			case 'hub':
+				this.hub = update.hub;
+				break;
 			case 'notes':
 				this.notes = { workspace: update.workspace, n: this.notes.n + 1 };
 				break;
@@ -186,6 +200,13 @@ class Live {
 				this.launches.set(update.launch.id, update.launch);
 				break;
 		}
+	}
+
+	/** Puts a host status the API returned into the store. */
+	putHost(status: HostStatus) {
+		const i = this.hosts.findIndex((h) => h.name === status.name);
+		if (i < 0) this.hosts = [...this.hosts, status];
+		else this.hosts[i] = status;
 	}
 
 	/** Puts a session the API returned into the store. */

@@ -56,6 +56,9 @@ lines; the transcript format is never parsed.
 - Reads each session's git branch from `.git/HEAD` (worktrees included)
   without running git, and its process tree's CPU and memory (PSS) from
   `/proc` every 5 s.
+- Reports its machine every 30 s (uptime, CPU, memory, disks, battery,
+  its wired cards for wake-on-LAN) and reconnects at once after a long
+  sleep ([machines](machines.md)).
 - Carries out what the hub sends: replies, prompt answers, renames,
   sessions to start, stop or open, sync work.
 - Serves a local API (`$XDG_RUNTIME_DIR/ccdash/api.sock`) for the hooks, the
@@ -78,6 +81,8 @@ pending and, if so, ends the turn ([sessions](sessions.md#4-interrupt)).
   HTTP API under `/api/v1`, with server-sent events for live updates.
 - Sends Web Push for prompts and finished turns, with answer buttons.
 - Keeps the synced `~/.claude` files and the knowledge notes.
+- Keeps every node's last report across restarts, reads its own machine,
+  and sends wake-on-LAN magic packets ([machines](machines.md)).
 
 A conversation in the panel is rebuilt from hook events, so Claude's
 thinking is not part of it.
@@ -92,4 +97,5 @@ under `/sync/` with the collector's token; the workspace sync uses git
 smart HTTP under `/git/` with the same token (`git http-backend` behind
 the hub) and carries its configuration, unit states and conflict
 resolutions over the WebSocket (protocol 8). The collectors' skill reports
-came with protocol 11, the desktop's colours with protocol 12.
+came with protocol 11, the desktop's colours with protocol 12, the
+machine's report, lock and suspend with protocol 13.

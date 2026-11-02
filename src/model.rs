@@ -3,6 +3,8 @@
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
+use crate::machine::{MachineReport, Power, Wake};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export_to = "types.ts")]
 #[serde(rename_all = "snake_case")]
@@ -474,8 +476,9 @@ pub struct Claim {
     pub until: Option<i64>,
 }
 
-/// A machine whose collector reports to the hub.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+/// A machine whose collector reports to the hub. The hub keeps every one
+/// it has seen, across restarts, until the owner forgets it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export_to = "types.ts")]
 pub struct HostStatus {
     pub name: String,
@@ -488,6 +491,26 @@ pub struct HostStatus {
     /// The colours of the machine's desktop; kept while it is offline.
     #[serde(default)]
     pub palette: Option<Palette>,
+    /// What the machine last said about itself; kept while it is offline.
+    #[serde(default)]
+    pub machine: Option<MachineReport>,
+    /// Asleep (suspended from the panel) or waking; None otherwise.
+    #[serde(default)]
+    pub power: Option<Power>,
+    /// Whether and how the hub can wake the machine.
+    #[serde(default)]
+    pub wake: Option<Wake>,
+}
+
+/// The hub's own machine.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export_to = "types.ts")]
+pub struct HubStatus {
+    pub name: String,
+    /// When the hub process started.
+    pub started_at: i64,
+    #[serde(default)]
+    pub machine: Option<MachineReport>,
 }
 
 /// Colours generated from a machine's wallpaper, which a panel can follow.
@@ -543,6 +566,9 @@ pub struct Snapshot {
     pub hosts: Vec<HostStatus>,
     pub sessions: Vec<Session>,
     pub rate_limits: Option<RateLimits>,
+    /// The hub's own machine; None from a collector's mirror.
+    #[serde(default)]
+    pub hub: Option<HubStatus>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -561,6 +587,9 @@ pub enum Update {
     },
     Hosts {
         hosts: Vec<HostStatus>,
+    },
+    Hub {
+        hub: HubStatus,
     },
     /// Notes of `workspace` changed; the panel reloads what it shows.
     Notes {

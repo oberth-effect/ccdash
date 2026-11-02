@@ -8,6 +8,7 @@ import type {
 	Coverage,
 	HeldAction,
 	HistoryEntry,
+	HostStatus,
 	Preview,
 	Side,
 	WorkspaceConfig,
@@ -95,6 +96,21 @@ export const fetchLaunch = (id: string) =>
 /** `claude stop` (background) or SIGTERM (interactive) on the session's host. */
 export const stopSession = (id: string) =>
 	postJson<{ session: Session }>(`sessions/${encodeURIComponent(id)}/stop`, {});
+
+/** Suspends a machine whose collector allows it; `force` even while sessions there work. */
+export const suspendMachine = (host: string, force = false) =>
+	postJson<{ host: HostStatus }>(`machines/${encodeURIComponent(host)}/suspend`, { force });
+
+/** Locks the machine's graphical session (its collector must allow it). */
+export const lockMachine = (host: string) =>
+	postJson<{ host: HostStatus }>(`machines/${encodeURIComponent(host)}/lock`, {});
+
+/** Sends wake-on-LAN magic packets to an offline machine. */
+export const wakeMachine = (host: string) =>
+	postJson<{ host: HostStatus }>(`machines/${encodeURIComponent(host)}/wake`, {});
+
+/** Drops an offline machine from the hub's list until its collector connects again. */
+export const forgetMachine = (host: string) => del<object>(`machines/${encodeURIComponent(host)}`);
 
 /** Interrupts the turn: an open prompt is denied at once, else Claude stops at its next step. */
 export const interruptSession = (id: string) =>

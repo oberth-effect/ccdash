@@ -9,7 +9,11 @@ pub mod http;
 pub mod import;
 mod web;
 
-use std::{sync::Arc, time::Duration};
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::Duration,
+};
 
 use anyhow::{Context, Result};
 use tokio::{
@@ -22,6 +26,7 @@ use tracing::{info, warn};
 use crate::{
     config::HubConfig,
     hub::core::{Cmd, Hub, Notes},
+    machine::Sampler,
     notify::{self, Composer, Delays},
     push,
     store::Store,
@@ -30,6 +35,7 @@ use crate::{
 };
 
 const TICK: Duration = Duration::from_secs(15);
+const MACHINE_EVERY: Duration = Duration::from_secs(30);
 /// The lifecycle pass: once after start-up, then daily.
 const REFLECT_FIRST: Duration = Duration::from_secs(120);
 const REFLECT_EVERY: Duration = Duration::from_secs(24 * 3600);
@@ -90,6 +96,7 @@ async fn serve(cfg: Arc<HubConfig>) -> Result<()> {
         cfg.knowledge.clone(),
         cfg.store.tool_output_bytes,
         repos.clone(),
+        cfg.wake.via.clone(),
     );
     let git = repos.map(|repos| crate::workspace::hub::GitState {
         repos,
@@ -133,6 +140,9 @@ async fn serve(cfg: Arc<HubConfig>) -> Result<()> {
         ));
     }
     tokio::spawn(ticker(hub.sender()));
+    let mut disks = vec![PathBuf::from("/")];
+    disks.extend(cfg.store_path().parent().map(Path::to_path_buf));
+    tokio::spawn(machine(Sampler::new(disks), hub.sender()));
     if cfg.knowledge.reflect {
         tokio::spawn(reflector(hub.sender()));
     }
@@ -152,6 +162,26 @@ async fn ticker(tx: mpsc::Sender<Cmd>) {
     loop {
         ticker.tick().await;
         if tx.send(Cmd::Tick(now_ms())).await.is_err() {
+            return;
+        }
+    }
+}
+
+/// Reads the hub's own machine every `MACHINE_EVERY`.
+async fn machine(mut sampler: Sampler, tx: mpsc::Sender<Cmd>) {
+    let mut ticker = tokio::time::interval(MACHINE_EVERY);
+    loop {
+        ticker.tick().await;
+        let Ok((back, report)) = tokio::task::spawn_blocking(move || {
+            let report = sampler.read();
+            (sampler, report)
+        })
+        .await
+        else {
+            return;
+        };
+        sampler = back;
+        if tx.send(Cmd::HubMachine(Box::new(report))).await.is_err() {
             return;
         }
     }

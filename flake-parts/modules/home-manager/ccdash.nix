@@ -185,6 +185,23 @@ in
       '';
     };
 
+    power.lock = mkEnableOption ''
+      locking this machine's graphical session from the panel (Machines ›
+      the machine › Lock, also on its card while the session is unlocked).
+      The collector runs {option}`settings.power.lock_command`
+      (`loginctl lock-session` for the user's display session), which any
+      locker listening to logind answers, DankMaterialShell's included
+    '';
+
+    power.suspend = mkEnableOption ''
+      suspending this machine from the panel (Machines › the machine ›
+      Suspend). The collector hands the hub what is pending of Claude Code's
+      state, then runs {option}`settings.power.suspend_command`
+      (`systemctl suspend`), which logind allows the user of an active seat
+      session. Waking it again needs wake-on-LAN on a wired card and a hub
+      that reaches its network (see the hub's `wake.via`)
+    '';
+
     sync.enable = mkEnableOption ''
       keeping this machine's Claude Code state (sessions, rewind
       checkpoints, plans, tasks, pasted content, the prompt history) in step
@@ -430,6 +447,10 @@ in
           token_file = mkDefault cfg.hub.tokenFile;
         };
         sync.enable = mkDefault cfg.sync.enable;
+        power = {
+          suspend = mkDefault cfg.power.suspend;
+          lock = mkDefault cfg.power.lock;
+        };
         workspace = {
           enable = mkDefault cfg.workspace.enable;
           root = mkDefault cfg.workspace.root;

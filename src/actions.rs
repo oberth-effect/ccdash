@@ -26,6 +26,7 @@ use crate::{
 
 /// How long `claude --bg` and `claude stop` may take.
 const RUN_TIMEOUT: Duration = Duration::from_secs(60);
+const POWER_TIMEOUT: Duration = Duration::from_secs(15);
 /// Settings files of launches older than this are pruned at the next
 /// launch, unless their job is still listed: its saved options name the
 /// file, and Claude Code cannot restart the job without it.
@@ -458,6 +459,43 @@ pub async fn stop(
 }
 
 /// Runs `command` with `{id}` replaced, within `STOP_TIMEOUT`.
+/// Suspends this machine with `command` (`[power] suspend_command`), which
+/// returns once the sleep is on its way.
+///
+/// # Errors
+///
+/// What the command said when it refused (an inhibitor, logind's policy),
+/// or that it did not finish in time.
+pub async fn suspend(command: &[String]) -> Result<(), String> {
+    run_power(command, "suspend").await
+}
+
+/// Locks the user's graphical session `session` with `command` (`[power]
+/// lock_command`, `{session}` replaced).
+///
+/// # Errors
+///
+/// What the command said when it failed, or that it did not finish in time.
+pub async fn lock(command: &[String], session: &str) -> Result<(), String> {
+    let argv: Vec<String> = command
+        .iter()
+        .map(|a| a.replace("{session}", session))
+        .collect();
+    run_power(&argv, "lock").await
+}
+
+async fn run_power(command: &[String], what: &str) -> Result<(), String> {
+    let (program, args) = command
+        .split_first()
+        .ok_or_else(|| format!("no {what} command is configured"))?;
+    let output = run_within(Command::new(program).args(args), POWER_TIMEOUT).await?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(failure(&output))
+    }
+}
+
 async fn run_with(command: &[String], id: &str) -> Result<(), String> {
     let argv: Vec<String> = command.iter().map(|a| a.replace("{id}", id)).collect();
     let (program, args) = argv.split_first().ok_or("no command configured")?;

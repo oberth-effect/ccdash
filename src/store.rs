@@ -20,7 +20,7 @@ use tracing::warn;
 
 use crate::{
     agent_message, claims, knowledge, messages,
-    model::{Activity, Kind, Resolved, Session, Stamped, Turn},
+    model::{Activity, HostStatus, Kind, Resolved, Session, Stamped, Turn},
     paths, push,
     state::{PREVIEW_LEN, Restored, StoreMsg, apply_task},
     task_notification, tokens,
@@ -77,6 +77,10 @@ CREATE TABLE IF NOT EXISTS limit_samples (
     resets_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS limit_samples_ts ON limit_samples (ts);
+CREATE TABLE IF NOT EXISTS hosts (
+    name TEXT PRIMARY KEY,
+    status TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS sessions (
     id TEXT PRIMARY KEY,
     host TEXT NOT NULL,
@@ -128,6 +132,11 @@ ON CONFLICT (id) DO UPDATE SET
     branch = COALESCE(excluded.branch, branch),
     launched = MAX(COALESCE(launched, 0), excluded.launched),
     project = excluded.project
+";
+
+const UPSERT_HOST: &str = "
+INSERT INTO hosts (name, status) VALUES (?1, ?2)
+ON CONFLICT (name) DO UPDATE SET status = excluded.status
 ";
 
 const PRUNE_EVERY_MS: i64 = 3_600_000;
@@ -355,6 +364,12 @@ fn write_batch(conn: &mut Connection, batch: &[(String, StoreMsg)]) -> Result<()
                 )?;
             }
             StoreMsg::Claim { session, claim } => claims::save(&tx, session, claim.as_ref())?,
+            StoreMsg::Host(status) => {
+                tx.execute(UPSERT_HOST, params![host, serde_json::to_string(status)?])?;
+            }
+            StoreMsg::ForgetHost => {
+                tx.execute("DELETE FROM hosts WHERE name = ?1", [host])?;
+            }
         }
     }
     tx.commit()?;
@@ -536,6 +551,21 @@ fn kind_name(kind: Kind) -> &'static str {
 
 /// The background sessions of `host` that never ended: the jobs a hub
 /// restart must not lose while they sleep.
+/// Every host the hub has kept, as last saved.
+pub fn hosts(conn: &Connection) -> Result<Vec<HostStatus>> {
+    let mut stmt = conn.prepare("SELECT name, status FROM hosts ORDER BY name")?;
+    let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+    let mut out = Vec::new();
+    for row in rows {
+        let (name, json) = row?;
+        match serde_json::from_str::<HostStatus>(&json) {
+            Ok(status) => out.push(status),
+            Err(e) => warn!("stored host {name}: {e}"),
+        }
+    }
+    Ok(out)
+}
+
 pub fn open_background(conn: &Connection, host: &str) -> Result<HashSet<String>> {
     conn.prepare_cached(
         "SELECT id FROM sessions WHERE host = ?1 AND kind = 'background' AND ended_at IS NULL",

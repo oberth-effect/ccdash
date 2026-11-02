@@ -40,7 +40,8 @@ export function fmtBytes(bytes: number): string {
 	if (bytes < 1024) return `${bytes} B`;
 	if (bytes < 1024 ** 2) return `${(bytes / 1024).toFixed(0)} kB`;
 	if (bytes < 1024 ** 3) return `${(bytes / 1024 ** 2).toFixed(0)} MB`;
-	return `${(bytes / 1024 ** 3).toFixed(1)} GB`;
+	if (bytes < 1024 ** 4) return `${(bytes / 1024 ** 3).toFixed(1)} GB`;
+	return `${(bytes / 1024 ** 4).toFixed(1)} TB`;
 }
 
 export const known = <T>(v: T | null | undefined): v is T => v !== null && v !== undefined;
