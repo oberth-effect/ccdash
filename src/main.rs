@@ -28,6 +28,7 @@ mod paths;
 mod procs;
 mod protocol;
 mod push;
+mod report;
 mod state;
 mod store;
 mod sync;
@@ -149,6 +150,11 @@ enum Command {
         #[command(subcommand)]
         what: Workspace,
     },
+    /// HTML reports: build one in the shared design, publish one to the hub.
+    Report {
+        #[command(subcommand)]
+        what: Report,
+    },
     /// The hub's `pre-receive` hook (run by git, not by hand): a merge
     /// snapshot must build on the other hosts' current tips.
     #[command(hide = true)]
@@ -225,6 +231,58 @@ enum Import {
     },
 }
 
+#[derive(Subcommand)]
+enum Report {
+    /// Wrap an HTML body fragment (sections under h2/h3 headings, tables,
+    /// figures, tiles) in the report chrome the `ccdash:report` skill
+    /// describes: top bar, contents, theme switch, numbered headings.
+    /// Headings get ids. Refuses a body that fetches anything from the
+    /// network.
+    Build {
+        /// The body fragment (`-` reads stdin).
+        body: PathBuf,
+        /// The report's title.
+        #[arg(long)]
+        title: String,
+        /// The date shown (default: today, YYYY-MM-DD).
+        #[arg(long)]
+        date: Option<String>,
+        /// Where the report goes.
+        #[arg(short, long)]
+        output: PathBuf,
+    },
+    /// Publish a report to the hub through this machine's collector: the
+    /// hub keeps the file, the panel shows it, and a `report` note with
+    /// the abstract joins the workspace's knowledge (the workspace is the
+    /// current directory's).
+    Publish {
+        /// The report (built with `build`).
+        file: PathBuf,
+        /// Title (default: the file's <title>).
+        #[arg(long)]
+        title: Option<String>,
+        /// The note's slug (default: from the title).
+        #[arg(long)]
+        slug: Option<String>,
+        /// One line for lists.
+        #[arg(long)]
+        summary: Option<String>,
+        /// The abstract, markdown.
+        #[arg(
+            long,
+            conflicts_with = "body_file",
+            required_unless_present = "body_file"
+        )]
+        body: Option<String>,
+        /// The abstract, read from a markdown file.
+        #[arg(long)]
+        body_file: Option<PathBuf>,
+        /// The project (a repo directory name; default: the directory's).
+        #[arg(long)]
+        project: Option<String>,
+    },
+}
+
 fn main() -> ExitCode {
     let cli = Cli::parse();
     let result = match cli.command {
@@ -289,6 +347,42 @@ fn main() -> ExitCode {
                 client::workspace("adopt", unit.as_deref(), prefer.as_deref(), false)
             }
         },
+        Command::Report { what } => match what {
+            Report::Build {
+                body,
+                title,
+                date,
+                output,
+            } => report_build(&body, &title, date.as_deref(), &output),
+            Report::Publish {
+                file,
+                title,
+                slug,
+                summary,
+                body,
+                body_file,
+                project,
+            } => std::path::absolute(&file)
+                .map_err(Into::into)
+                .and_then(|file| {
+                    let body = match body_file {
+                        Some(path) => std::fs::read_to_string(&path)
+                            .with_context(|| format!("reading {}", path.display()))?,
+                        None => body.unwrap_or_default(),
+                    };
+                    client::tool(
+                        collector::reports::TOOL,
+                        serde_json::json!({
+                            "path": file,
+                            "title": title,
+                            "slug": slug,
+                            "summary": summary,
+                            "body": body,
+                            "project": project,
+                        }),
+                    )
+                }),
+        },
         Command::PreReceive => return exit(workspace::hub::pre_receive()),
         Command::Export { config, db, dir } => export(config, db, &dir),
     };
@@ -348,17 +442,59 @@ fn print_url(config: Option<PathBuf>, hub: bool, qr: bool, label: &str) -> Resul
 }
 
 fn export(config: Option<PathBuf>, db: Option<PathBuf>, dir: &Path) -> Result<()> {
-    let path = match db {
-        Some(db) => db,
-        None => config::load::<HubConfig>(config)?.store_path(),
-    };
+    let cfg = config::load::<HubConfig>(config)?;
+    let path = db.unwrap_or_else(|| cfg.store_path());
     let conn = rusqlite::Connection::open_with_flags(
         &path,
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )
     .with_context(|| format!("opening {}", path.display()))?;
-    let n = knowledge::export(&conn, dir)?;
+    let reports = cfg.reports_dir();
+    let n = knowledge::export(&conn, dir, reports.is_dir().then_some(reports.as_path()))?;
     println!("{n} notes written under {}", dir.display());
+    Ok(())
+}
+
+/// `ccdash report build`: the chrome around a body fragment.
+fn report_build(body: &Path, title: &str, date: Option<&str>, output: &Path) -> Result<()> {
+    let fragment = if body == Path::new("-") {
+        std::io::read_to_string(std::io::stdin())?
+    } else {
+        std::fs::read_to_string(body).with_context(|| format!("reading {}", body.display()))?
+    };
+    let today = knowledge::ymd(util::now_ms());
+    let html = report::build(
+        &report::Meta {
+            title,
+            date: date.unwrap_or(&today),
+        },
+        &fragment,
+    );
+    let problems = report::check(&html);
+    for p in problems.iter().filter(|p| !p.fatal) {
+        eprintln!("warning: {}", p.text);
+    }
+    let fatal: Vec<&str> = problems
+        .iter()
+        .filter(|p| p.fatal)
+        .map(|p| p.text.as_str())
+        .collect();
+    if !fatal.is_empty() {
+        anyhow::bail!(
+            "the report would not be self-contained:\n- {}",
+            fatal.join("\n- ")
+        );
+    }
+    if let Some(dir) = output.parent().filter(|d| !d.as_os_str().is_empty()) {
+        std::fs::create_dir_all(dir)?;
+    }
+    std::fs::write(output, &html).with_context(|| format!("writing {}", output.display()))?;
+    println!(
+        "wrote {} ({} KB, {} sections)",
+        output.display(),
+        html.len().div_ceil(1024),
+        report::sections(&html).len()
+    );
     Ok(())
 }
 

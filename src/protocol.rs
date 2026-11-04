@@ -43,7 +43,7 @@ use crate::{
 /// `Stop`, `Open` down; `Launched`, `Stopped` up), `branch` and `launched`
 /// on sessions, `branch` on agents entries and envelopes, `launch` on
 /// envelopes.
-pub const VERSION: u32 = 13;
+pub const VERSION: u32 = 14;
 
 /// Collector → hub.
 #[derive(Debug, Clone, Serialize, Deserialize)]

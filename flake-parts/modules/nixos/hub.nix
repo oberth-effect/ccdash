@@ -5,7 +5,9 @@
 # sends Web Push notifications (the VAPID key pair is generated into the
 # state directory on first start). Collectors (the home-manager module)
 # connect to its `/collect`, `/sync/` and `/git/` endpoints, each with its
-# own token.
+# own token. Reports sessions publish (`report_publish`) are kept as plain
+# files under `reports.directory` and served to the panel in a sandboxed
+# frame.
 { localFlake }:
 {
   config,
@@ -129,6 +131,28 @@ in
       '';
     };
 
+    reports = {
+      directory = mkOption {
+        type = types.str;
+        default = "${stateDir}/reports";
+        description = ''
+          Where the hub keeps the HTML reports sessions publish, as plain
+          files (`<workspace>/<slug>.html`), outside the database and its
+          nightly copies ({option}`backup`): put it in a file-level backup
+          of its own.
+        '';
+      };
+
+      maxMb = mkOption {
+        type = types.ints.positive;
+        default = 32;
+        description = ''
+          The largest report taken, in MiB; also sizes nginx's body limit
+          on `/reports/`.
+        '';
+      };
+    };
+
     workspace = {
       enable = mkEnableOption ''
         the workspace sync: every collector's workspace root (its
@@ -188,6 +212,8 @@ in
         push.key_file = mkDefault "${stateDir}/vapid.p8";
         sync.dir = mkDefault cfg.sync.directory;
         workspace.enable = mkDefault cfg.workspace.enable;
+        reports.dir = mkDefault cfg.reports.directory;
+        reports.max_mb = mkDefault cfg.reports.maxMb;
       };
 
       users.users.ccdash = {
@@ -214,9 +240,9 @@ in
           Group = "ccdash";
           StateDirectory = "ccdash-hub";
           StateDirectoryMode = "0700";
-          ReadWritePaths = mkIf (!lib.hasPrefix "${stateDir}/" cfg.sync.directory) [
-            cfg.sync.directory
-          ];
+          ReadWritePaths =
+            lib.optional (!lib.hasPrefix "${stateDir}/" cfg.sync.directory) cfg.sync.directory
+            ++ lib.optional (!lib.hasPrefix "${stateDir}/" cfg.reports.directory) cfg.reports.directory;
           Restart = "on-failure";
           RestartSec = 2;
           # hardening
@@ -258,6 +284,16 @@ in
           proxyPass = "http://${proxyEndpoint}";
           extraConfig = ''
             client_max_body_size 16m;
+            proxy_request_buffering off;
+            proxy_read_timeout 5m;
+            proxy_send_timeout 5m;
+          '';
+        };
+        # NOTE: a report arrives as one JSON body around its HTML
+        "/reports/" = {
+          proxyPass = "http://${proxyEndpoint}";
+          extraConfig = ''
+            client_max_body_size ${toString (cfg.reports.maxMb * 2 + 1)}m;
             proxy_request_buffering off;
             proxy_read_timeout 5m;
             proxy_send_timeout 5m;

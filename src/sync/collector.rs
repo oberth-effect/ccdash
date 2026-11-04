@@ -1572,10 +1572,7 @@ struct Client {
 
 impl Client {
     fn new(base: String, token_file: PathBuf) -> Self {
-        let config = ureq::Agent::config_builder()
-            .timeout_global(Some(Duration::from_secs(120)))
-            .http_status_as_error(false)
-            .build();
+        let config = hub_http_config(Duration::from_secs(120));
         let agent =
             ureq::Agent::with_parts(config, DefaultConnector::new(), CachedResolver::default());
         Self {
@@ -1910,6 +1907,38 @@ impl Index {
         tx.commit()?;
         Ok(())
     }
+}
+
+/// How the collector's HTTP calls to the hub are made: no error on a
+/// status (the caller reads it), and the roots `SSL_CERT_FILE` names when
+/// it is set, as the WebSocket link and git honour it (a hub behind a
+/// private CA, the development set-up); else the built-in roots.
+pub fn hub_http_config(timeout: Duration) -> ureq::config::Config {
+    let mut builder = ureq::Agent::config_builder()
+        .timeout_global(Some(timeout))
+        .http_status_as_error(false);
+    if let Some(roots) = env_roots() {
+        builder = builder.tls_config(
+            ureq::tls::TlsConfig::builder()
+                .root_certs(ureq::tls::RootCerts::new_with_certs(&roots))
+                .build(),
+        );
+    }
+    builder.build()
+}
+
+/// The certificates of `$SSL_CERT_FILE`, when the variable names a
+/// readable PEM file with at least one.
+fn env_roots() -> Option<Vec<ureq::tls::Certificate<'static>>> {
+    let path = std::env::var_os("SSL_CERT_FILE")?;
+    let pem = fs::read(&path).ok()?;
+    let certs: Vec<_> = ureq::tls::parse_pem(&pem)
+        .filter_map(|item| match item {
+            Ok(ureq::tls::PemItem::Certificate(c)) => Some(c),
+            _ => None,
+        })
+        .collect();
+    (!certs.is_empty()).then_some(certs)
 }
 
 /// The hub's base URL from the collector's `/collect` WebSocket URL.

@@ -12,6 +12,7 @@
 	import { live } from '#lib/live/store.svelte.js';
 	import { areas } from '#lib/nav.js';
 	import { notePanel } from '#lib/notepanel.svelte.js';
+	import { reportHref } from '#lib/notes.js';
 	import { NoteSearch } from '#lib/notesearch.svelte.js';
 	import { palette } from '#lib/palette.svelte.js';
 	import { scope } from '#lib/scope.svelte.js';
@@ -53,6 +54,7 @@
 		const onNote = palette.onNote;
 		palette.close();
 		if (onNote) onNote(hit);
+		else if (hit.kind === 'report') goto(reportHref(hit.workspace, hit.slug));
 		else notePanel.show(hit.workspace, hit.slug);
 	}
 

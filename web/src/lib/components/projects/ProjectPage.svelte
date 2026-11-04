@@ -23,8 +23,9 @@
 	import MemoriesTab from './MemoriesTab.svelte';
 	import NowTab from './NowTab.svelte';
 	import ProgressTab from './ProgressTab.svelte';
+	import ReportsTab from './ReportsTab.svelte';
 
-	const TABS = ['board', 'now', 'progress', 'docs', 'memories', 'graph'] as const;
+	const TABS = ['board', 'now', 'progress', 'docs', 'reports', 'memories', 'graph'] as const;
 
 	let { ws, project }: { ws: string; project: string | null } = $props();
 
@@ -63,6 +64,11 @@
 			.flatMap((p) => p.docs)
 			.sort((a: Doc, b: Doc) => Number(b.hot) - Number(a.hot) || b.updated_at - a.updated_at)
 	);
+	const reports = $derived(
+		parts
+			.flatMap((p) => p.reports)
+			.sort((a: Doc, b: Doc) => Number(b.hot) - Number(a.hot) || b.updated_at - a.updated_at)
+	);
 	const progress = $derived(
 		parts.flatMap((p) => p.progress).sort((a: Entry, b: Entry) => b.logged_at - a.logged_at)
 	);
@@ -82,7 +88,8 @@
 			plural(issues.length, 'open issue'),
 			inProgress ? `${inProgress} in progress` : null,
 			plural(memories.length, 'memory', 'memories'),
-			plural(docs.length, 'doc')
+			plural(docs.length, 'doc'),
+			reports.length ? plural(reports.length, 'report') : null
 		].filter(Boolean)
 	);
 </script>
@@ -170,6 +177,7 @@
 					<Tabs.Trigger value="now">Now</Tabs.Trigger>
 					<Tabs.Trigger value="progress">Progress</Tabs.Trigger>
 					<Tabs.Trigger value="docs">Docs</Tabs.Trigger>
+					<Tabs.Trigger value="reports">Reports</Tabs.Trigger>
 					<Tabs.Trigger value="memories">Memories</Tabs.Trigger>
 					<Tabs.Trigger value="graph">Graph</Tabs.Trigger>
 				</Tabs.List>
@@ -198,6 +206,9 @@
 				</Tabs.Content>
 				<Tabs.Content value="docs">
 					{#if tab === 'docs'}<DocsTab {ws} {docs} showProject={project === null} />{/if}
+				</Tabs.Content>
+				<Tabs.Content value="reports">
+					{#if tab === 'reports'}<ReportsTab {reports} showProject={project === null} />{/if}
 				</Tabs.Content>
 				<Tabs.Content value="memories">
 					{#if tab === 'memories'}<MemoriesTab

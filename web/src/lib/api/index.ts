@@ -275,6 +275,17 @@ export const putNote = (ws: string, slug: string, body: PutNote) =>
 	putJson<{ note: Note }>(notePath(ws, slug), body);
 
 /** A tool operation (verify, issue_update, …) on the note. */
+const reportPath = (ws: string, slug: string) =>
+	`reports/${encodeURIComponent(ws)}/${encodeURIComponent(slug)}`;
+
+/** A link the panel frames the report through (`/reports/-/view/…`), good for an hour. */
+export const mintReportView = (ws: string, slug: string) =>
+	postJson<{ url: string; expires_at: number }>(`${reportPath(ws, slug)}/view`, {});
+
+/** The report's HTML, to keep or send on. */
+export const fetchReportFile = async (ws: string, slug: string): Promise<Blob> =>
+	(await api(`${reportPath(ws, slug)}/file`)).blob();
+
 export const noteOp = (ws: string, slug: string, op: NoteOp) =>
 	postJson<{ written: Written }>(`${notePath(ws, slug)}/op`, op);
 

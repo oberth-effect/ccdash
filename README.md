@@ -44,6 +44,9 @@ and notes in step across machines.
 - **Remember:** memories, issues, progress and documents shared by every
   session of a workspace, through tools like `recall` and `remember`.
   ([knowledge](docs/knowledge.md))
+- **Keep the reports** sessions make: one self-contained HTML file in a
+  shared design, published to the hub, read in the panel, searched like a
+  note, downloaded to send on. ([reports](docs/reports.md))
 - **Look back:** history lanes and analytics (waits, limits, turns,
   tokens, permissions). ([panel](docs/panel.md#4-history-and-analytics))
 - **Machines:** uptime, CPU, temperature, memory, disks and battery of
@@ -151,7 +154,8 @@ In the panel:
 | ------------ | -------------------------------------------------------------------------------------------------------------------------------------------- |
 | Now          | the page to leave open: what needs you, with the answer inline; what each session is doing; limits, machines, progress                       |
 | Sessions     | every session; its page has the chat, the shell and the details                                                                              |
-| Projects     | each project's board, sessions, progress, documents, memories, graph                                                                         |
+| Projects     | each project's board, sessions, progress, documents, reports, memories, graph                                                                |
+| Reports      | every published report, newest first; a report's page frames it with its abstract, Download and Open in a tab                                |
 | History      | sessions over time as lanes, time per project, tools, the 5-hour limit                                                                       |
 | Analytics    | waits, parallel work, limits, turns, context, tokens, permissions                                                                            |
 | Machines     | every machine: its link, sessions, Claude state and workspace sync                                                                           |
@@ -204,6 +208,7 @@ the real one): [development](docs/development.md).
 | [state sync](docs/state-sync.md)                               | `~/.claude` on every machine, the one-machine rule, conflicts |
 | [workspace](docs/workspace.md)                                 | the workspace root on every machine: units, snapshots, merges |
 | [knowledge](docs/knowledge.md)                                 | notes, tools, injections, import and export                   |
+| [reports](docs/reports.md)                                     | HTML reports: the skill, publishing, the viewer, storage      |
 | [machines](docs/machines.md)                                   | uptime and basic numbers, lock, suspend, wake-on-LAN          |
 | [security](docs/security.md)                                   | tokens, devices, what can reach the hub                       |
 | [data](docs/data.md)                                           | what is stored where, retention, backups                      |

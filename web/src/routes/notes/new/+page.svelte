@@ -10,8 +10,10 @@
 
 	const q = $derived(page.url.searchParams);
 	const ws = $derived(q.get('ws') || scope.current.ws[0] || live.workspaces[0] || '');
+	// NOTE: a report is published from a file, never written here
 	const kind = $derived(
-		(KINDS.find((k) => k === q.get('kind')) ?? 'memory') as Exclude<NoteKind, 'progress'>
+		(KINDS.find((k) => k === q.get('kind') && k !== 'report' && k !== 'progress') ??
+			'memory') as Exclude<NoteKind, 'progress' | 'report'>
 	);
 	const project = $derived(q.get('project'));
 </script>

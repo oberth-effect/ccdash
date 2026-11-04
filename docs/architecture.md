@@ -25,6 +25,7 @@ niri window events ────────────────┘      └�
 | `ccdash collector`          | a user service per machine              | forwards to the hub, carries out what comes back, syncs `~/.claude`        |
 | `ccdash hub`                | a system service, one per setup         | keeps live state and history, serves the panel and the API, sends Web Push |
 | `ccdash channel`            | an MCP server per session               | delivers replies from the panel; exposes the knowledge tools               |
+| `ccdash report`             | the CLI                                 | builds a report in the shared chrome; publishes one through the collector  |
 | DMS plugin                  | in DankMaterialShell                    | this machine's sessions in the bar and the dash                            |
 
 ## 2. What Claude Code interfaces are used
@@ -98,4 +99,5 @@ smart HTTP under `/git/` with the same token (`git http-backend` behind
 the hub) and carries its configuration, unit states and conflict
 resolutions over the WebSocket (protocol 8). The collectors' skill reports
 came with protocol 11, the desktop's colours with protocol 12, the
-machine's report, lock and suspend with protocol 13.
+machine's report, lock and suspend with protocol 13, the `report` note
+kind with protocol 14.

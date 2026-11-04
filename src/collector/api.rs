@@ -191,7 +191,7 @@ async fn handle(
             }
             Ok(Request::Channel { pid }) => return channel(lines, write, local, pid).await,
             Ok(Request::Ask { envelope }) => return ask(lines, write, local, envelope).await,
-            Ok(Request::Tool { name, args, who }) => tool(&local, &name, &args, who).await?,
+            Ok(Request::Tool { name, args, who }) => tool(&local, &cfg, &name, &args, who).await?,
             Ok(Request::Inject { envelope }) => {
                 if tool_hook(&envelope.payload)
                     && let Some(session) = envelope.payload["session_id"].as_str()
@@ -311,8 +311,19 @@ fn done(result: Result<Reply, String>, message: &str) -> Value {
 }
 
 /// Runs a knowledge tool: on the hub when the link is up, else writes are
-/// queued and reads come from the cache.
-async fn tool(local: &Local, name: &str, args: &Value, who: Who) -> Result<Value> {
+/// queued and reads come from the cache. `report_publish` is carried out
+/// here (the file is on this machine) and never queued.
+async fn tool(
+    local: &Local,
+    cfg: &CollectorConfig,
+    name: &str,
+    args: &Value,
+    who: Who,
+) -> Result<Value> {
+    if name == super::reports::TOOL {
+        let (ok, text) = super::reports::publish(cfg, who, args).await;
+        return Ok(tool_reply(ok, text));
+    }
     let call = match tools::call(name, args, who.clone()) {
         Ok(call) => call,
         Err(e) => return Ok(tool_reply(false, format!("{e:#}"))),

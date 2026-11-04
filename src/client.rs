@@ -31,6 +31,25 @@ fn request(request: &Value) -> Result<Value> {
     Ok(reply)
 }
 
+/// Runs a knowledge tool through the collector, as a session in the
+/// current directory would, and prints what it answers.
+pub fn tool(name: &str, args: Value) -> Result<()> {
+    let cwd = std::env::current_dir()?;
+    let reply = request(&json!({
+        "cmd": "tool",
+        "name": name,
+        "args": args,
+        "pid": std::process::id(),
+        "cwd": cwd,
+    }))?;
+    let text = reply["text"].as_str().unwrap_or_default();
+    if reply["ok"] != true {
+        bail!("{text}");
+    }
+    println!("{text}");
+    Ok(())
+}
+
 /// Sends `notes` to the hub for the workspace holding `source`.
 pub fn import(source: &std::path::Path, notes: Vec<Upsert>) -> Result<()> {
     if notes.is_empty() {

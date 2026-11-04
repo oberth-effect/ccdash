@@ -936,7 +936,7 @@ summary: string | null, status: Status, stale_reason: string | null, version: nu
  */
 extra: Record<string, unknown>, body: string, };
 
-export type NoteKind = "memory" | "issue" | "progress" | "doc";
+export type NoteKind = "memory" | "issue" | "progress" | "doc" | "report";
 
 /**
  * What a session asks of the knowledge layer; the write half is durable
@@ -1090,6 +1090,10 @@ closed: Array<Issue>,
  * Hot documents first, then by update.
  */
 docs: Array<Doc>, 
+/**
+ * Reports, newest first (`hot` as for documents).
+ */
+reports: Array<Doc>, 
 /**
  * Newest first.
  */

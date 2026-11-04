@@ -7,6 +7,7 @@ pub mod collect;
 pub mod core;
 pub mod http;
 pub mod import;
+pub mod reports;
 mod web;
 
 use std::{
@@ -116,6 +117,10 @@ async fn serve(cfg: Arc<HubConfig>) -> Result<()> {
         "keeping Claude Code's state in {}",
         cfg.sync_dir().display()
     );
+    let reports = Arc::new(
+        reports::Reports::open(&cfg.reports_dir(), cfg.reports.max_mb).context("reports")?,
+    );
+    info!("keeping reports in {}", cfg.reports_dir().display());
     let tokens = collect::Tokens::new(cfg.collect.tokens.clone());
     if cfg.collect.tokens.is_empty() {
         info!("no collector tokens configured: nothing will report");
@@ -137,6 +142,7 @@ async fn serve(cfg: Arc<HubConfig>) -> Result<()> {
             web_dir.clone(),
             sync.clone(),
             git.clone(),
+            reports.clone(),
         ));
     }
     tokio::spawn(ticker(hub.sender()));

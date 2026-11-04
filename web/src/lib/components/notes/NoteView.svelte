@@ -3,16 +3,17 @@
 	// the actions (edit, verify, close or reopen, archive); the editor
 	// takes its place inline. Reloads when the note changes on the hub.
 	import { untrack } from 'svelte';
+	import FileChartColumnIcon from '@lucide/svelte/icons/file-chart-column';
 	import PencilIcon from '@lucide/svelte/icons/pencil';
 	import type { LinkRef } from '#lib/api/types.js';
 	import { Unauthorized } from '#lib/api/client.js';
 	import { fetchNote, noteOp, putNote, type NotePage } from '#lib/api/index.js';
 	import { Button } from '#lib/components/ui/button/index.js';
 	import Prose from '#lib/components/session/Prose.svelte';
-	import { fmtDate, fmtStamp, plural } from '#lib/format.js';
+	import { fmtBytes, fmtDate, fmtStamp, plural } from '#lib/format.js';
 	import { live } from '#lib/live/store.svelte.js';
 	import { notePanel } from '#lib/notepanel.svelte.js';
-	import { priorityOf, projectHref } from '#lib/notes.js';
+	import { priorityOf, projectHref, reportHref } from '#lib/notes.js';
 	import WorkOnIssue from '#lib/components/projects/WorkOnIssue.svelte';
 	import KindBadge from './KindBadge.svelte';
 	import NoteEditor from './NoteEditor.svelte';
@@ -128,6 +129,8 @@
 			v.verified_at ? `verified ${fmtDate(v.verified_at)}` : null,
 			v.kind === 'memory' ? plural(v.recalls, 'recall') : null,
 			v.kind === 'issue' ? `priority ${priorityOf(v)}` : null,
+			v.kind === 'report' && typeof v.extra.bytes === 'number' ? fmtBytes(v.extra.bytes) : null,
+			v.kind === 'report' && typeof v.extra.host === 'string' ? `from ${v.extra.host}` : null,
 			v.created_by ? `by ${v.created_by.slice(0, 8)}` : null
 		].filter((x): x is string => Boolean(x));
 	});
@@ -213,6 +216,11 @@
 			{@render refs('Links', v.links)}
 			{@render refs('Backlinks', v.backlinks)}
 			<footer class="flex flex-wrap items-center gap-2 border-t pt-3">
+				{#if v.kind === 'report'}
+					<Button size="sm" href={reportHref(ws, slug)} onclick={() => notePanel.close()}>
+						<FileChartColumnIcon /> Open the report
+					</Button>
+				{/if}
 				<Button size="sm" variant="outline" onclick={() => (editing = true)} disabled={busy}>
 					<PencilIcon /> Edit
 				</Button>

@@ -50,6 +50,8 @@ pub struct Project {
     pub closed: Vec<Issue>,
     /// Hot documents first, then by update.
     pub docs: Vec<Doc>,
+    /// Reports, newest first (`hot` as for documents).
+    pub reports: Vec<Doc>,
     /// Newest first.
     pub progress: Vec<Entry>,
     /// Active memories first, then the flagged ones; by recalls within.
@@ -275,6 +277,15 @@ pub fn build(
                     .cmp(&a.hot)
                     .then(b.card.updated_at.cmp(&a.card.updated_at))
             });
+            let mut reports: Vec<Doc> = of(NoteKind::Report)
+                .into_iter()
+                .map(|n| Doc {
+                    hot: n.updated_at >= now - HOT_MS
+                        || n.recalled_at.is_some_and(|t| t >= now - HOT_MS),
+                    card: n.card(),
+                })
+                .collect();
+            reports.sort_by_key(|d| std::cmp::Reverse(d.card.updated_at));
             let mut progress: Vec<&Note> = of(NoteKind::Progress);
             progress.sort_by_key(|n| std::cmp::Reverse(n.created_at));
             let mut memories: Vec<&Note> = of(NoteKind::Memory);
@@ -289,6 +300,7 @@ pub fn build(
                 issues,
                 closed: done,
                 docs,
+                reports,
                 progress: progress
                     .into_iter()
                     .take(PROGRESS_PER_PROJECT)

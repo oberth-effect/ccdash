@@ -14,19 +14,21 @@ cover the common keys, `settings` takes the rest. In paths, `$VAR` and
 
 `services.ccdash-hub.*`
 
-| Option                                                 | Default                      | Meaning                                                        |
-| ------------------------------------------------------ | ---------------------------- | -------------------------------------------------------------- |
-| `enable`                                               | `false`                      | run the hub                                                    |
-| `tokenFile`                                            | —                            | the bootstrap token of the panel and the API                   |
-| `collectors`                                           | `{ }`                        | host name → file with that machine's collector token           |
-| `port`                                                 | `7837`                       | loopback port; nginx or another TLS proxy goes in front        |
-| `nginx.enable`, `nginx.domain`                         | `false`, —                   | a vhost proxying to the hub (WebSockets, SSE, `/sync/` bodies) |
-| `backup.enable`                                        | `false`                      | a nightly checked copy of the database                         |
-| `backup.directory`, `backup.keep`, `backup.onCalendar` | `…/backups`, `7`, `03:30`    | where, how many, when                                          |
-| `sync.directory`                                       | `/var/lib/ccdash-hub/claude` | the synced `~/.claude` files                                   |
-| `workspace.enable`                                     | `false`                      | the workspace sync: bare repositories, `/git/`, git, the gc    |
-| `workspace.gcOnCalendar`                               | `03:30`                      | when `git gc` runs over the repositories                       |
-| `settings`                                             | `{ }`                        | any key of the hub's TOML                                      |
+| Option                                                 | Default                       | Meaning                                                        |
+| ------------------------------------------------------ | ----------------------------- | -------------------------------------------------------------- |
+| `enable`                                               | `false`                       | run the hub                                                    |
+| `tokenFile`                                            | —                             | the bootstrap token of the panel and the API                   |
+| `collectors`                                           | `{ }`                         | host name → file with that machine's collector token           |
+| `port`                                                 | `7837`                        | loopback port; nginx or another TLS proxy goes in front        |
+| `nginx.enable`, `nginx.domain`                         | `false`, —                    | a vhost proxying to the hub (WebSockets, SSE, `/sync/` bodies) |
+| `backup.enable`                                        | `false`                       | a nightly checked copy of the database                         |
+| `backup.directory`, `backup.keep`, `backup.onCalendar` | `…/backups`, `7`, `03:30`     | where, how many, when                                          |
+| `sync.directory`                                       | `/var/lib/ccdash-hub/claude`  | the synced `~/.claude` files                                   |
+| `workspace.enable`                                     | `false`                       | the workspace sync: bare repositories, `/git/`, git, the gc    |
+| `workspace.gcOnCalendar`                               | `03:30`                       | when `git gc` runs over the repositories                       |
+| `reports.directory`                                    | `/var/lib/ccdash-hub/reports` | the published reports' HTML files ([reports](reports.md))      |
+| `reports.maxMb`                                        | `32`                          | the largest report taken; sizes nginx's body limit too         |
+| `settings`                                             | `{ }`                         | any key of the hub's TOML                                      |
 
 `programs.ccdash.channel.allow` (the default NixOS module) allowlists the
 channel plugin in Claude Code's managed settings.
@@ -60,29 +62,31 @@ channel plugin in Claude Code's managed settings.
 
 ## 3. Hub keys
 
-| Key                                                         | Default                        | Meaning                                                                                  |
-| ----------------------------------------------------------- | ------------------------------ | ---------------------------------------------------------------------------------------- |
-| `host`                                                      | the kernel's host name         | the name the panel shows for the hub                                                     |
-| `http.listen`                                               | `["127.0.0.1:7837"]`           | addresses of the API and the panel                                                       |
-| `http.token_file`                                           | generated in the state dir     | the bootstrap token                                                                      |
-| `http.public_url`                                           | LAN address and first port     | where phones open the panel (links, pairing)                                             |
-| `http.web_dir`                                              | the built panel                | the panel's files                                                                        |
-| `collect.tokens`                                            | `{}`                           | host name → collector token file                                                         |
-| `store.path`                                                | `<state dir>/ccdash.db`        | the database                                                                             |
-| `store.retention_days`                                      | `30`                           | history kept                                                                             |
-| `store.tool_output_bytes`                                   | `8192`                         | Bash output kept per call (0 keeps none)                                                 |
-| `workspaces.dirs`                                           | `[]`                           | top-level directories the panel scopes by                                                |
-| `notify.delay_secs`, `.focused_delay_secs`                  | `15`, `120`                    | how long a prompt waits before it notifies                                               |
-| `notify.permissions`, `.questions`, `.plans`, `.turns`      | `true`                         | what notifies                                                                            |
-| `notify.workspaces`                                         | `[]` (all)                     | only these workspaces notify                                                             |
-| `notify.web_url`                                            | `http.public_url`              | where notification taps lead                                                             |
-| `push.enabled`                                              | `true`                         | Web Push                                                                                 |
-| `push.subject`, `.ttl_secs`, `.key_file`                    | public URL, `3600`, state dir  | VAPID contact, message lifetime, key pair                                                |
-| `knowledge.reflect`                                         | `true`                         | the daily staleness pass                                                                 |
-| `knowledge.stale_unverified_days`, `.stale_unrecalled_days` | `90`, `60`                     | when memories turn stale                                                                 |
-| `sync.dir`                                                  | `claude/` next to the database | the synced files                                                                         |
-| `workspace.enable`                                          | `false`                        | the workspace sync (repositories under `sync.dir/workspace`)                             |
-| `wake.via.<host>`                                           | —                              | where magic packets go for a machine on another network ([machines](machines.md#4-wake)) |
+| Key                                                         | Default                         | Meaning                                                                                  |
+| ----------------------------------------------------------- | ------------------------------- | ---------------------------------------------------------------------------------------- |
+| `host`                                                      | the kernel's host name          | the name the panel shows for the hub                                                     |
+| `http.listen`                                               | `["127.0.0.1:7837"]`            | addresses of the API and the panel                                                       |
+| `http.token_file`                                           | generated in the state dir      | the bootstrap token                                                                      |
+| `http.public_url`                                           | LAN address and first port      | where phones open the panel (links, pairing)                                             |
+| `http.web_dir`                                              | the built panel                 | the panel's files                                                                        |
+| `collect.tokens`                                            | `{}`                            | host name → collector token file                                                         |
+| `store.path`                                                | `<state dir>/ccdash.db`         | the database                                                                             |
+| `store.retention_days`                                      | `30`                            | history kept                                                                             |
+| `store.tool_output_bytes`                                   | `8192`                          | Bash output kept per call (0 keeps none)                                                 |
+| `workspaces.dirs`                                           | `[]`                            | top-level directories the panel scopes by                                                |
+| `notify.delay_secs`, `.focused_delay_secs`                  | `15`, `120`                     | how long a prompt waits before it notifies                                               |
+| `notify.permissions`, `.questions`, `.plans`, `.turns`      | `true`                          | what notifies                                                                            |
+| `notify.workspaces`                                         | `[]` (all)                      | only these workspaces notify                                                             |
+| `notify.web_url`                                            | `http.public_url`               | where notification taps lead                                                             |
+| `push.enabled`                                              | `true`                          | Web Push                                                                                 |
+| `push.subject`, `.ttl_secs`, `.key_file`                    | public URL, `3600`, state dir   | VAPID contact, message lifetime, key pair                                                |
+| `knowledge.reflect`                                         | `true`                          | the daily staleness pass                                                                 |
+| `knowledge.stale_unverified_days`, `.stale_unrecalled_days` | `90`, `60`                      | when memories turn stale                                                                 |
+| `sync.dir`                                                  | `claude/` next to the database  | the synced files                                                                         |
+| `workspace.enable`                                          | `false`                         | the workspace sync (repositories under `sync.dir/workspace`)                             |
+| `reports.dir`                                               | `reports/` next to the database | the published reports' HTML files                                                        |
+| `reports.max_mb`                                            | `32`                            | the largest report taken                                                                 |
+| `wake.via.<host>`                                           | —                               | where magic packets go for a machine on another network ([machines](machines.md#4-wake)) |
 
 ## 4. Collector keys
 

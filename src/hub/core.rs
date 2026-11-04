@@ -10,6 +10,14 @@ use std::{
 /// Workspace name → the directories under it on one host.
 pub type Dirs = BTreeMap<String, Vec<String>>;
 
+/// Where a knowledge call stands (see `Caller`), for the HTTP side.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Located {
+    pub workspace: String,
+    pub project: Option<String>,
+    pub session: Option<String>,
+}
+
 use anyhow::{Context, Result, bail};
 use rusqlite::Connection;
 use serde_json::Value;
@@ -78,6 +86,12 @@ pub enum Input {
 pub enum Cmd {
     /// Something a collector reported about `host`.
     Input(String, Input),
+    /// Where a caller on `host` stands: its workspace, project and session.
+    Locate {
+        host: String,
+        who: Who,
+        reply: oneshot::Sender<Result<Located, String>>,
+    },
     Tick(i64),
     Snapshot(oneshot::Sender<Snapshot>),
     Resolve(String, oneshot::Sender<Option<Session>>),
@@ -764,6 +778,19 @@ impl Hub {
         rx.await.context("hub stopped")
     }
 
+    /// The workspace, project and session of a caller on `host`, as the
+    /// knowledge tools place it; or why it cannot be placed.
+    pub async fn locate(&self, host: &str, who: &Who) -> Result<Result<Located, String>> {
+        let (reply, rx) = oneshot::channel();
+        self.send(Cmd::Locate {
+            host: host.to_owned(),
+            who: who.clone(),
+            reply,
+        })
+        .await?;
+        rx.await.context("hub stopped")
+    }
+
     /// The skills `host`'s collector reported, as the composer offers them.
     pub async fn host_skills(&self, host: &str) -> Result<Vec<crate::model::Skill>> {
         let (reply, rx) = oneshot::channel();
@@ -1245,6 +1272,13 @@ async fn run(mut core: Core, mut rx: mpsc::Receiver<Cmd>) {
             }
             Cmd::SyncResync { host, reply } => {
                 let _ = reply.send(core.sync_resync(&host));
+            }
+            Cmd::Locate { host, who, reply } => {
+                let _ = reply.send(core.locate(&host, &who).map(|c| Located {
+                    workspace: c.workspace,
+                    project: c.project,
+                    session: c.session,
+                }));
             }
             Cmd::HostDirs(reply) => {
                 let mut hosts: Vec<(String, Dirs)> = core

@@ -5,13 +5,14 @@ import { fmtDate } from './format';
 
 const DAY_MS = 86_400_000;
 
-export const KINDS: NoteKind[] = ['issue', 'memory', 'doc', 'progress'];
+export const KINDS: NoteKind[] = ['issue', 'memory', 'doc', 'report', 'progress'];
 
 export const KIND_LABEL: Record<NoteKind, string> = {
 	memory: 'Memory',
 	issue: 'Issue',
 	progress: 'Progress',
-	doc: 'Doc'
+	doc: 'Doc',
+	report: 'Report'
 };
 
 /** The kind's colour token (`layout.css`). */
@@ -19,7 +20,8 @@ export const KIND_COLOR: Record<NoteKind, string> = {
 	memory: 'var(--color-kind-memory)',
 	issue: 'var(--color-kind-issue)',
 	progress: 'var(--color-kind-progress)',
-	doc: 'var(--color-kind-doc)'
+	doc: 'var(--color-kind-doc)',
+	report: 'var(--color-kind-report)'
 };
 
 /** Issues are open or closed; the rest keep the lifecycle names. */
@@ -39,6 +41,16 @@ export function priorityOf(note: { extra: Record<string, unknown> }): Priority {
 
 export const noteHref = (ws: string, slug: string) =>
 	`/notes/${encodeURIComponent(ws)}/${encodeURIComponent(slug)}`;
+
+/** The report viewer: the framed HTML with its note beside it. */
+export const reportHref = (ws: string, slug: string) =>
+	`/reports/${encodeURIComponent(ws)}/${encodeURIComponent(slug)}`;
+
+/** Where a note opens: reports in their viewer, the rest as a page. */
+export const openHref = (card: { kind: NoteKind; workspace: string; slug: string }) =>
+	card.kind === 'report'
+		? reportHref(card.workspace, card.slug)
+		: noteHref(card.workspace, card.slug);
 
 export const projectHref = (ws: string, project?: string | null) =>
 	project

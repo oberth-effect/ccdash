@@ -104,10 +104,19 @@ pub enum NoteKind {
     Issue,
     Progress,
     Doc,
+    /// An HTML report the hub keeps as a file (`hub::reports`); the note
+    /// holds its abstract.
+    Report,
 }
 
 impl NoteKind {
-    pub const ALL: [Self; 4] = [Self::Memory, Self::Issue, Self::Progress, Self::Doc];
+    pub const ALL: [Self; 5] = [
+        Self::Memory,
+        Self::Issue,
+        Self::Progress,
+        Self::Doc,
+        Self::Report,
+    ];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -115,6 +124,7 @@ impl NoteKind {
             Self::Issue => "issue",
             Self::Progress => "progress",
             Self::Doc => "doc",
+            Self::Report => "report",
         }
     }
 
@@ -1434,6 +1444,12 @@ pub fn session_start(
             .cmp(&a.project.is_some())
             .then(b.updated_at.cmp(&a.updated_at))
     });
+    let mut reports: Vec<&Card> = live
+        .iter()
+        .copied()
+        .filter(|c| c.kind == NoteKind::Report && fits(c))
+        .collect();
+    reports.sort_by_key(|a| std::cmp::Reverse(a.updated_at));
     let mut progress: Vec<&Card> = live
         .iter()
         .copied()
@@ -1449,7 +1465,8 @@ pub fn session_start(
         "## ccdash knowledge: {scope}\n\
             The hub holds this workspace's memories, issues, progress and docs. Tools: \
             `recall` (a slug for the full note, or a search), `remember`, `verify`, \
-            `issue_add`, `issue_update`, `progress`, `doc_write`; between sessions \
+            `issue_add`, `issue_update`, `progress`, `doc_write`, `report_publish` (an HTML \
+            report, made with the `ccdash:report` skill); between sessions \
             `claim` / `release` (what you are working on, so others keep clear) and \
             `tell_session` (a message handed to another session at its next prompt). \
             Knowledge lives only here, never in files: remember through the tool, verify memories you \
@@ -1480,7 +1497,7 @@ pub fn session_start(
             };
             // NOTE: without a summary an issue's excerpt repeats its title
             let line = match c.kind {
-                NoteKind::Memory | NoteKind::Doc => c.line(),
+                NoteKind::Memory | NoteKind::Doc | NoteKind::Report => c.line(),
                 _ => c.summary.as_deref().unwrap_or_default(),
             };
             let line = if line.is_empty() {
@@ -1497,6 +1514,7 @@ pub fn session_start(
     section("Open issues", &issues, 15, &mut out);
     section("Memories", &memories, 12, &mut out);
     section("Documents", &docs, 10, &mut out);
+    section("Reports", &reports, 5, &mut out);
     section("Recent progress", &progress, 5, &mut out);
     Some(truncate(&out, MAX_CONTEXT))
 }
@@ -1647,7 +1665,7 @@ pub fn render_body(body: &str) -> String {
 
 /// Writes every note as markdown with frontmatter under `dir`:
 /// `<workspace>/<kind>/<slug>.md`. Returns how many files it wrote.
-pub fn export(conn: &Connection, dir: &Path) -> Result<usize> {
+pub fn export(conn: &Connection, dir: &Path, reports: Option<&Path>) -> Result<usize> {
     let notes = conn
         .prepare(&format!(
             "SELECT {COLUMNS} FROM notes ORDER BY workspace, kind, slug"
@@ -1659,6 +1677,12 @@ pub fn export(conn: &Connection, dir: &Path) -> Result<usize> {
         let folder = dir.join(&note.workspace).join(note.kind.name());
         std::fs::create_dir_all(&folder)?;
         std::fs::write(folder.join(format!("{}.md", note.slug)), frontmatter(note))?;
+        if note.kind == NoteKind::Report
+            && let Some(dir) = reports
+            && let Some(html) = crate::hub::reports::export_file(dir, &note.workspace, &note.slug)
+        {
+            std::fs::write(folder.join(format!("{}.html", note.slug)), html)?;
+        }
         n += 1;
     }
     Ok(n)
@@ -2332,7 +2356,7 @@ mod tests {
 
         let dir = std::env::temp_dir().join(format!("ccdash-export-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        assert_eq!(export(&conn, &dir).unwrap(), 1);
+        assert_eq!(export(&conn, &dir, None).unwrap(), 1);
         let text = std::fs::read_to_string(dir.join("ws/memory/a--b.md")).unwrap();
         assert!(text.starts_with("---\ncreated: 1970-01-01\n"), "{text}");
         assert!(text.contains("description: one line\n") && text.contains("title: \"A: b\"\n"));

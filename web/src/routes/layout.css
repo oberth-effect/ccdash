@@ -52,6 +52,7 @@
 	--kind-memory: #2a78d6;
 	--kind-issue: #eb6834;
 	--kind-doc: #1baf7a;
+	--kind-report: #8250df;
 	--kind-progress: #8a8984;
 	/* chart series beyond the states (slots 4-6 of the validated palette:
 	tools and input, cache writes, output) and the one-hue ramp of the heatmap */
@@ -114,6 +115,7 @@
 	--kind-memory: #3987e5;
 	--kind-issue: #d95926;
 	--kind-doc: #199e70;
+	--kind-report: #a98bf0;
 	--kind-progress: #8f8e88;
 	--series-4: #c98500;
 	--series-5: #d55181;
@@ -241,6 +243,7 @@ colours stay the validated ones. */
 	--color-kind-memory: var(--kind-memory);
 	--color-kind-issue: var(--kind-issue);
 	--color-kind-doc: var(--kind-doc);
+	--color-kind-report: var(--kind-report);
 	--color-kind-progress: var(--kind-progress);
 	--font-mono: ui-monospace, 'JetBrains Mono', 'SF Mono', Menlo, monospace;
 }

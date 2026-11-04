@@ -8,14 +8,15 @@
 
 On the hub:
 
-| What       | Where (NixOS module)                                          |
-| ---------- | ------------------------------------------------------------- |
-| Live state | hub memory, one reducer per host                              |
-| History    | `/var/lib/ccdash-hub/ccdash.db` (SQLite, WAL), `ccdash` user  |
-| Backups    | `/var/lib/ccdash-hub/backups/`, nightly, checked              |
-| State sync | `/var/lib/ccdash-hub/claude/`, plain files (not in backups)   |
-| Workspace  | `/var/lib/ccdash-hub/claude/workspace/<unit>.git`, bare repos |
-| Config     | `/etc/ccdash/hub.toml`                                        |
+| What       | Where (NixOS module)                                                                |
+| ---------- | ----------------------------------------------------------------------------------- |
+| Live state | hub memory, one reducer per host                                                    |
+| History    | `/var/lib/ccdash-hub/ccdash.db` (SQLite, WAL), `ccdash` user                        |
+| Backups    | `/var/lib/ccdash-hub/backups/`, nightly, checked                                    |
+| State sync | `/var/lib/ccdash-hub/claude/`, plain files (not in backups)                         |
+| Workspace  | `/var/lib/ccdash-hub/claude/workspace/<unit>.git`, bare repos                       |
+| Reports    | `/var/lib/ccdash-hub/reports/<workspace>/<slug>.html`, plain files (not in backups) |
+| Config     | `/etc/ccdash/hub.toml`                                                              |
 
 On each workstation the collector keeps only what it cannot deliver yet:
 

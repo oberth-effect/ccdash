@@ -25,6 +25,7 @@ pub struct HubConfig {
     pub knowledge: Knowledge,
     pub sync: HubSync,
     pub workspace: HubWorkspace,
+    pub reports: HubReports,
     pub wake: HubWake,
 }
 
@@ -94,6 +95,26 @@ pub struct HubSync {
 
 /// The workspace sync on the hub: bare repositories under
 /// `sync.dir/workspace/`, the git smart HTTP routes, the configuration.
+/// The HTML reports sessions publish (`report_publish`), kept as plain
+/// files outside the database.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct HubReports {
+    /// Defaults to `reports/` next to the database. `$VAR` expands.
+    pub dir: Option<PathBuf>,
+    /// The largest report taken, in MiB.
+    pub max_mb: u32,
+}
+
+impl Default for HubReports {
+    fn default() -> Self {
+        Self {
+            dir: None,
+            max_mb: 32,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct HubWorkspace {
@@ -607,6 +628,17 @@ impl HubConfig {
         let db = self.store_path();
         db.parent()
             .map_or_else(|| PathBuf::from("claude"), |dir| dir.join("claude"))
+    }
+
+    /// Where the reports' HTML files are kept: `reports.dir`, else
+    /// `reports/` next to the database.
+    pub fn reports_dir(&self) -> PathBuf {
+        if let Some(dir) = &self.reports.dir {
+            return PathBuf::from(crate::util::expand_env(&dir.to_string_lossy()));
+        }
+        let db = self.store_path();
+        db.parent()
+            .map_or_else(|| PathBuf::from("reports"), |dir| dir.join("reports"))
     }
 
     pub fn push_key_file(&self) -> PathBuf {

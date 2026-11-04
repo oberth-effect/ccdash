@@ -13,12 +13,13 @@ workspace.
 
 ## 1. Notes
 
-| Kind     | For                         |
-| -------- | --------------------------- |
-| memory   | facts worth keeping         |
-| issue    | open work, with a status    |
-| progress | dated entries               |
-| doc      | plans, specs, anything long |
+| Kind     | For                                                                      |
+| -------- | ------------------------------------------------------------------------ |
+| memory   | facts worth keeping                                                      |
+| issue    | open work, with a status                                                 |
+| progress | dated entries                                                            |
+| doc      | plans, specs, anything long                                              |
+| report   | an HTML report's abstract; the file is the hub's ([reports](reports.md)) |
 
 The **Projects** page shows every project's notes, searches and edits them.
 Tick notes in its search results, across searches, and **Export** gives a
@@ -31,7 +32,8 @@ becomes that note's title.
 
 Sessions reach the notes through tools the channel server exposes:
 `recall`, `remember`, `verify`, `issue_add`, `issue_update`, `progress`,
-`doc_write`, and between sessions `claim`, `release` and `tell_session`.
+`doc_write`, `report_publish` ([reports](reports.md)), and between
+sessions `claim`, `release` and `tell_session`.
 
 - Every call is scoped to the calling session's workspace; a session never
   sees another workspace's notes.
@@ -60,11 +62,11 @@ Sessions reach the notes through tools the channel server exposes:
 
 The hooks add what matters to the session's context:
 
-| When                  | What                                                       | Switch                 |
-| --------------------- | ---------------------------------------------------------- | ---------------------- |
-| session start         | open issues, relevant memories, documents, recent progress | `inject.session_start` |
-| every prompt          | other sessions active in the project, messages for it      | `inject.prompt`        |
-| before editing a file | who else edited it lately, claims covering it              | `inject.edits`         |
+| When                  | What                                                                | Switch                 |
+| --------------------- | ------------------------------------------------------------------- | ---------------------- |
+| session start         | open issues, relevant memories, documents, reports, recent progress | `inject.session_start` |
+| every prompt          | other sessions active in the project, messages for it               | `inject.prompt`        |
+| before editing a file | who else edited it lately, claims covering it                       | `inject.edits`         |
 
 ## 4. Offline
 

@@ -45,7 +45,7 @@ use ts_rs::TS;
 use super::{
     collect::{self, Tokens},
     core::{Cmd, Dirs, Hub, LaunchIssue, LaunchReq},
-    web,
+    reports, web,
 };
 use crate::{
     actions::{self, MAX_PROMPT, PERMISSION_MODES},
@@ -89,15 +89,17 @@ const POWER_WAIT: Duration = Duration::from_secs(40);
 
 #[derive(Clone)]
 pub struct App {
-    hub: Hub,
-    store: Store,
-    workspaces: Arc<Workspaces>,
+    pub(crate) hub: Hub,
+    pub(crate) store: Store,
+    pub(crate) workspaces: Arc<Workspaces>,
     /// Where phones open the UI.
-    public_url: Arc<String>,
+    pub(crate) public_url: Arc<String>,
     /// Web Push, when it is on.
     push: Option<Arc<Push>>,
     /// The panel's files (see `web`).
     pub web_dir: Arc<PathBuf>,
+    /// The reports' files and view links (see `reports`).
+    pub(crate) reports: Arc<reports::Reports>,
     /// Ids of tokens revoked since the start; open streams on them end.
     revoked: broadcast::Sender<i64>,
     /// The workspace repositories, when the workspace sync is on.
@@ -142,6 +144,7 @@ pub async fn serve(
     web_dir: PathBuf,
     sync: sync::hub::Mirror,
     git: Option<GitState>,
+    reports: Arc<reports::Reports>,
 ) {
     let api = Router::new()
         .route("/snapshot", get(snapshot))
@@ -175,6 +178,8 @@ pub async fn serve(
         .route("/notes/export", post(export_notes))
         .route("/notes/{workspace}/{slug}", get(note).put(put_note))
         .route("/notes/{workspace}/{slug}/op", post(note_op))
+        .route("/reports/{workspace}/{slug}/view", post(reports::mint))
+        .route("/reports/{workspace}/{slug}/file", get(reports::file))
         .route("/push", get(push_info))
         .route(
             "/push/subscriptions",
@@ -209,6 +214,8 @@ pub async fn serve(
         ));
     let mut app = Router::new()
         .route("/act/{key}/{action}", post(button))
+        .route("/reports/-/view/{key}", get(reports::view))
+        .merge(reports::upload_routes(tokens.clone(), reports.max_bytes()))
         .route(
             "/collect",
             get(collect::collect).with_state((
@@ -233,6 +240,7 @@ pub async fn serve(
             web_dir: Arc::new(web_dir),
             revoked: broadcast::channel(16).0,
             git,
+            reports,
         });
     if let Err(e) = axum::serve(listener, app).await {
         warn!("http: {e}");
@@ -1384,8 +1392,9 @@ async fn export_notes(
         ));
     }
     let store = app.store.clone();
+    let reports_dir = app.reports.dir().to_path_buf();
     let zip = tokio::task::spawn_blocking(move || {
-        knowledge::export::archive(&store.reader()?, &body.notes)
+        knowledge::export::archive(&store.reader()?, &body.notes, Some(&reports_dir))
     })
     .await
     .map_err(anyhow::Error::from)??
@@ -2250,7 +2259,7 @@ async fn workspace_resync(
     Ok(Json(json!({ "ok": true })))
 }
 
-struct ApiError(StatusCode, String);
+pub(crate) struct ApiError(pub(crate) StatusCode, pub(crate) String);
 
 impl From<anyhow::Error> for ApiError {
     fn from(e: anyhow::Error) -> Self {

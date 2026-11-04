@@ -3,7 +3,10 @@
 //! their Claude can read it like a memory directory. A `[[link]]` to a note
 //! outside the selection would lead nowhere, so it becomes that note's title.
 
-use std::collections::{BTreeMap, HashSet};
+use std::{
+    collections::{BTreeMap, HashSet},
+    path::Path,
+};
 
 use anyhow::Result;
 use rusqlite::Connection;
@@ -14,9 +17,10 @@ use ts_rs::TS;
 use super::{Note, NoteKind, frontmatter, get, wiki_links};
 
 /// Notes in the order `INDEX.md` lists them, with their headings.
-const SECTIONS: [(NoteKind, &str); 4] = [
+const SECTIONS: [(NoteKind, &str); 5] = [
     (NoteKind::Memory, "Memories"),
     (NoteKind::Doc, "Documents"),
+    (NoteKind::Report, "Reports"),
     (NoteKind::Issue, "Issues"),
     (NoteKind::Progress, "Progress"),
 ];
@@ -29,8 +33,14 @@ pub struct NoteRef {
     pub slug: String,
 }
 
-/// The archive of `refs`; `None` when one of them does not exist.
-pub fn archive(conn: &Connection, refs: &[NoteRef]) -> Result<Option<Vec<u8>>> {
+/// The archive of `refs`; `None` when one of them does not exist. A
+/// report's HTML (under `reports`, the hub's directory) goes next to its
+/// note.
+pub fn archive(
+    conn: &Connection,
+    refs: &[NoteRef],
+    reports: Option<&Path>,
+) -> Result<Option<Vec<u8>>> {
     let mut notes = Vec::new();
     for r in refs {
         match get(conn, &r.workspace, &r.slug)? {
@@ -71,6 +81,13 @@ pub fn archive(conn: &Connection, refs: &[NoteRef]) -> Result<Option<Vec<u8>>> {
             ..note.clone()
         };
         files.push((path(note), frontmatter(&shared).into_bytes()));
+        if note.kind == NoteKind::Report
+            && let Some(dir) = reports
+            && let Some(html) = crate::hub::reports::export_file(dir, &note.workspace, &note.slug)
+        {
+            let name = path(note).trim_end_matches(".md").to_owned() + ".html";
+            files.push((name, html));
+        }
     }
     Ok(Some(zip(&files)))
 }

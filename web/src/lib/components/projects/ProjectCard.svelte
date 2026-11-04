@@ -26,7 +26,8 @@
 		[
 			p.closed.length ? `${p.closed.length} closed this week` : null,
 			p.memories.length ? plural(p.memories.length, 'memory', 'memories') : null,
-			p.docs.length ? plural(p.docs.length, 'doc') : null
+			p.docs.length ? plural(p.docs.length, 'doc') : null,
+			p.reports.length ? plural(p.reports.length, 'report') : null
 		].filter(Boolean)
 	);
 </script>

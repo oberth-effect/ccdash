@@ -13,7 +13,7 @@ use crate::{
 
 /// Tool names, in the order `tools/list` shows them.
 #[cfg(test)]
-pub const NAMES: [&str; 10] = [
+pub const NAMES: [&str; 11] = [
     "recall",
     "remember",
     "verify",
@@ -21,6 +21,7 @@ pub const NAMES: [&str; 10] = [
     "issue_update",
     "progress",
     "doc_write",
+    "report_publish",
     "tell_session",
     "claim",
     "release",
@@ -142,6 +143,27 @@ pub fn definitions() -> Vec<Value> {
                     "title": string("Title (default: the first # heading, or the slug)."),
                     "body": string("The whole document, markdown."),
                     "base_version": { "type": "integer", "minimum": 1, "description": "The version this edit is based on; omit only when creating." }
+                }
+            }
+        }),
+        json!({
+            "name": "report_publish",
+            "description": "Publish an HTML report (a page-shaped deliverable: research, a comparison, an \
+                audit, a dashboard) to ccdash: the file goes to the hub, where the panel shows it, \
+                lists it and downloads it, and a `report` note with your abstract joins the knowledge \
+                base. Build the file first with the ccdash:report skill (`ccdash report build`): one \
+                self-contained HTML file that fetches nothing from the network. Publishing to an \
+                existing slug replaces that report.",
+            "inputSchema": {
+                "type": "object",
+                "required": ["path", "body"],
+                "properties": {
+                    "path": string("The HTML file on this machine, absolute or relative to the session's directory."),
+                    "title": string("The report's title (default: the file's <title>)."),
+                    "slug": slug("The report (default: from the title)."),
+                    "summary": string("One line for lists and the session-start context: what the report is about, and when it was made."),
+                    "body": string("The abstract, markdown: the question the report answers, the key findings and numbers, what the reader should do; what `recall` shows without the HTML. Link notes as [[slug]]."),
+                    "project": string("Repo directory name the report belongs to (default: the session's project).")
                 }
             }
         }),

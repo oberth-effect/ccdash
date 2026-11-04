@@ -12,12 +12,13 @@ token like an SSH key and keep the hub on your LAN or VPN.
 
 ## 1. Tokens
 
-| Token            | Held by                         | Checked as                                              |
-| ---------------- | ------------------------------- | ------------------------------------------------------- |
-| bootstrap        | `tokenFile` on the hub          | compared in constant time                               |
-| device           | each paired browser             | random, stored as SHA-256, revocable                    |
-| collector        | each workstation (`collectors`) | names the machine; only `/collect` and `/sync/` take it |
-| notification key | one prompt's buttons            | random, dies with the prompt                            |
+| Token            | Held by                         | Checked as                                                                          |
+| ---------------- | ------------------------------- | ----------------------------------------------------------------------------------- |
+| bootstrap        | `tokenFile` on the hub          | compared in constant time                                                           |
+| device           | each paired browser             | random, stored as SHA-256, revocable                                                |
+| collector        | each workstation (`collectors`) | names the machine; only `/collect`, `/sync/`, `/git/` and the report upload take it |
+| notification key | one prompt's buttons            | random, dies with the prompt                                                        |
+| view link        | one report's frame              | HMAC-signed, an hour, key drawn at start ([reports](reports.md#6-security))         |
 
 Rotating `tokenFile` (and restarting the hub) signs out only the devices
 still on the bootstrap token.
@@ -44,6 +45,10 @@ token" there and can take one of its own.
   access token never goes into a notification.
 - `/collect` and `/sync/` take a collector's token; `/sync/` paths are
   checked to stay inside the synced directories.
+- `/reports/-/upload` takes a collector's token; `/reports/-/view/<key>`
+  takes a signed view link and serves the report as a sandboxed, opaque
+  origin that loads nothing from the network, so a report's scripts never
+  see the panel's token ([reports](reports.md#6-security)).
 - The OpenTelemetry receiver on a workstation takes no token, so the
   collector binds it to loopback only.
 - Lock and suspend reach only a machine whose collector has `power.lock`

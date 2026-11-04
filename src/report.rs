@@ -1,0 +1,376 @@
+//! The report document: the chrome every HTML report shares (the
+//! `ccdash:report` skill's `template.html`, embedded here too) around the
+//! body a session writes, and what a report must satisfy to be published:
+//! one self-contained file that fetches nothing from anywhere, so it reads
+//! the same in the panel's sandboxed frame, as a file sent on, and offline.
+
+use std::collections::HashSet;
+
+use crate::knowledge::slugify;
+
+/// The chrome, with `{{title}}`, `{{date}}`, `{{generator}}` and `{{body}}`.
+pub const TEMPLATE: &str = include_str!("../claude-plugin/skills/report/template.html");
+pub const GENERATOR: &str = concat!("ccdash report build ", env!("CARGO_PKG_VERSION"));
+/// Past this a report is still taken, with a warning.
+const HEAVY_BYTES: usize = 8 * 1024 * 1024;
+
+/// What the chrome shows about the report.
+#[derive(Debug, Clone, Default)]
+pub struct Meta<'a> {
+    pub title: &'a str,
+    /// Shown next to the title, `YYYY-MM-DD`.
+    pub date: &'a str,
+}
+
+/// A problem with a report.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Problem {
+    /// Refused when published; otherwise a warning.
+    pub fatal: bool,
+    pub text: String,
+}
+
+/// The template around `body`, an HTML fragment (sections under `h2` and
+/// `h3` headings, tables, figures, tiles). Headings without an `id` get
+/// one from their text, so links to sections stay stable.
+pub fn build(meta: &Meta<'_>, body: &str) -> String {
+    let body = with_heading_ids(body);
+    // NOTE: the body goes in last: its text may spell the other markers
+    TEMPLATE
+        .replace("{{title}}", &escape(meta.title))
+        .replace("{{date}}", &escape(meta.date))
+        .replace("{{generator}}", GENERATOR)
+        .replace("{{body}}", body.trim_end())
+}
+
+/// Whether `bytes` start like an HTML document.
+pub fn is_html(bytes: &[u8]) -> bool {
+    let head = String::from_utf8_lossy(&bytes[..bytes.len().min(2048)]).to_ascii_lowercase();
+    let head = head.trim_start_matches('\u{feff}').trim_start();
+    head.starts_with("<!doctype html") || head.starts_with("<html") || head.contains("<html")
+}
+
+/// The document's `<title>`.
+pub fn title_of(html: &str) -> Option<String> {
+    let lower = html.to_ascii_lowercase();
+    let start = lower.find("<title")?;
+    let open_end = start + lower[start..].find('>')? + 1;
+    let close = open_end + lower[open_end..].find("</title>")?;
+    let title = unescape(html[open_end..close].trim());
+    (!title.is_empty()).then_some(title)
+}
+
+/// The `h2` headings of a report's `<article>`, in order: its contents.
+pub fn sections(html: &str) -> Vec<String> {
+    let lower = html.to_ascii_lowercase();
+    let (from, to) = article(&lower);
+    tag_opens(&lower[from..to], "h2")
+        .into_iter()
+        .filter_map(|(_, end)| {
+            let end = from + end;
+            let close = end + lower[end..to].find("</h2>")?;
+            let text = strip_tags(&html[end..close]).trim().to_owned();
+            (!text.is_empty()).then_some(unescape(&text))
+        })
+        .collect()
+}
+
+/// The span of the document's `<article>` (the report's own content);
+/// the whole document when it has none.
+fn article(lower: &str) -> (usize, usize) {
+    // NOTE: the last one: a comment or a code sample may spell the tag
+    let Some((_, open_end)) = tag_opens(lower, "article").last().copied() else {
+        return (0, lower.len());
+    };
+    let close = lower[open_end..]
+        .find("</article>")
+        .map_or(lower.len(), |len| open_end + len);
+    (open_end, close)
+}
+
+/// What keeps `html` from being self-contained, and what makes it a poor
+/// report: a script, style, image, font, frame or medium fetched from
+/// anywhere (fatal: the panel shows reports under a policy that loads
+/// nothing, and a file sent on would depend on the network too), a very
+/// large file or no sections (warnings).
+pub fn check(html: &str) -> Vec<Problem> {
+    let mut out = Vec::new();
+    let fatal = |text: String| Problem { fatal: true, text };
+    let lower = html.to_ascii_lowercase();
+    for tag in ["iframe", "object", "embed", "frame"] {
+        if !tag_opens(&lower, tag).is_empty() {
+            out.push(fatal(format!("<{tag}> is not allowed in a report")));
+        }
+    }
+    for (tag, attr) in [
+        ("script", "src"),
+        ("img", "src"),
+        ("source", "src"),
+        ("video", "src"),
+        ("video", "poster"),
+        ("audio", "src"),
+        ("track", "src"),
+        ("link", "href"),
+        ("use", "href"),
+        ("image", "href"),
+    ] {
+        for (start, end) in tag_opens(&lower, tag) {
+            let attrs = &lower[start..end];
+            let Some(value) = attr_value(attrs, attr) else {
+                continue;
+            };
+            if embedded(value) {
+                continue;
+            }
+            out.push(fatal(format!(
+                "<{tag} {attr}=\"{}\"> fetches a resource: embed it (a data: URI) or drop it",
+                shorten(value)
+            )));
+        }
+    }
+    let mut from = 0;
+    while let Some(at) = lower[from..].find("url(") {
+        let at = from + at + 4;
+        let rest = lower[at..].trim_start().trim_start_matches(['"', '\'']);
+        if rest.starts_with("http:") || rest.starts_with("https:") || rest.starts_with("//") {
+            let end = rest.find([')', '"', '\'']).unwrap_or(rest.len().min(80));
+            out.push(fatal(format!(
+                "a stylesheet loads url({}): embed it or drop it",
+                shorten(&rest[..end])
+            )));
+        }
+        from = at;
+    }
+    if lower.contains("@import") {
+        out.push(fatal(
+            "a stylesheet has an @import: inline the rules".into(),
+        ));
+    }
+    if html.len() > HEAVY_BYTES {
+        out.push(Problem {
+            fatal: false,
+            text: format!(
+                "the report is {:.1} MB: keep data behind it in the hub, not in the page",
+                html.len() as f64 / 1_048_576.0
+            ),
+        });
+    }
+    let (from, to) = article(&lower);
+    if tag_opens(&lower[from..to], "h2").is_empty() {
+        out.push(Problem {
+            fatal: false,
+            text: "no <h2> sections: the table of contents will be empty".into(),
+        });
+    }
+    out
+}
+
+fn embedded(value: &str) -> bool {
+    value.starts_with("data:") || value.starts_with("blob:") || value.starts_with('#')
+}
+
+fn shorten(s: &str) -> String {
+    crate::util::truncate(s, 60)
+}
+
+/// `(attrs_start, tag_end)` of every `<tag …>` in `lower`: the attribute
+/// text starts after the name and ends at the `>`.
+fn tag_opens(lower: &str, tag: &str) -> Vec<(usize, usize)> {
+    let needle = format!("<{tag}");
+    let mut out = Vec::new();
+    let mut from = 0;
+    while let Some(at) = lower[from..].find(&needle) {
+        let start = from + at + needle.len();
+        let next = lower[start..].chars().next();
+        from = start;
+        if !matches!(next, Some(c) if c.is_whitespace() || c == '>' || c == '/') {
+            continue;
+        }
+        let Some(len) = lower[start..].find('>') else {
+            break;
+        };
+        out.push((start, start + len + 1));
+        from = start + len + 1;
+    }
+    out
+}
+
+/// The value of `attr` in a tag's attribute text (`attrs` ends with `>`).
+fn attr_value<'a>(attrs: &'a str, attr: &str) -> Option<&'a str> {
+    let mut from = 0;
+    while let Some(at) = attrs[from..].find(attr) {
+        let at = from + at;
+        let before = attrs[..at].chars().next_back();
+        let after = attrs[at + attr.len()..].trim_start();
+        from = at + attr.len();
+        if !matches!(before, Some(c) if c.is_whitespace()) || !after.starts_with('=') {
+            continue;
+        }
+        let value = after[1..].trim_start();
+        return Some(match value.chars().next() {
+            Some(q @ ('"' | '\'')) => {
+                let inner = &value[1..];
+                &inner[..inner.find(q).unwrap_or(inner.len())]
+            }
+            _ => &value[..value.find([' ', '>', '\n', '\t']).unwrap_or(value.len())],
+        });
+    }
+    None
+}
+
+/// `body` with an `id` on every `h2` and `h3` that has none, from its
+/// text; a taken id gets `-2`, `-3`….
+fn with_heading_ids(body: &str) -> String {
+    let lower = body.to_ascii_lowercase();
+    let mut taken: HashSet<String> = HashSet::new();
+    let mut from = 0;
+    while let Some(at) = lower[from..].find(" id=") {
+        let at = from + at + 4;
+        if let Some(value) = attr_value(&lower[at - 4..], "id") {
+            taken.insert(value.to_owned());
+        }
+        from = at;
+    }
+    let mut opens: Vec<(usize, usize, &str)> = Vec::new();
+    for tag in ["h2", "h3"] {
+        opens.extend(tag_opens(&lower, tag).into_iter().map(|(s, e)| (s, e, tag)));
+    }
+    opens.sort_unstable();
+    let mut out = String::with_capacity(body.len() + opens.len() * 24);
+    let mut last = 0;
+    for (start, end, tag) in opens {
+        if attr_value(&lower[start..end], "id").is_some() {
+            continue;
+        }
+        let close = format!("</{tag}>");
+        let text = lower[end..]
+            .find(&close)
+            .map_or("", |len| &body[end..end + len]);
+        let base = slugify(&unescape(&strip_tags(text)));
+        let base = if base.is_empty() { "section" } else { &base };
+        let mut id = base.to_owned();
+        let mut n = 2;
+        while taken.contains(&id) {
+            id = format!("{base}-{n}");
+            n += 1;
+        }
+        taken.insert(id.clone());
+        out.push_str(&body[last..start]);
+        out.push_str(&format!(" id=\"{id}\""));
+        last = start;
+    }
+    out.push_str(&body[last..]);
+    out
+}
+
+fn strip_tags(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut inside = false;
+    for c in s.chars() {
+        match c {
+            '<' => inside = true,
+            '>' => inside = false,
+            c if !inside => out.push(c),
+            _ => {}
+        }
+    }
+    out
+}
+
+fn escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+fn unescape(s: &str) -> String {
+    s.replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .replace("&apos;", "'")
+        .replace("&amp;", "&")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const BODY: &str = "<p class=\"lead\">Hi</p>\n<h2>Findings &amp; more</h2><p>a</p>\n<h3>Detail</h3>\n<h2 id=\"own\">Kept</h2>\n<h2>Findings &amp; more</h2>";
+
+    #[test]
+    fn the_chrome_wraps_the_body_and_headings_get_ids() {
+        let html = build(
+            &Meta {
+                title: "A <b>report</b>",
+                date: "2026-11-04",
+            },
+            BODY,
+        );
+        assert!(html.starts_with("<!doctype html>"));
+        assert!(html.contains("<title>A &lt;b&gt;report&lt;/b&gt;</title>"));
+        assert!(html.contains("<h2 id=\"findings-more\">Findings &amp; more</h2>"));
+        assert!(html.contains("<h3 id=\"detail\">Detail</h3>"));
+        assert!(html.contains("<h2 id=\"own\">Kept</h2>"));
+        assert!(html.contains("<h2 id=\"findings-more-2\">Findings &amp; more</h2>"));
+        assert!(html.contains(GENERATOR));
+        assert!(!html.contains("{{"));
+        assert_eq!(title_of(&html).as_deref(), Some("A <b>report</b>"));
+        assert_eq!(
+            sections(&html),
+            ["Findings & more", "Kept", "Findings & more"]
+        );
+        assert!(is_html(html.as_bytes()));
+        assert!(!is_html(b"# not html"));
+        assert!(check(&html).is_empty(), "{:?}", check(&html));
+    }
+
+    #[test]
+    fn fetched_resources_are_refused_and_embedded_ones_pass() {
+        let bad = build(
+            &Meta::default(),
+            concat!(
+                "<h2>x</h2><script src=\"https://cdn.example/x.js\"></script>",
+                "<img src=\"pic.png\"><link rel=stylesheet href='//f.example/a.css'>",
+                "<style>body{background:url(\"https://x/y.png\")}</style><iframe src=\"a\"></iframe>"
+            ),
+        );
+        let problems: Vec<String> = check(&bad)
+            .into_iter()
+            .filter(|p| p.fatal)
+            .map(|p| p.text)
+            .collect();
+        assert_eq!(problems.len(), 5, "{problems:?}");
+        assert!(problems.iter().any(|p| p.contains("cdn.example/x.js")));
+        assert!(problems.iter().any(|p| p.contains("pic.png")));
+        assert!(problems.iter().any(|p| p.contains("<iframe>")));
+        assert!(problems.iter().any(|p| p.contains("url(")));
+        let good = build(
+            &Meta::default(),
+            concat!(
+                "<h2>x</h2><img src=\"data:image/png;base64,AAAA\" alt=\"\"><svg><use href=\"#icon\"/></svg>",
+                "<script>const url = 'https://example.org'; fetch(url)</script><a href=\"https://example.org\">link</a>"
+            ),
+        );
+        assert!(check(&good).iter().all(|p| !p.fatal), "{:?}", check(&good));
+        let empty = check(&build(&Meta::default(), "<p>nothing</p>"));
+        assert_eq!(empty.len(), 1);
+        assert!(!empty[0].fatal);
+    }
+
+    #[test]
+    fn attributes_are_read_loosely() {
+        assert_eq!(attr_value(" src=\"a b\">", "src"), Some("a b"));
+        assert_eq!(attr_value(" data-src=\"x\" src=y>", "src"), Some("y"));
+        assert_eq!(attr_value(" srcset=\"x\">", "src"), None);
+        assert_eq!(tag_opens("<h2>a</h2><h20>b</h20><h2 id=x>", "h2").len(), 2);
+    }
+}

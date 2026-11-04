@@ -859,7 +859,7 @@ impl Mirror {
 
 /// The host a collector token names, on every `/sync/` request.
 #[derive(Clone)]
-struct Host(String);
+pub(crate) struct Host(pub(crate) String);
 
 /// The `/sync/` routes, each behind a collector token.
 pub fn routes<S>(sync: Mirror, tokens: Tokens) -> Router<S>
@@ -878,7 +878,7 @@ where
         .with_state(sync)
 }
 
-async fn collector_auth(
+pub(crate) async fn collector_auth(
     State(tokens): State<Tokens>,
     mut request: Request,
     next: Next,

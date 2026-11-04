@@ -8,6 +8,7 @@
 mod api;
 mod link;
 mod queue;
+pub mod reports;
 mod skills;
 
 use std::{

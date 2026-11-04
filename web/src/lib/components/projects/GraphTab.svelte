@@ -97,6 +97,7 @@
 		memory: true,
 		issue: true,
 		doc: true,
+		report: true,
 		progress: true
 	});
 	let links = $state<Record<LinkKind, boolean>>({
