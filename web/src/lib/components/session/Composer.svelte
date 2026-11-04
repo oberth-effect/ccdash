@@ -155,7 +155,7 @@
 				size="sm"
 				variant={canReply ? 'outline' : 'default'}
 				disabled={busy || !text.trim()}
-				title="Hand the text to Claude as context with its next prompt, without starting a turn (Ctrl Enter)"
+				title="Hand the text to Claude as context with its next prompt, without starting a turn (Ctrl Shift Enter)"
 				onclick={() => submit('message')}>Next prompt</Button
 			>
 		{/snippet}

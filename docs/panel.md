@@ -99,18 +99,18 @@ with `/` offers the skills Claude Code loads for that session (the
 machine's, the plugins', the workspace's), as the terminal does. Its keyboard
 button lists the shortcuts:
 
-| Keys             | Does                                          |
-| ---------------- | --------------------------------------------- |
-| `Enter`          | Send (`Shift Enter` breaks the line)          |
-| `Ctrl Enter`     | Next prompt instead of a turn                 |
-| `Ctrl Shift 1–9` | That quick reply                              |
-| `Ctrl .`         | Stop the turn                                 |
-| `Ctrl J`         | Go to the open question                       |
-| `↑` `↓`          | Walk the prompt history                       |
-| `Ctrl R`         | Search the prompt history                     |
-| `Ctrl E`         | Code fence around the selection               |
-| `Ctrl P`         | Preview                                       |
-| `Esc`, then `i`  | Back to your text, leave the field, come back |
+| Keys                  | Does                                                                   |
+| --------------------- | ---------------------------------------------------------------------- |
+| `Enter`, `Ctrl Enter` | Send (`Shift Enter` breaks the line; on touch only `Ctrl Enter` sends) |
+| `Ctrl Shift Enter`    | Next prompt instead of a turn                                          |
+| `Ctrl Shift 1–9`      | That quick reply                                                       |
+| `Ctrl .`              | Stop the turn                                                          |
+| `Ctrl J`              | Go to the open question                                                |
+| `↑` `↓`               | Walk the prompt history                                                |
+| `Ctrl R`              | Search the prompt history                                              |
+| `Ctrl E`              | Code fence around the selection                                        |
+| `Ctrl P`              | Preview                                                                |
+| `Esc`, then `i`       | Back to your text, leave the field, come back                          |
 
 The title
 renames in

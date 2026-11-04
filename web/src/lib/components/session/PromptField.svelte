@@ -12,12 +12,13 @@
 	// A prompt: the textarea and its toolbar, shared by the session
 	// composer and the start sheet. Enter submits on the desktop
 	// (Shift+Enter breaks); on touch Enter is a newline and the buttons
-	// submit. Up and down walk the prompt history; the clock button opens
-	// it with search. Templates, `[[` for a note link, a code fence around
-	// the selection, a markdown preview. A message that starts with `/`
-	// opens the skills of the field's host and workspace, as the terminal
-	// does; arrows, Enter, Tab or a tap complete one. The keyboard button
-	// lists the rest (`KEYS`).
+	// submit. Ctrl+Enter submits everywhere, Ctrl+Shift+Enter takes the
+	// other way (Next prompt). Up and down walk the prompt history; the
+	// clock button opens it with search. Templates, `[[` for a note link,
+	// a code fence around the selection, a markdown preview. A message
+	// that starts with `/` opens the skills of the field's host and
+	// workspace, as the terminal does; arrows, Enter, Tab or a tap
+	// complete one. The keyboard button lists the rest (`KEYS`).
 	import type { Snippet } from 'svelte';
 	import ChevronDownIcon from '@lucide/svelte/icons/chevron-down';
 	import CodeIcon from '@lucide/svelte/icons/code';
@@ -69,7 +70,7 @@
 		disabled?: boolean;
 		rows?: number;
 		onsubmit: () => void;
-		/** Ctrl Enter on the desktop: the other way to send, if there is one. */
+		/** Ctrl Shift Enter: the other way to send, if there is one. */
 		onalternate?: () => void;
 		/** Ctrl Shift and a digit: quick reply number `index`, from 0. */
 		onquick?: (index: number) => void;
@@ -98,9 +99,9 @@
 	/** The shortcuts this field has, for the keyboard button. */
 	const KEYS = $derived(
 		[
-			['Enter', 'Send'],
+			['Enter, Ctrl Enter', 'Send'],
 			['Shift Enter', 'New line'],
-			onalternate ? ['Ctrl Enter', 'Next prompt'] : null,
+			onalternate ? ['Ctrl Shift Enter', 'Next prompt'] : null,
 			onquick ? ['Ctrl Shift 1–9', 'Quick reply'] : null,
 			onstop ? ['Ctrl .', 'Stop the turn'] : null,
 			['Ctrl J', 'Go to the open question'],
@@ -300,12 +301,15 @@
 				return;
 			}
 		}
-		if (event.key === 'Enter' && !event.shiftKey) {
+		if (event.key === 'Enter') {
 			const held = event.ctrlKey || event.metaKey;
-			if (touch() && !held) return;
-			event.preventDefault();
-			if (held && onalternate && !touch()) onalternate();
-			else onsubmit();
+			if (held && event.shiftKey && onalternate) {
+				event.preventDefault();
+				onalternate();
+			} else if (!event.shiftKey && (held || !touch())) {
+				event.preventDefault();
+				onsubmit();
+			}
 			return;
 		}
 		if (event.key === 'Escape') {
