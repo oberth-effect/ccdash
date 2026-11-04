@@ -189,7 +189,12 @@
         backdrop-filter: blur(8px);
         border-bottom: 1px solid var(--border);
       }
-      .topbar .toc-toggle {
+      /* wide screens: the toggle hides the contents column (a tall, narrow */
+      /* monitor wants the width); narrow ones: it opens the drawer */
+      :root[data-toc-hidden] .layout {
+        grid-template-columns: minmax(0, 1fr);
+      }
+      :root[data-toc-hidden] .toc {
         display: none;
       }
       .topbar .title {
@@ -367,8 +372,8 @@
         .layout {
           grid-template-columns: minmax(0, 1fr);
         }
-        .topbar .toc-toggle {
-          display: inline-flex;
+        :root[data-toc-hidden] .toc {
+          display: block;
         }
         .topbar .date {
           display: none;
@@ -1199,11 +1204,36 @@
           });
         }
         const toggle = document.querySelector(".toc-toggle");
+        const narrow = matchMedia("(max-width: 60rem)");
+        const TOC_KEY = "ccdash-report-toc";
+        try {
+          if (localStorage.getItem(TOC_KEY) === "hidden")
+            root.dataset.tocHidden = "";
+        } catch {}
+        const expanded = () =>
+          narrow.matches
+            ? root.dataset.toc === "open"
+            : !("tocHidden" in root.dataset);
+        toggle.setAttribute("aria-expanded", String(expanded()));
         toggle.addEventListener("click", () => {
-          const open = root.dataset.toc !== "open";
-          root.dataset.toc = open ? "open" : "";
-          toggle.setAttribute("aria-expanded", String(open));
+          if (narrow.matches) {
+            const open = root.dataset.toc !== "open";
+            root.dataset.toc = open ? "open" : "";
+          } else {
+            const hidden = !("tocHidden" in root.dataset);
+            if (hidden) root.dataset.tocHidden = "";
+            else delete root.dataset.tocHidden;
+            try {
+              hidden
+                ? localStorage.setItem(TOC_KEY, "hidden")
+                : localStorage.removeItem(TOC_KEY);
+            } catch {}
+          }
+          toggle.setAttribute("aria-expanded", String(expanded()));
         });
+        narrow.addEventListener("change", () =>
+          toggle.setAttribute("aria-expanded", String(expanded())),
+        );
         // the section in view
         if (entries.length && "IntersectionObserver" in window) {
           const visible = new Set();

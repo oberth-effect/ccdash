@@ -32,7 +32,9 @@ the contents narrowed to the sections that hit, `Enter` and the arrows
 step through them, `/` focuses it); a System/Light/Dark switch that
 follows the system until picked and, when framed, follows the panel's
 mode and wears the panel's colour scheme (Neutral, Catppuccin, the
-wallpaper's…); the contents on the left (a drawer on the phone), with the
+wallpaper's…); the contents on the left (a drawer on the phone; the
+button beside the title hides the column on a wide screen, for a tall
+narrow monitor, and the choice is kept where storage allows), with the
 section in view marked; numbered headings; tables that sort by a click on
 a heading, with a filter box past eight rows; code blocks with colours,
 line numbers and Copy; print styles. On its own the report uses ccdash's
