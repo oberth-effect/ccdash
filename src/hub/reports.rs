@@ -476,12 +476,13 @@ pub fn export_file(dir: &Path, workspace: &str, slug: &str) -> Option<Vec<u8>> {
 mod tests {
     use super::*;
 
+    /// A private directory per call: the tests run in parallel and each
+    /// removes its own at the end.
     fn store() -> (Reports, PathBuf) {
-        let dir = std::env::temp_dir().join(format!(
-            "ccdash-reports-{}-{}",
-            std::process::id(),
-            now_ms()
-        ));
+        static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("ccdash-reports-{}-{n}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
         (Reports::open(&dir, 1).unwrap(), dir)
     }
 
