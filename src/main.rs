@@ -280,6 +280,26 @@ enum Report {
         /// The project (a repo directory name; default: the directory's).
         #[arg(long)]
         project: Option<String>,
+        /// When the report was made, YYYY-MM-DD (default: today).
+        #[arg(long)]
+        date: Option<String>,
+    },
+    /// Bring older reports in: every `.html` under the paths (directories
+    /// are walked; node_modules, target, build and the like skipped) that is
+    /// a self-contained HTML document is published through the collector,
+    /// titled by its <title>, dated by its modification time, with an
+    /// abstract naming where it came from and its sections. Files that fetch
+    /// from the network are listed and skipped. `--dry-run` only lists.
+    Import {
+        /// Files or directories to look through.
+        #[arg(required = true)]
+        paths: Vec<PathBuf>,
+        /// List what would be published, publish nothing.
+        #[arg(long)]
+        dry_run: bool,
+        /// The project every report goes under (default: the directory's).
+        #[arg(long)]
+        project: Option<String>,
     },
 }
 
@@ -354,6 +374,11 @@ fn main() -> ExitCode {
                 date,
                 output,
             } => report_build(&body, &title, date.as_deref(), &output),
+            Report::Import {
+                paths,
+                dry_run,
+                project,
+            } => report_import(&paths, dry_run, project.as_deref()),
             Report::Publish {
                 file,
                 title,
@@ -362,6 +387,7 @@ fn main() -> ExitCode {
                 body,
                 body_file,
                 project,
+                date,
             } => std::path::absolute(&file)
                 .map_err(Into::into)
                 .and_then(|file| {
@@ -379,6 +405,7 @@ fn main() -> ExitCode {
                             "summary": summary,
                             "body": body,
                             "project": project,
+                            "date": date,
                         }),
                     )
                 }),
@@ -452,6 +479,74 @@ fn export(config: Option<PathBuf>, db: Option<PathBuf>, dir: &Path) -> Result<()
     let reports = cfg.reports_dir();
     let n = knowledge::export(&conn, dir, reports.is_dir().then_some(reports.as_path()))?;
     println!("{n} notes written under {}", dir.display());
+    Ok(())
+}
+
+/// `ccdash report import`: older reports found under `paths`, published
+/// one by one (or only listed with `dry_run`).
+fn report_import(paths: &[PathBuf], dry_run: bool, project: Option<&str>) -> Result<()> {
+    let files = report::find_html(paths)?;
+    if files.is_empty() {
+        anyhow::bail!("no .html files under the given paths");
+    }
+    let (mut published, mut skipped, mut failed) = (0, 0, 0);
+    for file in &files {
+        let Some(found) = report::inspect(file)? else {
+            println!("skip     {}: not an HTML document", file.display());
+            skipped += 1;
+            continue;
+        };
+        if !found.problems.is_empty() {
+            println!(
+                "skip     {} ({}): {}",
+                file.display(),
+                found.title,
+                found.problems.join("; ")
+            );
+            skipped += 1;
+            continue;
+        }
+        let size = format!("{} KB", found.bytes.div_ceil(1024));
+        if dry_run {
+            println!(
+                "would    {} ({size}, {}) as `{}`: {}",
+                file.display(),
+                found.date,
+                found.slug,
+                found.title
+            );
+            continue;
+        }
+        match client::tool_text(
+            collector::reports::TOOL,
+            serde_json::json!({
+                "path": file,
+                "title": found.title,
+                "slug": found.slug,
+                "summary": found.summary,
+                "body": found.body,
+                "project": project,
+                "date": found.date,
+            }),
+        ) {
+            Ok(text) => {
+                println!("ok       {}", text.lines().next().unwrap_or_default());
+                published += 1;
+            }
+            Err(e) => {
+                println!("failed   {}: {e:#}", file.display());
+                failed += 1;
+            }
+        }
+    }
+    if dry_run {
+        println!(
+            "{} file(s) would be published, {skipped} skipped; run again without --dry-run",
+            files.len() - skipped
+        );
+    } else {
+        println!("{published} published, {skipped} skipped, {failed} failed");
+    }
     Ok(())
 }
 

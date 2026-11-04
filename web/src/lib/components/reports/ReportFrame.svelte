@@ -51,13 +51,61 @@
 			: 'light';
 	});
 
+	/** The report's variables, from the panel's: the report wears the
+	 * panel's scheme (Neutral, Catppuccin, the wallpaper's…) while framed. */
+	const VARS: Record<string, string> = {
+		bg: '--background',
+		surface: '--card',
+		'surface-2': '--muted',
+		fg: '--foreground',
+		muted: '--muted-foreground',
+		border: '--border',
+		'border-strong': '--input',
+		accent: '--primary',
+		'accent-soft': '--accent',
+		'accent-fg': '--primary-foreground',
+		good: '--good',
+		warn: '--warning',
+		bad: '--critical',
+		info: '--working',
+		'series-1': '--working',
+		'series-2': '--permission',
+		'series-3': '--your-turn',
+		'series-4': '--series-4',
+		'series-5': '--series-5',
+		'series-6': '--series-6',
+		'seq-1': '--seq-1',
+		'seq-2': '--seq-2',
+		'seq-3': '--seq-3',
+		'seq-4': '--seq-4',
+		'seq-5': '--seq-5',
+		'seq-6': '--seq-6',
+		'hl-keyword': '--hl-keyword',
+		'hl-string': '--hl-string',
+		'hl-number': '--hl-number',
+		'hl-title': '--hl-title',
+		'hl-comment': '--hl-comment'
+	};
+
+	function vars(): Record<string, string> {
+		const computed = getComputedStyle(document.documentElement);
+		const out: Record<string, string> = {};
+		for (const [name, source] of Object.entries(VARS)) {
+			const value = computed.getPropertyValue(source).trim();
+			if (value) out[name] = value;
+		}
+		return out;
+	}
+
 	function tell() {
 		// NOTE: the frame is an opaque origin, so the target is `*`; the message carries nothing secret
-		frame?.contentWindow?.postMessage({ ccdash: 'theme', mode }, '*');
+		frame?.contentWindow?.postMessage({ ccdash: 'theme', mode, vars: vars() }, '*');
 	}
 
 	$effect(() => {
 		void mode;
+		void prefs.scheme;
+		void prefs.followed;
 		tell();
 	});
 </script>

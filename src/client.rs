@@ -34,6 +34,13 @@ fn request(request: &Value) -> Result<Value> {
 /// Runs a knowledge tool through the collector, as a session in the
 /// current directory would, and prints what it answers.
 pub fn tool(name: &str, args: Value) -> Result<()> {
+    println!("{}", tool_text(name, args)?);
+    Ok(())
+}
+
+/// Runs a knowledge tool through the collector; the text it answers, or
+/// its refusal as the error.
+pub fn tool_text(name: &str, args: Value) -> Result<String> {
     let cwd = std::env::current_dir()?;
     let reply = request(&json!({
         "cmd": "tool",
@@ -46,8 +53,7 @@ pub fn tool(name: &str, args: Value) -> Result<()> {
     if reply["ok"] != true {
         bail!("{text}");
     }
-    println!("{text}");
-    Ok(())
+    Ok(text.to_owned())
 }
 
 /// Sends `notes` to the hub for the workspace holding `source`.

@@ -4,9 +4,14 @@
 //! one self-contained file that fetches nothing from anywhere, so it reads
 //! the same in the panel's sandboxed frame, as a file sent on, and offline.
 
-use std::collections::HashSet;
+use std::{
+    collections::HashSet,
+    path::{Path, PathBuf},
+};
 
-use crate::knowledge::slugify;
+use anyhow::{Context, Result};
+
+use crate::knowledge::{slugify, ymd};
 
 /// The chrome, with `{{title}}`, `{{date}}`, `{{generator}}` and `{{body}}`.
 pub const TEMPLATE: &str = include_str!("../claude-plugin/skills/report/template.html");
@@ -163,6 +168,125 @@ pub fn check(html: &str) -> Vec<Problem> {
         });
     }
     out
+}
+
+/// Directories `find_html` never looks into.
+const SKIPPED_DIRS: [&str; 8] = [
+    "node_modules",
+    "target",
+    "build",
+    "dist",
+    ".git",
+    ".svelte-kit",
+    ".direnv",
+    "result",
+];
+
+/// Every `.html`/`.htm` file under `paths`, sorted; a path that is a file
+/// counts as is.
+pub fn find_html(paths: &[PathBuf]) -> Result<Vec<PathBuf>> {
+    fn walk(dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
+        for entry in std::fs::read_dir(dir).with_context(|| format!("reading {}", dir.display()))? {
+            let path = entry?.path();
+            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            if path.is_dir() {
+                if !SKIPPED_DIRS.contains(&name) {
+                    walk(&path, out)?;
+                }
+            } else if path
+                .extension()
+                .and_then(|e| e.to_str())
+                .is_some_and(|e| e.eq_ignore_ascii_case("html") || e.eq_ignore_ascii_case("htm"))
+            {
+                out.push(path);
+            }
+        }
+        Ok(())
+    }
+    let mut out = Vec::new();
+    for path in paths {
+        let path = std::path::absolute(path)?;
+        if path.is_dir() {
+            walk(&path, &mut out)?;
+        } else if path.is_file() {
+            out.push(path);
+        } else {
+            anyhow::bail!("{} does not exist", path.display());
+        }
+    }
+    out.sort();
+    out.dedup();
+    Ok(out)
+}
+
+/// What an older report file would be published as.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Found {
+    pub title: String,
+    pub slug: String,
+    pub summary: String,
+    pub body: String,
+    /// `YYYY-MM-DD` of the file's modification time.
+    pub date: String,
+    pub bytes: usize,
+    /// Fatal problems; empty when it can be published.
+    pub problems: Vec<String>,
+}
+
+/// Reads `file` as a report to import; None when it is no HTML document.
+pub fn inspect(file: &Path) -> Result<Option<Found>> {
+    let bytes = std::fs::read(file).with_context(|| format!("reading {}", file.display()))?;
+    if !is_html(&bytes) {
+        return Ok(None);
+    }
+    let html = String::from_utf8_lossy(&bytes);
+    let stem = file
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("report")
+        .to_owned();
+    let title = title_of(&html).unwrap_or_else(|| stem.replace(['-', '_'], " "));
+    let modified = std::fs::metadata(file)?
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map_or(0, |d| d.as_millis() as i64);
+    let date = ymd(modified);
+    let base = slugify(&title);
+    // NOTE: a title that dates itself ("… 2026-11-02") needs no second date
+    let dated = base
+        .as_bytes()
+        .windows(10)
+        .any(|w| crate::hub::reports::valid_date(std::str::from_utf8(w).unwrap_or("")));
+    let slug = if dated {
+        base
+    } else {
+        slugify(&format!("{base} {date}"))
+    };
+    let sections = sections(&html);
+    let mut body = format!(
+        "# {title}\n\nImported from `{}` (made {date}).\n",
+        file.display()
+    );
+    if !sections.is_empty() {
+        body.push_str("\n## Sections\n\n");
+        for s in &sections {
+            body.push_str(&format!("- {s}\n"));
+        }
+    }
+    Ok(Some(Found {
+        summary: format!("Imported {date}: {}", file.display()),
+        problems: check(&html)
+            .into_iter()
+            .filter(|p| p.fatal)
+            .map(|p| p.text)
+            .collect(),
+        title,
+        slug,
+        body,
+        date,
+        bytes: bytes.len(),
+    }))
 }
 
 fn embedded(value: &str) -> bool {
@@ -364,6 +488,64 @@ mod tests {
         let empty = check(&build(&Meta::default(), "<p>nothing</p>"));
         assert_eq!(empty.len(), 1);
         assert!(!empty[0].fatal);
+    }
+
+    #[test]
+    fn older_files_are_found_and_sized_up_for_an_import() {
+        let dir = std::env::temp_dir().join(format!("ccdash-report-scan-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("node_modules")).unwrap();
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        std::fs::write(dir.join("node_modules/x.html"), "<html></html>").unwrap();
+        std::fs::write(dir.join("notes.md"), "# md").unwrap();
+        std::fs::write(
+            dir.join("sub/good.html"),
+            build(
+                &Meta {
+                    title: "Good report",
+                    date: "2026-10-01",
+                },
+                "<h2>A</h2><h2>B</h2>",
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("bad.html"),
+            "<!doctype html><html><head><title>Bad</title></head><body><script src=\"https://x/y.js\"></script></body></html>",
+        )
+        .unwrap();
+        std::fs::write(dir.join("plain.html"), "not html at all").unwrap();
+        let files = find_html(std::slice::from_ref(&dir)).unwrap();
+        let names: Vec<String> = files
+            .iter()
+            .map(|f| f.strip_prefix(&dir).unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names, ["bad.html", "plain.html", "sub/good.html"]);
+        let good = inspect(&dir.join("sub/good.html")).unwrap().unwrap();
+        assert_eq!(good.title, "Good report");
+        assert!(good.slug.starts_with("good-report-20"), "{}", good.slug);
+        std::fs::write(
+            dir.join("sub/dated.html"),
+            build(
+                &Meta {
+                    title: "Dated 2026-11-02",
+                    date: "2026-11-02",
+                },
+                "<h2>A</h2>",
+            ),
+        )
+        .unwrap();
+        let dated = inspect(&dir.join("sub/dated.html")).unwrap().unwrap();
+        assert_eq!(dated.slug, "dated-2026-11-02");
+        assert!(good.problems.is_empty());
+        assert!(good.body.contains("- A\n- B\n"));
+        assert_eq!(good.date.len(), 10);
+        let bad = inspect(&dir.join("bad.html")).unwrap().unwrap();
+        assert_eq!(bad.title, "Bad");
+        assert_eq!(bad.problems.len(), 1);
+        assert!(inspect(&dir.join("plain.html")).unwrap().is_none());
+        assert!(find_html(&[dir.join("missing")]).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

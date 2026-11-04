@@ -27,13 +27,17 @@ frame, as a file sent to someone, and offline.
 
 Every report wears the same chrome, the `ccdash:report` skill's
 `template.html`: a top bar with the title, the date and a search box
-(matches marked in the text, the contents narrowed to the sections that
-hit, `Enter` steps through them, `/` focuses it); a System/Light/Dark
-switch that follows the system until picked and follows the panel's mode
-when framed; the contents on the left (a drawer on the phone), with the
-section in view marked; numbered headings; print styles. The colours are
-ccdash's own scheme in both modes; charts name the theme's variables so
-they flip with it.
+(matches marked in the text and listed under the box with their section,
+the contents narrowed to the sections that hit, `Enter` and the arrows
+step through them, `/` focuses it); a System/Light/Dark switch that
+follows the system until picked and, when framed, follows the panel's
+mode and wears the panel's colour scheme (Neutral, Catppuccin, the
+wallpaper's…); the contents on the left (a drawer on the phone), with the
+section in view marked; numbered headings; tables that sort by a click on
+a heading, with a filter box past eight rows; code blocks with colours,
+line numbers and Copy; print styles. On its own the report uses ccdash's
+scheme in both modes; charts name the theme's variables so they flip with
+it.
 
 ## 2. Making one
 
@@ -62,6 +66,7 @@ The `report_publish` tool, from the session that made the report:
 | `summary` | one line for lists                                                                                      |
 | `body`    | the abstract, markdown; `[[slug]]` links as in any note                                                 |
 | `project` | default: the session's project                                                                          |
+| `date`    | `YYYY-MM-DD` when it was made, for an older file (default: today); shown as "made …"                    |
 
 The collector reads the file and sends it with the metadata to the hub
 (`PUT /reports/-/upload`, this machine's collector token), which checks it
@@ -72,11 +77,27 @@ unreachable (it is megabytes): the tool says so and the file stays where
 it is for another try. A slug that belongs to a note of another kind is
 refused.
 
+The session's chat shows a "Published a report" bubble where it happened,
+linking to the viewer.
+
 From a shell, the same through the collector:
 
 ```sh
-ccdash report publish report.html --title "…" --summary "…" --body-file abstract.md [--slug …] [--project …]
+ccdash report publish report.html --title "…" --summary "…" --body-file abstract.md [--slug …] [--project …] [--date …]
 ```
+
+Older reports on a machine come in with
+
+```sh
+ccdash report import --dry-run ~/ProjectBundle/tsandrini   # lists: title, date, slug, size; skipped files with the reason
+ccdash report import ~/ProjectBundle/tsandrini/.claude-tmp/hair-dryer
+```
+
+which walks directories (`node_modules`, `target`, `build` and the like
+skipped), takes every HTML document that is self-contained, titles it by
+its `<title>`, dates it by the file's modification time, and writes an
+abstract naming where it came from and its sections. Edit the note
+afterwards in the panel when the abstract should say more.
 
 ## 4. Reading, searching, sharing
 
@@ -85,7 +106,9 @@ by day, with the one note search narrowed to reports (title, summary and
 abstract). A report's page frames the document, full height, with its
 abstract and facts in a drawer (`▣`), **Download** (the HTML file, to send
 on by hand), **Open in a new tab**, **Load again**; a new version
-published while the page is open reloads it. Each project's page has a
+published while the page is open reloads it; **Archive** takes a report
+out of the lists (the file stays; "archived too" on the Reports page
+shows them, **Restore** brings one back). Each project's page has a
 **Reports** tab; the Projects overview counts them; `Ctrl K` finds them
 (kind `report`) and opens the viewer; the note itself (the abstract, its
 links, the graph) is one click away and has **Open the report**. The

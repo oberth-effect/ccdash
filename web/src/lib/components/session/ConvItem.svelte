@@ -1,9 +1,11 @@
 <script lang="ts">
 	// One item of an exchange that is not a step: Claude's text, a reply,
 	// an error, a subagent, a compaction, a start or end divider.
+	import FileChartColumnIcon from '@lucide/svelte/icons/file-chart-column';
 	import OctagonXIcon from '@lucide/svelte/icons/octagon-x';
 	import type { Item } from '#lib/api/types.js';
 	import { fmtDuration, fmtStamp, fmtTime, known, plural } from '#lib/format.js';
+	import { reportHref } from '#lib/notes.js';
 	import Prose from './Prose.svelte';
 
 	let { item, isLastReply = false }: { item: Item; isLastReply?: boolean } = $props();
@@ -66,5 +68,19 @@
 	<div class="flex items-center gap-1.5 text-xs font-medium text-warning">
 		<OctagonXIcon class="size-3.5" />
 		Interrupted from ccdash · {fmtTime(item.at)}
+	</div>
+{:else if item.kind === 'report'}
+	<div class="flex flex-col items-start gap-1">
+		<span class="flex items-center gap-1 text-xs text-muted-foreground">
+			<FileChartColumnIcon class="size-3.5 text-kind-report" />
+			{item.replaced ? 'Replaced a report' : 'Published a report'} · {fmtStamp(item.at)}
+		</span>
+		<a
+			href={reportHref(item.workspace, item.slug)}
+			class="flex max-w-[90%] flex-wrap items-center gap-x-3 gap-y-1 rounded-lg border border-kind-report/40 bg-kind-report/10 px-3 py-2 text-sm hover:bg-kind-report/20"
+		>
+			<span class="font-medium">{item.title}</span>
+			<span class="text-xs text-muted-foreground">Open in Reports ↗</span>
+		</a>
 	</div>
 {/if}

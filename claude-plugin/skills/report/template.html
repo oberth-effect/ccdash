@@ -28,6 +28,11 @@
         --bad: #d03b3b;
         --info: #2a78d6;
         --mark: #ffe58a;
+        --hl-keyword: #cf222e;
+        --hl-string: #0a3069;
+        --hl-number: #0550ae;
+        --hl-title: #8250df;
+        --hl-comment: #59636e;
         --series-1: #2a78d6;
         --series-2: #eb6834;
         --series-3: #1baf7a;
@@ -67,6 +72,11 @@
         --bad: #e05a5a;
         --info: #3987e5;
         --mark: #7a5a00;
+        --hl-keyword: #ff7b72;
+        --hl-string: #a5d6ff;
+        --hl-number: #79c0ff;
+        --hl-title: #d2a8ff;
+        --hl-comment: #9198a1;
         --series-1: #3987e5;
         --series-2: #d95926;
         --series-3: #199e70;
@@ -100,6 +110,11 @@
           --bad: #e05a5a;
           --info: #3987e5;
           --mark: #7a5a00;
+          --hl-keyword: #ff7b72;
+          --hl-string: #a5d6ff;
+          --hl-number: #79c0ff;
+          --hl-title: #d2a8ff;
+          --hl-comment: #9198a1;
           --series-1: #3987e5;
           --series-2: #d95926;
           --series-3: #199e70;
@@ -756,6 +771,153 @@
         color: var(--muted);
       }
 
+      /* --- tables: click a heading to sort; long tables get a filter --- */
+      article thead th.sortable {
+        cursor: pointer;
+        user-select: none;
+        white-space: nowrap;
+      }
+      article thead th.sortable::after {
+        content: "↕";
+        margin-left: 0.35rem;
+        opacity: 0.35;
+        font-size: 0.8em;
+      }
+      article thead th[aria-sort="ascending"]::after {
+        content: "↑";
+        opacity: 1;
+        color: var(--accent);
+      }
+      article thead th[aria-sort="descending"]::after {
+        content: "↓";
+        opacity: 1;
+        color: var(--accent);
+      }
+      .table-tools {
+        display: flex;
+        align-items: center;
+        gap: 0.75rem;
+        padding: 0.5rem 0.75rem;
+        border-bottom: 1px solid var(--border);
+        background: var(--surface);
+        font-size: 0.8rem;
+        color: var(--muted);
+      }
+      .table-tools input {
+        flex: 1;
+        max-width: 18rem;
+        padding: 0.25rem 0.5rem;
+        font: inherit;
+        font-size: 0.8rem;
+        color: var(--fg);
+        background: var(--surface-2);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+      }
+      /* --- the search's results --- */
+      .search .results {
+        position: absolute;
+        top: calc(100% + 0.35rem);
+        right: 0;
+        width: min(28rem, 90vw);
+        max-height: 60vh;
+        overflow-y: auto;
+        margin: 0;
+        padding: 0.25rem;
+        list-style: none;
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        box-shadow: var(--shadow);
+        z-index: 30;
+      }
+      .search:not(.open) .results {
+        display: none;
+      }
+      .search .results li {
+        padding: 0.4rem 0.6rem;
+        border-radius: 6px;
+        cursor: pointer;
+        font-size: 0.85rem;
+        line-height: 1.35;
+        color: var(--fg);
+      }
+      .search .results li:hover,
+      .search .results li.current {
+        background: var(--accent-soft);
+      }
+      .search .results .where {
+        display: block;
+        font-size: 0.72rem;
+        color: var(--muted);
+      }
+      .search .results mark {
+        background: var(--mark);
+        color: inherit;
+      }
+      /* --- code blocks: the language and Copy, line numbers, colours --- */
+      .code {
+        margin: 1rem 0;
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        background: var(--surface-2);
+        overflow: hidden;
+      }
+      .code .head {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        padding: 0.3rem 0.5rem 0.3rem 0.9rem;
+        border-bottom: 1px solid var(--border);
+        background: var(--surface);
+        font: 0.72rem var(--mono);
+        color: var(--muted);
+      }
+      .code .head .btn {
+        margin-left: auto;
+        padding: 0.15rem 0.6rem;
+        font-size: 0.72rem;
+      }
+      .code .body {
+        display: flex;
+        overflow-x: auto;
+      }
+      .code .ln {
+        flex: none;
+        margin: 0;
+        padding: 0.9rem 0.6rem 0.9rem 0.9rem;
+        border: 0;
+        border-right: 1px solid var(--border);
+        border-radius: 0;
+        background: none;
+        color: var(--muted);
+        text-align: right;
+        user-select: none;
+      }
+      .code pre {
+        flex: 1;
+        margin: 0;
+        border: 0;
+        border-radius: 0;
+        background: none;
+        overflow: visible;
+      }
+      .tok-k {
+        color: var(--hl-keyword);
+      }
+      .tok-s {
+        color: var(--hl-string);
+      }
+      .tok-n {
+        color: var(--hl-number);
+      }
+      .tok-t {
+        color: var(--hl-title);
+      }
+      .tok-c {
+        color: var(--hl-comment);
+        font-style: italic;
+      }
       @media print {
         .topbar,
         .toc,
@@ -831,6 +993,7 @@
           autocomplete="off"
         />
         <span class="count" aria-live="polite"></span>
+        <ol class="results" role="listbox" aria-label="Results"></ol>
       </div>
       <div class="theme">
         <button
@@ -921,6 +1084,7 @@
         button.addEventListener("click", () => {
           pref = pref === "auto" ? "light" : pref === "light" ? "dark" : "auto";
           fromParent = null;
+          applyVars(null);
           try {
             pref === "auto"
               ? localStorage.removeItem(KEY)
@@ -929,6 +1093,24 @@
           apply();
         });
         system.addEventListener("change", apply);
+        // the panel may hand its own colours in: the report wears the panel's scheme
+        const THEME_VARS = new Set(
+          "bg surface surface-2 fg muted border border-strong accent accent-soft accent-fg good warn bad info series-1 series-2 series-3 series-4 series-5 series-6 seq-1 seq-2 seq-3 seq-4 seq-5 seq-6 hl-keyword hl-string hl-number hl-title hl-comment".split(
+            " ",
+          ),
+        );
+        let appliedVars = [];
+        function applyVars(vars) {
+          for (const n of appliedVars) root.style.removeProperty(n);
+          appliedVars = [];
+          if (!vars || typeof vars !== "object") return;
+          for (const [k, v] of Object.entries(vars)) {
+            if (THEME_VARS.has(k) && typeof v === "string" && v.length < 80) {
+              root.style.setProperty("--" + k, v);
+              appliedVars.push("--" + k);
+            }
+          }
+        }
         addEventListener("message", (e) => {
           const d = e.data;
           if (
@@ -937,6 +1119,7 @@
             ["light", "dark", "auto"].includes(d.mode)
           ) {
             fromParent = d.mode === "auto" ? null : d.mode;
+            applyVars(d.vars ?? null);
             apply();
           }
         });
@@ -1055,11 +1238,246 @@
           a.rel = "noopener noreferrer";
         }
 
+        // --- tables: click a heading to sort; a filter box on long tables -----
+        const numberOf = (s) => {
+          if (/\d{4}-\d{2}-\d{2}/.test(s) || /[a-z]{3,}/i.test(s)) return null;
+          const t = s
+            .replace(/[−–]/g, "-")
+            .replace(/[\s  ,%]/g, "")
+            .replace(/[^\d.+-]/g, "");
+          const n = parseFloat(t);
+          return t !== "" && !isNaN(n) ? n : null;
+        };
+        for (const table of article.querySelectorAll("table")) {
+          const head = table.tHead;
+          const body = table.tBodies[0];
+          if (!head || !body || !head.rows[0]) continue;
+          const headings = [...head.rows[0].cells];
+          if (!table.hasAttribute("data-nosort")) {
+            headings.forEach((th, i) => {
+              th.classList.add("sortable");
+              th.setAttribute("role", "button");
+              th.tabIndex = 0;
+              const sort = () => {
+                const dir =
+                  th.getAttribute("aria-sort") === "ascending"
+                    ? "descending"
+                    : "ascending";
+                headings.forEach((o) => o.removeAttribute("aria-sort"));
+                th.setAttribute("aria-sort", dir);
+                const rows = [...body.rows];
+                const totals = rows.filter((r) =>
+                  r.classList.contains("total"),
+                );
+                const data = rows.filter((r) => !r.classList.contains("total"));
+                const cell = (r) =>
+                  (r.cells[i] ? r.cells[i].textContent : "").trim();
+                const nums = data.map((r) => numberOf(cell(r)));
+                const numeric =
+                  nums.filter((n) => n !== null).length >=
+                  Math.max(1, data.length / 2);
+                const keyed = data.map((r, k) => ({
+                  r,
+                  k,
+                  n: nums[k],
+                  s: cell(r).toLowerCase(),
+                }));
+                keyed.sort((a, b) => {
+                  let c = numeric
+                    ? (a.n ?? Infinity) - (b.n ?? Infinity)
+                    : a.s.localeCompare(b.s, undefined, { numeric: true });
+                  if (isNaN(c)) c = 0;
+                  return (c || a.k - b.k) * (dir === "ascending" ? 1 : -1);
+                });
+                for (const { r } of keyed) body.appendChild(r);
+                for (const t of totals) body.appendChild(t);
+              };
+              th.addEventListener("click", sort);
+              th.addEventListener("keydown", (e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  sort();
+                }
+              });
+            });
+          }
+          if (body.rows.length > 8 && !table.hasAttribute("data-nofilter")) {
+            const tools = document.createElement("div");
+            tools.className = "table-tools";
+            const filter = document.createElement("input");
+            filter.type = "search";
+            filter.placeholder = "Filter rows…";
+            filter.setAttribute("aria-label", "Filter the table's rows");
+            const count = document.createElement("span");
+            const dataRows = () =>
+              [...body.rows].filter((r) => !r.classList.contains("total"));
+            const total = dataRows().length;
+            const refilter = () => {
+              const q = filter.value.trim().toLowerCase();
+              let shown = 0;
+              for (const r of dataRows()) {
+                const hit = !q || r.textContent.toLowerCase().includes(q);
+                r.hidden = !hit;
+                shown += hit ? 1 : 0;
+              }
+              count.textContent = q
+                ? `${shown} of ${total} rows`
+                : `${total} rows`;
+            };
+            filter.addEventListener("input", refilter);
+            tools.append(filter, count);
+            table.parentNode.insertBefore(tools, table);
+            refilter();
+          }
+        }
+
+        // --- code blocks: the language and Copy, line numbers, colours --------
+        const KEYWORDS = new Set(
+          "fn let const var function return if else elif for while loop match struct enum impl pub use mod import from export default class def async await try catch except finally throw raise new true false null nil None True False in of with as is not and or yield break continue type interface trait where mut static unsafe crate self super then fi do done esac case local rec inherit switch void int string bool".split(
+            " ",
+          ),
+        );
+        const HASH_LANGS =
+          /^(py|python|sh|bash|zsh|shell|fish|nix|yaml|yml|toml|ruby|rb|conf|ini|make|makefile|dockerfile|r|console)$/;
+        const escapeHtml = (t) =>
+          t.replace(
+            /[&<>]/g,
+            (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" })[c],
+          );
+        function paint(src, lang) {
+          const comment = HASH_LANGS.test(lang)
+            ? /(#.*|\/\*[\s\S]*?\*\/)/.source
+            : /^(html|xml|svg)$/.test(lang)
+              ? /(<!--[\s\S]*?-->)/.source
+              : /(\/\/.*|\/\*[\s\S]*?\*\/)/.source;
+          const re = new RegExp(
+            comment +
+              "|(\"(?:\\\\.|[^\"\\\\\\n])*\"|'(?:\\\\.|[^'\\\\\\n])*'|`(?:\\\\.|[^`\\\\])*`)|(\\b\\d+(?:\\.\\d+)?\\b)|(\\b[A-Za-z_]\\w*\\b)",
+            "g",
+          );
+          let out = "";
+          let last = 0;
+          for (const m of src.matchAll(re)) {
+            out += escapeHtml(src.slice(last, m.index));
+            const [text, c, str, num, word] = m;
+            const cls = c
+              ? "tok-c"
+              : str
+                ? "tok-s"
+                : num
+                  ? "tok-n"
+                  : KEYWORDS.has(word)
+                    ? "tok-k"
+                    : /^[A-Z]/.test(word) && lang !== ""
+                      ? "tok-t"
+                      : "";
+            out += cls
+              ? `<span class="${cls}">${escapeHtml(text)}</span>`
+              : escapeHtml(text);
+            last = m.index + text.length;
+          }
+          return out + escapeHtml(src.slice(last));
+        }
+        for (const pre of article.querySelectorAll("pre")) {
+          if (pre.closest(".code")) continue;
+          const code = pre.querySelector("code") || pre;
+          const lang =
+            ((code.className || "").match(/language-([\w+-]+)/) || [])[1] || "";
+          const text = code.textContent.replace(/\n$/, "");
+          const box = document.createElement("div");
+          box.className = "code";
+          const head = document.createElement("div");
+          head.className = "head";
+          const label = document.createElement("span");
+          label.textContent = lang || "code";
+          const copy = document.createElement("button");
+          copy.type = "button";
+          copy.className = "btn";
+          copy.textContent = "Copy";
+          copy.addEventListener("click", async () => {
+            try {
+              await navigator.clipboard.writeText(text);
+              copy.textContent = "Copied";
+            } catch {
+              const range = document.createRange();
+              range.selectNodeContents(code);
+              const sel = getSelection();
+              sel.removeAllRanges();
+              sel.addRange(range);
+              copy.textContent = "Selected: press Ctrl+C";
+            }
+            setTimeout(() => (copy.textContent = "Copy"), 1800);
+          });
+          head.append(label, copy);
+          const bodyEl = document.createElement("div");
+          bodyEl.className = "body";
+          const ln = document.createElement("pre");
+          ln.className = "ln";
+          ln.setAttribute("aria-hidden", "true");
+          ln.textContent = text
+            .split("\n")
+            .map((_, i) => i + 1)
+            .join("\n");
+          pre.replaceWith(box);
+          box.append(head, bodyEl);
+          bodyEl.append(ln, pre);
+          code.innerHTML = paint(text, lang);
+        }
+
         // --- search: marks in the text, the contents narrowed to the hits -------
         const input = document.getElementById("q");
         const count = document.querySelector(".search .count");
         let hits = [],
           at = -1;
+        const searchBox = document.querySelector(".search");
+        const results = searchBox.querySelector(".results");
+        function snippetOf(m) {
+          const parent = m.parentNode;
+          let before = "";
+          for (const n of parent.childNodes) {
+            if (n === m) break;
+            before += n.textContent;
+          }
+          const whole = parent.textContent;
+          const start = before.length;
+          const end = start + m.textContent.length;
+          const a = Math.max(0, start - 40);
+          const b = Math.min(whole.length, end + 60);
+          return [
+            (a > 0 ? "…" : "") + whole.slice(a, start),
+            whole.slice(start, end),
+            whole.slice(end, b) + (b < whole.length ? "…" : ""),
+          ];
+        }
+        function renderResults() {
+          results.replaceChildren();
+          hits.slice(0, 50).forEach((m, i) => {
+            const li = document.createElement("li");
+            li.setAttribute("role", "option");
+            const h = sectionOf(m);
+            const where = document.createElement("span");
+            where.className = "where";
+            const entry = h ? items.get(h) : null;
+            where.textContent = entry
+              ? entry.a.innerText.replace(/\s+/g, " ")
+              : "Introduction";
+            const [pre, hit, post] = snippetOf(m);
+            const mark = document.createElement("mark");
+            mark.textContent = hit;
+            li.append(
+              where,
+              document.createTextNode(pre),
+              mark,
+              document.createTextNode(post),
+            );
+            li.addEventListener("mousedown", (e) => {
+              e.preventDefault();
+              go(i);
+            });
+            results.appendChild(li);
+          });
+          searchBox.classList.toggle("open", hits.length > 0);
+        }
         function clearMarks() {
           for (const m of article.querySelectorAll("mark.hit")) {
             const t = document.createTextNode(m.textContent);
@@ -1068,6 +1486,8 @@
           }
           hits = [];
           at = -1;
+          results.replaceChildren();
+          searchBox.classList.remove("open");
         }
         function sectionOf(el) {
           let h = null;
@@ -1132,15 +1552,20 @@
                 ),
             );
           count.textContent = hits.length ? `${hits.length}` : "0";
-          if (hits.length) go(0);
+          renderResults();
+          if (hits.length) go(0, false);
         }
-        function go(i) {
+        function go(i, scroll = true) {
           if (!hits.length) return;
           if (at >= 0) hits[at].classList.remove("current");
           at = (i + hits.length) % hits.length;
           hits[at].classList.add("current");
-          hits[at].scrollIntoView({ block: "center" });
+          if (scroll) hits[at].scrollIntoView({ block: "center" });
           count.textContent = `${at + 1}/${hits.length}`;
+          const entries = results.children;
+          for (let k = 0; k < entries.length; k++)
+            entries[k].classList.toggle("current", k === at);
+          if (entries[at]) entries[at].scrollIntoView({ block: "nearest" });
         }
         let timer;
         input.addEventListener("input", () => {
@@ -1152,12 +1577,26 @@
             e.preventDefault();
             go(at + (e.shiftKey ? -1 : 1));
           }
+          if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+            e.preventDefault();
+            go(at + (e.key === "ArrowDown" ? 1 : -1));
+          }
           if (e.key === "Escape") {
-            input.value = "";
-            search("");
-            input.blur();
+            if (searchBox.classList.contains("open")) {
+              searchBox.classList.remove("open");
+            } else {
+              input.value = "";
+              search("");
+              input.blur();
+            }
           }
         });
+        input.addEventListener("focus", () =>
+          searchBox.classList.toggle("open", hits.length > 0),
+        );
+        input.addEventListener("blur", () =>
+          setTimeout(() => searchBox.classList.remove("open"), 150),
+        );
         addEventListener("keydown", (e) => {
           if (
             e.key === "/" &&

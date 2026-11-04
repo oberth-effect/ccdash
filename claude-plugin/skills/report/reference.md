@@ -109,16 +109,26 @@ Everything else is plain HTML with these classes.
   <p>…</p>
 </details>
 
+<pre><code class="language-sh">ccdash report build body.html --title "…" -o report.html
+ccdash report publish report.html --body-file abstract.md</code></pre>
+<!-- any language name; the chrome colours keywords, strings, numbers and
+comments, numbers the lines and adds Copy. Escape < and & in the code. -->
+
 <h2>Sources</h2>
 <ul class="sources">
   <li><a href="https://www.alza.cz/…">Alza.cz listing</a>, 2026-11-02</li>
 </ul>
 ```
 
-Also: `blockquote`, `code`, `pre`, `hr`, `mark`, `kbd`, `abbr`, `.muted`,
+Also: `blockquote`, `code`, `hr`, `mark`, `kbd`, `abbr`, `.muted`,
 `.small`, an `<img src="data:image/png;base64,…">`. External links open in
 a new tab by themselves. Headings get ids from their text; set your own
 `id` when a link to the section must survive a reworded heading.
+
+Tables with a `<thead>` sort by a click on a heading (numbers, dates and
+text each their own way; `tr.total` stays last); more than eight rows adds
+a filter box. `data-nosort` or `data-nofilter` on the `<table>` turns
+either off.
 
 Theme variables for charts: `--series-1` … `--series-6` (categorical),
 `--seq-1` … `--seq-6` (one-hue ramp, light to dark), `--good` `--warn`

@@ -4,13 +4,21 @@
 	// the HTML file to send on, Open shows it in a tab of its own.
 	import { untrack } from 'svelte';
 	import { page } from '$app/state';
+	import ArchiveIcon from '@lucide/svelte/icons/archive';
+	import ArchiveRestoreIcon from '@lucide/svelte/icons/archive-restore';
 	import ArrowLeftIcon from '@lucide/svelte/icons/arrow-left';
 	import DownloadIcon from '@lucide/svelte/icons/download';
 	import ExternalLinkIcon from '@lucide/svelte/icons/external-link';
 	import PanelRightIcon from '@lucide/svelte/icons/panel-right';
 	import RefreshCwIcon from '@lucide/svelte/icons/refresh-cw';
 	import { Unauthorized } from '#lib/api/client.js';
-	import { fetchNote, fetchReportFile, mintReportView, type NotePage } from '#lib/api/index.js';
+	import {
+		fetchNote,
+		fetchReportFile,
+		mintReportView,
+		putNote,
+		type NotePage
+	} from '#lib/api/index.js';
 	import { Button } from '#lib/components/ui/button/index.js';
 	import ReportFrame from '#lib/components/reports/ReportFrame.svelte';
 	import StatusBadge from '#lib/components/notes/StatusBadge.svelte';
@@ -96,9 +104,28 @@
 			window.open(url, '_blank', 'noopener');
 		});
 
+	/** Archived reports leave the lists; the file stays. */
+	const setArchived = (archived: boolean) =>
+		run('archive', async () => {
+			const v = note!;
+			await putNote(ws, slug, {
+				kind: v.kind,
+				title: v.title,
+				body: v.body,
+				summary: v.summary,
+				project: v.project,
+				status: archived ? 'archived' : 'active',
+				extra: v.extra,
+				base_version: v.version
+			});
+			await load();
+		});
+
 	const bytes = $derived(typeof note?.extra.bytes === 'number' ? note.extra.bytes : null);
 	const host = $derived(typeof note?.extra.host === 'string' ? note.extra.host : null);
 	const path = $derived(typeof note?.extra.path === 'string' ? note.extra.path : null);
+	const made = $derived(typeof note?.extra.date === 'string' ? note.extra.date : null);
+	const archived = $derived(note?.status === 'archived');
 </script>
 
 <svelte:head>
@@ -121,6 +148,7 @@
 						>{note.workspace}{note.project ? ` / ${note.project}` : ''}</a
 					>
 					· {fmtStamp(note.updated_at)}
+					{#if made}· made {made}{/if}
 					{#if bytes !== null}· {fmtBytes(bytes)}{/if}
 					{#if host}· from {host}{/if}
 					{#if note.version > 1}· v{note.version}{/if}
@@ -157,6 +185,18 @@
 			<RefreshCwIcon />
 		</Button>
 		<Button
+			variant="ghost"
+			size="icon-sm"
+			onclick={() => setArchived(!archived)}
+			disabled={!note || busy === 'archive'}
+			aria-label={archived ? 'Restore' : 'Archive'}
+			title={archived
+				? 'Restore: back into the lists'
+				: 'Archive: out of the lists, the file stays'}
+		>
+			{#if archived}<ArchiveRestoreIcon />{:else}<ArchiveIcon />{/if}
+		</Button>
+		<Button
 			variant={aside ? 'secondary' : 'ghost'}
 			size="icon-sm"
 			aria-pressed={aside}
@@ -189,6 +229,8 @@
 							<dd>{fmtStamp(note.updated_at)}</dd>
 							{#if host}<dt class="text-muted-foreground">From</dt>
 								<dd>{host}</dd>{/if}
+							{#if made}<dt class="text-muted-foreground">Made</dt>
+								<dd>{made}</dd>{/if}
 							{#if path}<dt class="text-muted-foreground">Was at</dt>
 								<dd class="font-mono break-all">{path}</dd>{/if}
 							{#if bytes !== null}<dt class="text-muted-foreground">Size</dt>

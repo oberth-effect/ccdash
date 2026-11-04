@@ -81,6 +81,7 @@ async fn run(cfg: &CollectorConfig, who: Who, args: &Value) -> Result<String> {
         "summary": text("summary"),
         "body": body,
         "project": text("project"),
+        "date": text("date"),
         "path": file.to_string_lossy(),
         "html": html,
     });

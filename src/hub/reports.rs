@@ -42,9 +42,13 @@ use crate::{
     knowledge::{self, NoteKind, Status, Upsert, slugify, valid_slug},
     protocol::Who,
     report,
+    state::StoreMsg,
     sync::hub::{Host, collector_auth},
     util::now_ms,
 };
+
+/// The conversation event a session's publish leaves (`conversation::Item::Report`).
+pub const EVENT: &str = "report";
 
 /// How long a view link works.
 pub const VIEW_MS: i64 = 3_600_000;
@@ -201,7 +205,22 @@ pub(crate) struct UploadBody {
     /// Where the file was on the session's machine.
     #[serde(default)]
     path: Option<String>,
+    /// When the report was made, `YYYY-MM-DD` (an import of an older
+    /// file; default: now).
+    #[serde(default)]
+    date: Option<String>,
     html: String,
+}
+
+/// `YYYY-MM-DD`, loosely.
+pub fn valid_date(s: &str) -> bool {
+    let b = s.as_bytes();
+    b.len() == 10
+        && b[4] == b'-'
+        && b[7] == b'-'
+        && b.iter()
+            .enumerate()
+            .all(|(i, c)| matches!(i, 4 | 7) || c.is_ascii_digit())
 }
 
 fn clean(s: Option<String>) -> Option<String> {
@@ -276,6 +295,12 @@ pub(crate) async fn upload(
         Some(s) => s,
         None => slugify(&title),
     };
+    let date = match clean(body.date) {
+        Some(d) if !valid_date(&d) => {
+            return Err(refuse(format!("{d:?} is not a date (YYYY-MM-DD)")));
+        }
+        d => d,
+    };
     let sha256 = hex(digest::digest(&digest::SHA256, body.html.as_bytes()).as_ref());
     let reports = app.reports.clone();
     let (ws, s, html) = (workspace.clone(), slug.clone(), body.html);
@@ -295,6 +320,7 @@ pub(crate) async fn upload(
             "host": host,
             "path": body.path,
             "published_at": now,
+            "date": date,
         }),
         body: abstract_,
         links: Vec::new(),
@@ -303,12 +329,13 @@ pub(crate) async fn upload(
         verified: true,
     };
     let by = located.session;
+    let author = by.clone();
     let ws = workspace.clone();
     let result = app
         .store
         .exec(
             move |conn| -> Result<(knowledge::Written, knowledge::Note)> {
-                let written = knowledge::upsert(conn, &ws, &up, by.as_deref(), now)?;
+                let written = knowledge::upsert(conn, &ws, &up, author.as_deref(), now)?;
                 let note = knowledge::get(conn, &ws, &up.slug)?.context("note vanished")?;
                 Ok((written, note))
             },
@@ -326,6 +353,24 @@ pub(crate) async fn upload(
         "report {workspace}/{slug} from {host}: {} ({bytes} bytes)",
         if written.created { "new" } else { "replaced" }
     );
+    // NOTE: the session's conversation shows the report where it was made
+    if let Some(session) = &by {
+        app.store.send(
+            &host,
+            StoreMsg::Event {
+                ts: now,
+                session: session.clone(),
+                kind: EVENT,
+                data: json!({
+                    "workspace": workspace,
+                    "slug": slug,
+                    "title": written.title,
+                    "bytes": bytes,
+                    "replaced": !written.created,
+                }),
+            },
+        );
+    }
     app.hub.notes_changed(vec![note]).await?;
     Ok(Json(json!({
         "written": written,

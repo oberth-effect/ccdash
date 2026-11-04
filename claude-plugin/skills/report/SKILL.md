@@ -21,10 +21,14 @@ project's `.claude-tmp/reports/<slug>/body.html`, or the scratchpad):
   answer). Then `<h2>` sections, `<h3>` subsections; the chrome numbers
   them and lists them in the contents, so make every heading say what the
   section concludes, not what it is about.
-- Key numbers in `.tiles`, comparisons in `.table-wrap > table` (`.num`
-  on number cells, `tr.total`), the one thing to know in a
-  `.callout.{info,good,warn,bad}`, status words as `.badge`, facts as
-  `dl.kv`, long evidence in `<details>`. Every element: `reference.md`.
+- Key numbers in `.tiles`, comparisons in `.table-wrap > table` with a
+  `<thead>` (`.num` on number cells, `tr.total` for a last row that stays
+  last): every such table sorts by a click on its headings, and one with
+  more than eight rows gets a filter box, with no work on your side. The
+  one thing to know in a `.callout.{info,good,warn,bad}`, status words as
+  `.badge`, facts as `dl.kv`, long evidence in `<details>`. Code in
+  `<pre><code class="language-rust">` (escape `<` and `&`): the chrome
+  adds the colours, line numbers and Copy. Every element: `reference.md`.
 - Charts: inline SVG (the `dataviz` skill for form and colour) in a
   `<figure>` with a `<figcaption>`. Colours only through the theme's
   variables (`var(--series-1)`…`--series-6`, `--seq-1`…`--seq-6`,
@@ -68,11 +72,19 @@ Call `report_publish`:
 | `summary` | one line for lists and session starts: what it is about, and when                                                                                       |
 | `body`    | the abstract, markdown: the question, the findings with their numbers, the recommendation, the caveats; link notes as `[[slug]]`. What `recall` returns |
 | `project` | the repo directory name, when the session's is not it                                                                                                   |
+| `date`    | `YYYY-MM-DD` when the report was made, for an older file (default: today)                                                                               |
 
-The reply carries the panel's address: give it to the owner. When the hub
-is unreachable the tool says so and the file stays where it is: publish
-again later (also `ccdash report publish report.html --title … --body-file
-abstract.md` from a shell).
+The reply carries the panel's address: give it to the owner. The session's
+chat in ccdash shows a "Published a report" bubble linking to it. When the
+hub is unreachable the tool says so and the file stays where it is:
+publish again later (also `ccdash report publish report.html --title …
+--body-file abstract.md` from a shell).
+
+Older reports lying around on a machine: `ccdash report import --dry-run
+PATHS` (files or directories) lists what would be published (the title
+from the document's `title` element, the date from the file's modification
+time, files that fetch from the network skipped with the reason); without
+`--dry-run` it publishes them.
 
 ## 4. Tell the owner
 

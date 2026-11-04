@@ -673,7 +673,11 @@ command?: string,
 /**
  * A Bash call's output, or a failed call's error, capped by the hub.
  */
-output?: string, } | { "kind": "permission", id: number, at: number, tool: string, summary: string, } | { "kind": "answered", id: number, at: number, tool: string, action: string, via: string, } | { "kind": "message", id: number, at: number, html: string, } | { "kind": "reply", id: number, at: number, html: string, } | { "kind": "error", id: number, at: number, error: string, } | { "kind": "subagent", id: number, at: number, agent_type: string, description: string | null, ms: number | null, tools: number | null, html: string, } | { "kind": "compact", id: number, at: number, trigger: string | null, html: string, } | { "kind": "task", id: number, at: number, subject: string, status: string, } | { "kind": "start", id: number, at: number, source: string, } | { "kind": "end", id: number, at: number, reason: string, } | { "kind": "interrupted", id: number, at: number, };
+output?: string, } | { "kind": "permission", id: number, at: number, tool: string, summary: string, } | { "kind": "answered", id: number, at: number, tool: string, action: string, via: string, } | { "kind": "message", id: number, at: number, html: string, } | { "kind": "reply", id: number, at: number, html: string, } | { "kind": "error", id: number, at: number, error: string, } | { "kind": "subagent", id: number, at: number, agent_type: string, description: string | null, ms: number | null, tools: number | null, html: string, } | { "kind": "compact", id: number, at: number, trigger: string | null, html: string, } | { "kind": "task", id: number, at: number, subject: string, status: string, } | { "kind": "start", id: number, at: number, source: string, } | { "kind": "end", id: number, at: number, reason: string, } | { "kind": "interrupted", id: number, at: number, } | { "kind": "report", id: number, at: number, workspace: string, slug: string, title: string, 
+/**
+ * An earlier report under the slug was replaced.
+ */
+replaced: boolean, };
 
 /**
  * Which version of a conflicted file stays.

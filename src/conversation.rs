@@ -182,6 +182,16 @@ pub enum Item {
         id: i64,
         at: i64,
     },
+    /// The session published an HTML report (`hub::reports`).
+    Report {
+        id: i64,
+        at: i64,
+        workspace: String,
+        slug: String,
+        title: String,
+        /// An earlier report under the slug was replaced.
+        replaced: bool,
+    },
 }
 
 #[derive(Debug, Default, PartialEq, Serialize, TS)]
@@ -325,6 +335,14 @@ fn item(id: i64, at: i64, kind: &str, data: &Value) -> Option<Item> {
             id,
             at,
             error: text(data, "error"),
+        },
+        "report" => Item::Report {
+            id,
+            at,
+            workspace: text(data, "workspace"),
+            slug: text(data, "slug"),
+            title: text(data, "title"),
+            replaced: data["replaced"].as_bool().unwrap_or(false),
         },
         "subagent" => Item::Subagent {
             id,
@@ -693,6 +711,28 @@ mod tests {
             })
             .collect();
         assert_eq!((c.exchanges[0].id, ids.as_slice()), (1, [2, 3].as_slice()));
+    }
+
+    #[test]
+    fn a_report_is_an_item_of_the_exchange_that_made_it() {
+        use serde_json::json;
+        let conn = db();
+        event(&conn, 1, "prompt", json!({ "text": "make a report" }));
+        event(
+            &conn,
+            2,
+            crate::hub::reports::EVENT,
+            json!({ "workspace": "ws", "slug": "x--2026-11-04", "title": "X", "bytes": 10, "replaced": true }),
+        );
+        event(&conn, 3, "reply", json!({ "text": "done" }));
+        let c = conversation(&conn, "s", None, 10).unwrap();
+        assert_eq!(c.exchanges.len(), 1);
+        assert!(matches!(
+            &c.exchanges[0].items[0],
+            Item::Report { workspace, slug, title, replaced: true, .. }
+                if workspace == "ws" && slug == "x--2026-11-04" && title == "X"
+        ));
+        assert!(matches!(&c.exchanges[0].items[1], Item::Reply { .. }));
     }
 
     #[test]

@@ -163,7 +163,8 @@ pub fn definitions() -> Vec<Value> {
                     "slug": slug("The report (default: from the title)."),
                     "summary": string("One line for lists and the session-start context: what the report is about, and when it was made."),
                     "body": string("The abstract, markdown: the question the report answers, the key findings and numbers, what the reader should do; what `recall` shows without the HTML. Link notes as [[slug]]."),
-                    "project": string("Repo directory name the report belongs to (default: the session's project).")
+                    "project": string("Repo directory name the report belongs to (default: the session's project)."),
+                    "date": string("When the report was made, YYYY-MM-DD, for an older file (default: today).")
                 }
             }
         }),
