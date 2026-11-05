@@ -120,6 +120,9 @@ comments, numbers the lines and adds Copy. Escape < and & in the code. -->
 </ul>
 ```
 
+A diagram too wide to shrink keeps its size and scrolls sideways when the
+`<svg>` carries `style="min-width:1700px"` (the figure scrolls).
+
 Also: `blockquote`, `code`, `hr`, `mark`, `kbd`, `abbr`, `.muted`,
 `.small`, an `<img src="data:image/png;base64,…">`. External links open in
 a new tab by themselves. Headings get ids from their text; set your own

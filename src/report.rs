@@ -48,6 +48,41 @@ pub fn build(meta: &Meta<'_>, body: &str) -> String {
         .replace("{{body}}", body.trim_end())
 }
 
+/// A built report taken apart again: what `build` was given.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Unwrapped {
+    pub title: String,
+    pub date: String,
+    /// The article's content, the body fragment.
+    pub body: String,
+}
+
+/// The body, title and date out of a report `build` made (the document
+/// carries `data-ccdash-report`); None for any other HTML. `build` of the
+/// result with the current template is the same report in today's chrome.
+pub fn unwrap(html: &str) -> Option<Unwrapped> {
+    let lower = html.to_ascii_lowercase();
+    let head = &lower[..lower.len().min(4096)];
+    if !head.contains("data-ccdash-report") {
+        return None;
+    }
+    let main = lower.find("<main id=\"content\">")?;
+    let (_, open_end) = tag_opens(&lower[main..], "article").first().copied()?;
+    let from = main + open_end;
+    let colophon = lower[from..].find("<footer class=\"colophon\">")?;
+    let to = from + lower[from..colophon + from].rfind("</article>")?;
+    let date = tag_opens(&lower, "meta")
+        .into_iter()
+        .find(|(s, e)| attr_value(&lower[*s..*e], "name") == Some("ccdash:date"))
+        .and_then(|(s, e)| attr_value(&html[s..e], "content").map(str::to_owned))
+        .unwrap_or_default();
+    Some(Unwrapped {
+        title: title_of(html).unwrap_or_default(),
+        date,
+        body: html[from..to].trim_end().to_owned(),
+    })
+}
+
 /// Whether `bytes` start like an HTML document.
 pub fn is_html(bytes: &[u8]) -> bool {
     let head = String::from_utf8_lossy(&bytes[..bytes.len().min(2048)]).to_ascii_lowercase();
@@ -455,6 +490,39 @@ mod tests {
         assert!(is_html(html.as_bytes()));
         assert!(!is_html(b"# not html"));
         assert!(check(&html).is_empty(), "{:?}", check(&html));
+    }
+
+    #[test]
+    fn a_built_report_unwraps_to_what_built_it() {
+        let meta = Meta {
+            title: "A <b>report</b> & more",
+            date: "2026-11-04",
+        };
+        let body = concat!(
+            "<p class=\"lead\">Hi</p>\n<h2>One</h2><p>a</p>\n",
+            "<pre><code>&lt;article&gt;&lt;/article&gt;</code></pre>\n",
+            "<article class=\"inner\"><h3>Nested</h3></article>\n"
+        );
+        let html = build(&meta, body);
+        let un = unwrap(&html).unwrap();
+        assert_eq!(un.title, meta.title);
+        assert_eq!(un.date, meta.date);
+        assert!(
+            un.body
+                .contains("<article class=\"inner\"><h3 id=\"nested\">Nested</h3></article>")
+        );
+        // the round trip is stable: rebuilt, the report is the same file
+        assert_eq!(
+            build(
+                &Meta {
+                    title: &un.title,
+                    date: &un.date
+                },
+                &un.body
+            ),
+            html
+        );
+        assert!(unwrap("<!doctype html><html><head><title>x</title></head><body><article>y</article></body></html>").is_none());
     }
 
     #[test]

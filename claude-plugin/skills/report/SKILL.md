@@ -6,8 +6,9 @@ description: Make an HTML report (a research write-up, a comparison, an audit, a
 # HTML reports
 
 A report is one self-contained HTML file in ccdash's chrome (top bar with
-the title, the date and a search box; a System/Light/Dark switch; the
-contents on the left; numbered headings), published to the hub. The hub's
+the title, the date and a search box; a System/Light/Dark switch and a
+Small/Normal/Big text size; the contents on the left; numbered headings),
+published to the hub. The hub's
 copy is the deliverable: the panel's **Reports** area lists it, frames it
 with its abstract, searches it and downloads it to send on; `recall` finds
 it like any note. The local file is scaffolding.

@@ -32,7 +32,9 @@ the contents narrowed to the sections that hit, `Enter` and the arrows
 step through them, `/` focuses it); a System/Light/Dark switch that
 follows the system until picked and, when framed, follows the panel's
 mode and wears the panel's colour scheme (Neutral, Catppuccin, the
-wallpaper's…); the contents on the left (a drawer on the phone; the
+wallpaper's…); a text size switch, Small/Normal/Big (the whole page
+scales; kept on the device, and in the panel the pick carries over to
+every report); the contents on the left (a drawer on the phone; the
 button beside the title hides the column on a wide screen, for a tall
 narrow monitor, and the choice is kept where storage allows), with the
 section in view marked; numbered headings; tables that sort by a click on
@@ -126,6 +128,23 @@ replaces the file in one step (written beside it, moved into place once
 the note is in). Archiving the note hides the report from the lists; the
 file stays. `ccdash export` writes the HTML next to each report's
 markdown.
+
+The chrome is baked into every file, so a change to the template reaches
+the reports published before it only by rebuilding them, on the hub:
+
+```sh
+sudo -u ccdash ccdash report rebuild --config /etc/ccdash/hub.toml --dry-run   # lists: outdated, current, foreign, missing
+sudo -u ccdash ccdash report rebuild --config /etc/ccdash/hub.toml [workspace/slug …]
+```
+
+takes every report `ccdash report build` made apart, wraps the article in
+the current template and writes it back, after copying the file it
+replaces to `.archive/<date>/<workspace>/<slug>.html` under the reports
+directory (`--archive DIR` elsewhere); the note's size and hash follow,
+its version and dates stay (the report did not change, its chrome did).
+Imported pages of their own design are left as they are. The hub need
+not stop: the files change in place, and the panel loads a report afresh
+each time it is opened.
 
 ## 6. Security
 

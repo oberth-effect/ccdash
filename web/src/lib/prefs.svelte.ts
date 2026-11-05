@@ -20,6 +20,7 @@ const TEMPLATES_KEY = 'ccdash.templates';
 const DRAFT_KEY = 'ccdash.draft.';
 const START_KEY = 'ccdash.start';
 const GRAPH_KEY = 'ccdash.graph';
+const REPORT_SIZE_KEY = 'ccdash.reportsize';
 
 export const DEFAULT_QUICK = [
 	'Continue',
@@ -33,6 +34,12 @@ export type Template = { name: string; text: string };
 
 /** What the start sheet picked last; empty strings are the host's defaults. */
 export type StartChoice = { host: string; model: string; mode: string };
+
+/** The text size a framed report shows; the report's own switch sets it. */
+export type ReportSize = 'small' | 'normal' | 'big';
+export const REPORT_SIZES: readonly ReportSize[] = ['small', 'normal', 'big'];
+export const isReportSize = (x: unknown): x is ReportSize =>
+	typeof x === 'string' && (REPORT_SIZES as readonly string[]).includes(x);
 
 export type GraphColour = 'kind' | 'project' | 'age' | 'links' | 'recalls';
 export type GraphSize = 'recalls' | 'links' | 'same';
@@ -87,6 +94,13 @@ class Prefs {
 	templates = $state<Template[]>(load(TEMPLATES_KEY, []));
 	start = $state<StartChoice>(load(START_KEY, { host: '', model: '', mode: '' }));
 	graph = $state<GraphLook>({ ...DEFAULT_GRAPH, ...load<Partial<GraphLook>>(GRAPH_KEY, {}) });
+	/** Reports in the panel's frame have no storage of their own (an opaque
+	 * origin), so the pick made in one report is kept here for all. */
+	reportSize = $state<ReportSize>(
+		browser && isReportSize(localStorage.getItem(REPORT_SIZE_KEY))
+			? (localStorage.getItem(REPORT_SIZE_KEY) as ReportSize)
+			: 'normal'
+	);
 
 	setTheme(theme: Theme) {
 		this.theme = theme;
@@ -117,6 +131,12 @@ class Prefs {
 		this.scheme = scheme;
 		localStorage.setItem(SCHEME_KEY, scheme);
 		this.applyTheme();
+	}
+
+	setReportSize(size: ReportSize) {
+		this.reportSize = size;
+		if (size === 'normal') localStorage.removeItem(REPORT_SIZE_KEY);
+		else localStorage.setItem(REPORT_SIZE_KEY, size);
 	}
 
 	setWallHost(host: string, hosts: HostStatus[]) {

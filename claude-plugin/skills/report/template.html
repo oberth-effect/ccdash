@@ -47,6 +47,7 @@
         --seq-6: #184f95;
         --shadow: 0 1px 2px rgb(0 0 0 / 0.06), 0 8px 24px rgb(0 0 0 / 0.06);
         --radius: 10px;
+        --text: 15px;
         --topbar: 3.25rem;
         --toc-w: 17rem;
         --font:
@@ -132,6 +133,14 @@
         }
       }
 
+      /* text size: everything is in rem, so the root's size scales the page */
+      :root[data-size="small"] {
+        --text: 14px;
+      }
+      :root[data-size="big"] {
+        --text: 17px;
+      }
+
       *,
       *::before,
       *::after {
@@ -139,6 +148,7 @@
       }
       html {
         height: 100%;
+        font-size: var(--text);
         scroll-padding-top: calc(var(--topbar) + 1rem);
       }
       body {
@@ -146,7 +156,7 @@
         min-height: 100%;
         background: var(--bg);
         color: var(--fg);
-        font: 16px/1.6 var(--font);
+        font: 1rem/1.6 var(--font);
         -webkit-text-size-adjust: 100%;
         overflow-wrap: anywhere;
       }
@@ -287,6 +297,43 @@
       :root[data-pref="dark"] .theme .i-dark {
         display: inline;
       }
+      .size {
+        display: inline-flex;
+        align-items: center;
+        padding: 0.15rem;
+        background: var(--surface-2);
+        border: 1px solid var(--border);
+        border-radius: 999px;
+      }
+      .size .btn {
+        width: 1.9rem;
+        height: 1.6rem;
+        justify-content: center;
+        padding: 0;
+        border: 0;
+        border-radius: 999px;
+        background: none;
+        color: var(--muted);
+        font-weight: 600;
+        line-height: 1;
+      }
+      .size .btn:hover {
+        color: var(--fg);
+      }
+      .size .btn[aria-pressed="true"] {
+        background: var(--surface);
+        color: var(--fg);
+        box-shadow: 0 1px 2px rgb(0 0 0 / 0.1);
+      }
+      .size .s-small {
+        font-size: 0.7rem;
+      }
+      .size .s-normal {
+        font-size: 0.85rem;
+      }
+      .size .s-big {
+        font-size: 1.05rem;
+      }
 
       /* --- layout ------------------------------------------------------------- */
       .layout {
@@ -339,11 +386,13 @@
         color: var(--fg);
       }
       .toc .n {
+        flex: none;
         color: var(--muted);
         font-family: var(--mono);
         font-size: 0.75rem;
         min-width: 1.6rem;
         padding-top: 0.1rem;
+        white-space: nowrap;
       }
       .toc li.dim > a {
         opacity: 0.35;
@@ -395,7 +444,13 @@
           transform: none;
         }
         .topbar .search input {
-          width: 9rem;
+          width: 8rem;
+        }
+        .theme .btn .label {
+          display: none;
+        }
+        .size .btn {
+          width: 1.6rem;
         }
       }
 
@@ -589,12 +644,14 @@
       }
 
       /* --- content: figures, tiles, callouts, badges -------------------------- */
+      /* a wide diagram (an svg with a min-width) scrolls sideways */
       article figure {
         margin: 1.5rem 0;
         padding: 1rem;
         background: var(--surface);
         border: 1px solid var(--border);
         border-radius: var(--radius);
+        overflow-x: auto;
       }
       article figure > svg,
       article figure > img {
@@ -647,9 +704,12 @@
       .tile .delta.down {
         color: var(--bad);
       }
+      /* the label in the first column, everything else (one paragraph or */
+      /* several, a list) flows in the second */
       .callout {
-        display: flex;
-        gap: 0.75rem;
+        display: grid;
+        grid-template-columns: max-content minmax(0, 1fr);
+        column-gap: 0.75rem;
         margin: 1.25rem 0;
         padding: 0.85rem 1rem;
         border: 1px solid var(--border);
@@ -675,7 +735,18 @@
       .callout.bad {
         border-left-color: var(--bad);
       }
+      .callout > :not(.k) {
+        grid-column: 2;
+      }
+      .callout:not(:has(> .k)) {
+        grid-template-columns: minmax(0, 1fr);
+      }
+      .callout:not(:has(> .k)) > * {
+        grid-column: 1;
+      }
       .callout .k {
+        grid-column: 1;
+        grid-row: 1;
         font-weight: 600;
         white-space: nowrap;
       }
@@ -688,6 +759,7 @@
         border: 1px solid var(--border);
         background: var(--surface-2);
         vertical-align: middle;
+        white-space: nowrap;
       }
       .badge.good {
         color: var(--good);
@@ -1044,6 +1116,35 @@
           <span class="label">System</span>
         </button>
       </div>
+      <div class="size" role="group" aria-label="Text size">
+        <button
+          class="btn s-small"
+          type="button"
+          data-size="small"
+          title="Small text"
+          aria-pressed="false"
+        >
+          A
+        </button>
+        <button
+          class="btn s-normal"
+          type="button"
+          data-size="normal"
+          title="Normal text"
+          aria-pressed="true"
+        >
+          A
+        </button>
+        <button
+          class="btn s-big"
+          type="button"
+          data-size="big"
+          title="Big text"
+          aria-pressed="false"
+        >
+          A
+        </button>
+      </div>
     </header>
     <div class="layout">
       <nav class="toc" id="toc" aria-label="Contents">
@@ -1116,6 +1217,35 @@
             }
           }
         }
+        // --- text size: small, normal, big; the panel remembers it across reports
+        const SIZES = ["small", "normal", "big"];
+        const SIZE_KEY = "ccdash-report-size";
+        const framed = window.parent !== window;
+        const sizeButtons = [...document.querySelectorAll(".size .btn")];
+        function applySize(size) {
+          if (!SIZES.includes(size)) size = "normal";
+          if (size === "normal") delete root.dataset.size;
+          else root.dataset.size = size;
+          for (const b of sizeButtons)
+            b.setAttribute("aria-pressed", String(b.dataset.size === size));
+        }
+        try {
+          applySize(localStorage.getItem(SIZE_KEY) ?? "normal");
+        } catch {
+          applySize("normal");
+        }
+        for (const b of sizeButtons)
+          b.addEventListener("click", () => {
+            const size = b.dataset.size;
+            applySize(size);
+            try {
+              size === "normal"
+                ? localStorage.removeItem(SIZE_KEY)
+                : localStorage.setItem(SIZE_KEY, size);
+            } catch {}
+            // NOTE: the frame is an opaque origin without storage: the panel keeps the pick
+            if (framed) parent.postMessage({ ccdash: "size", size }, "*");
+          });
         addEventListener("message", (e) => {
           const d = e.data;
           if (
@@ -1126,6 +1256,7 @@
             fromParent = d.mode === "auto" ? null : d.mode;
             applyVars(d.vars ?? null);
             apply();
+            if (SIZES.includes(d.size)) applySize(d.size);
           }
         });
         apply();

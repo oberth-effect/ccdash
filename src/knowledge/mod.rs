@@ -672,6 +672,26 @@ pub fn get(conn: &Connection, workspace: &str, slug: &str) -> Result<Option<Note
         .optional()?)
 }
 
+/// Every note of `kind`, across workspaces, by workspace and slug.
+pub fn of_kind(conn: &Connection, kind: NoteKind) -> Result<Vec<Note>> {
+    Ok(conn
+        .prepare_cached(&format!(
+            "SELECT {COLUMNS} FROM notes WHERE kind = ?1 ORDER BY workspace, slug"
+        ))?
+        .query_map([kind.name()], row_note)?
+        .collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
+/// Replaces a note's `extra` alone: the kind-specific facts, not its
+/// content, so the version and the dates stay.
+pub fn set_extra(conn: &Connection, workspace: &str, slug: &str, extra: &Value) -> Result<()> {
+    conn.execute(
+        "UPDATE notes SET extra = jsonb(?3) WHERE workspace = ?1 AND slug = ?2",
+        params![workspace, slug, serde_json::to_string(extra)?],
+    )?;
+    Ok(())
+}
+
 fn id_of(conn: &Connection, workspace: &str, slug: &str) -> Result<Option<i64>> {
     Ok(conn
         .prepare_cached("SELECT id FROM notes WHERE workspace = ?1 AND slug = ?2")?

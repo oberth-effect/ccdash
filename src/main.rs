@@ -284,6 +284,29 @@ enum Report {
         #[arg(long)]
         date: Option<String>,
     },
+    /// Re-wrap every published report `build` made in the current chrome,
+    /// on the hub: a change to the template (the text size switch, say)
+    /// reaches published reports only this way, the chrome being baked into
+    /// each file. The file replaced is copied first to
+    /// `<reports dir>/.archive/<date>/<workspace>/<slug>.html`; the note's
+    /// size and hash follow, its version and dates stay. Imported pages of
+    /// their own design are left alone. `--dry-run` only lists.
+    Rebuild {
+        #[arg(long)]
+        config: Option<PathBuf>,
+        /// A database file instead of the configured one.
+        #[arg(long)]
+        db: Option<PathBuf>,
+        /// Where the replaced files go (default: `.archive/<date>` under
+        /// the reports directory).
+        #[arg(long)]
+        archive: Option<PathBuf>,
+        /// List what would change, change nothing.
+        #[arg(long)]
+        dry_run: bool,
+        /// Only these reports, as `workspace/slug` (or a slug alone).
+        only: Vec<String>,
+    },
     /// Bring older reports in: every `.html` under the paths (directories
     /// are walked; node_modules, target, build and the like skipped) that is
     /// a self-contained HTML document is published through the collector,
@@ -379,6 +402,13 @@ fn main() -> ExitCode {
                 dry_run,
                 project,
             } => report_import(&paths, dry_run, project.as_deref()),
+            Report::Rebuild {
+                config,
+                db,
+                archive,
+                dry_run,
+                only,
+            } => report_rebuild(config, db, archive, &only, dry_run),
             Report::Publish {
                 file,
                 title,
@@ -546,6 +576,72 @@ fn report_import(paths: &[PathBuf], dry_run: bool, project: Option<&str>) -> Res
         );
     } else {
         println!("{published} published, {skipped} skipped, {failed} failed");
+    }
+    Ok(())
+}
+
+/// `ccdash report rebuild`: every built report on the hub in the current
+/// chrome, the old files archived.
+fn report_rebuild(
+    config: Option<PathBuf>,
+    db: Option<PathBuf>,
+    archive: Option<PathBuf>,
+    only: &[String],
+    dry_run: bool,
+) -> Result<()> {
+    let cfg = config::load::<HubConfig>(config)?;
+    let path = db.unwrap_or_else(|| cfg.store_path());
+    let dir = cfg.reports_dir();
+    if !dir.is_dir() {
+        anyhow::bail!("no reports directory at {}", dir.display());
+    }
+    let now = util::now_ms();
+    let archive = archive.unwrap_or_else(|| dir.join(".archive").join(knowledge::ymd(now)));
+    let conn = if dry_run {
+        rusqlite::Connection::open_with_flags(
+            &path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )
+        .with_context(|| format!("opening {}", path.display()))?
+    } else {
+        store::open_writer(&path)?
+    };
+    let done = hub::reports::rebuild(&conn, &dir, &archive, only, dry_run, now)?;
+    if done.is_empty() {
+        anyhow::bail!("no report matches");
+    }
+    let (mut rebuilt, mut outdated) = (0, 0);
+    for (workspace, slug, what) in &done {
+        use hub::reports::Outcome;
+        let (verb, rest) = match what {
+            Outcome::Rebuilt { archived, bytes } => {
+                rebuilt += 1;
+                (
+                    "rebuilt ",
+                    format!(
+                        "({} KB); the old file is at {}",
+                        bytes.div_ceil(1024),
+                        archived.display()
+                    ),
+                )
+            }
+            Outcome::Outdated => {
+                outdated += 1;
+                ("outdated", "would be rebuilt".into())
+            }
+            Outcome::Current => ("current ", "already in this chrome".into()),
+            Outcome::Foreign => ("foreign ", "its own design, left alone".into()),
+            Outcome::Missing => ("missing ", "the note has no file".into()),
+        };
+        println!("{verb} {workspace}/{slug}: {rest}");
+    }
+    if dry_run {
+        println!(
+            "{outdated} of {} report(s) would be rebuilt; run again without --dry-run",
+            done.len()
+        );
+    } else {
+        println!("{rebuilt} of {} report(s) rebuilt", done.len());
     }
     Ok(())
 }

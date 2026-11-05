@@ -2,13 +2,15 @@
 	// A published report in a sandboxed frame. The hub hands out a view link
 	// (an hour) that needs no token, so the frame can load it; the document
 	// is an opaque origin that runs its own scripts and loads nothing from
-	// the network. The report follows the panel's light or dark mode through
-	// a message; an expired link is minted again on reload.
+	// the network. The report follows the panel's light or dark mode and the
+	// reader's text size through a message, and tells the panel when the
+	// reader picks a size in it, so the next report opens the same; an
+	// expired link is minted again on reload.
 	import { untrack } from 'svelte';
 	import { Unauthorized } from '#lib/api/client.js';
 	import { mintReportView } from '#lib/api/index.js';
 	import { live } from '#lib/live/store.svelte.js';
-	import { prefs } from '#lib/prefs.svelte.js';
+	import { isReportSize, prefs } from '#lib/prefs.svelte.js';
 
 	let {
 		ws,
@@ -99,14 +101,35 @@
 
 	function tell() {
 		// NOTE: the frame is an opaque origin, so the target is `*`; the message carries nothing secret
-		frame?.contentWindow?.postMessage({ ccdash: 'theme', mode, vars: vars() }, '*');
+		frame?.contentWindow?.postMessage(
+			{ ccdash: 'theme', mode, vars: vars(), size: prefs.reportSize },
+			'*'
+		);
 	}
 
 	$effect(() => {
 		void mode;
 		void prefs.scheme;
 		void prefs.followed;
+		void prefs.reportSize;
 		tell();
+	});
+
+	// the reader's text size pick in the report, kept for every report
+	$effect(() => {
+		const onMessage = (e: MessageEvent) => {
+			if (!frame || e.source !== frame.contentWindow) return;
+			const d: unknown = e.data;
+			if (
+				typeof d === 'object' &&
+				d !== null &&
+				(d as { ccdash?: unknown }).ccdash === 'size' &&
+				isReportSize((d as { size?: unknown }).size)
+			)
+				prefs.setReportSize((d as { size: 'small' | 'normal' | 'big' }).size);
+		};
+		addEventListener('message', onMessage);
+		return () => removeEventListener('message', onMessage);
 	});
 </script>
 

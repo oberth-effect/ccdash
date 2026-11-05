@@ -509,6 +509,111 @@ pub(crate) async fn file(
         .into_response())
 }
 
+/// What `rebuild` did with one report.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Outcome {
+    /// Re-wrapped in the current chrome; the old file is at the path.
+    Rebuilt { archived: PathBuf, bytes: usize },
+    /// Would be rebuilt (a dry run).
+    Outdated,
+    /// Already in the current chrome.
+    Current,
+    /// Not made by `ccdash report build` (an import of a foreign page):
+    /// its own design, left alone.
+    Foreign,
+    /// The note exists, the file does not.
+    Missing,
+}
+
+/// The chrome is baked into every report file, so a change to the
+/// template reaches a published report only here: every `report` note's
+/// file that `build` made is taken apart (`report::unwrap`) and built
+/// again with the current template; the file it replaces is copied first
+/// to `archive/<workspace>/<slug>.html` (`<slug>.2.html`… when taken), and
+/// the note's `bytes` and `sha256` follow, its version and dates
+/// untouched: the report did not change, its chrome did. `only` narrows
+/// it to `workspace/slug` names; `dry_run` changes nothing.
+pub fn rebuild(
+    conn: &rusqlite::Connection,
+    dir: &Path,
+    archive: &Path,
+    only: &[String],
+    dry_run: bool,
+    now: i64,
+) -> Result<Vec<(String, String, Outcome)>> {
+    let mut out = Vec::new();
+    for note in knowledge::of_kind(conn, NoteKind::Report)? {
+        let name = format!("{}/{}", note.workspace, note.slug);
+        if !only.is_empty() && !only.iter().any(|o| *o == name || *o == note.slug) {
+            continue;
+        }
+        if !plain(&note.workspace) || !valid_slug(&note.slug) {
+            continue;
+        }
+        let path = dir
+            .join(&note.workspace)
+            .join(format!("{}.html", note.slug));
+        let old = match fs::read(&path) {
+            Ok(bytes) => bytes,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                out.push((note.workspace, note.slug, Outcome::Missing));
+                continue;
+            }
+            Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
+        };
+        let Some(un) = report::unwrap(&String::from_utf8_lossy(&old)) else {
+            out.push((note.workspace, note.slug, Outcome::Foreign));
+            continue;
+        };
+        let new = report::build(
+            &report::Meta {
+                title: &un.title,
+                date: &un.date,
+            },
+            &un.body,
+        );
+        if new.as_bytes() == old.as_slice() {
+            out.push((note.workspace, note.slug, Outcome::Current));
+            continue;
+        }
+        if dry_run {
+            out.push((note.workspace, note.slug, Outcome::Outdated));
+            continue;
+        }
+        let folder = archive.join(&note.workspace);
+        fs::create_dir_all(&folder).with_context(|| format!("creating {}", folder.display()))?;
+        let mut archived = folder.join(format!("{}.html", note.slug));
+        let mut n = 2;
+        while archived.exists() {
+            archived = folder.join(format!("{}.{n}.html", note.slug));
+            n += 1;
+        }
+        fs::write(&archived, &old).with_context(|| format!("writing {}", archived.display()))?;
+        let tmp = path.with_extension(format!("{}.tmp", std::process::id()));
+        fs::write(&tmp, &new).with_context(|| format!("writing {}", tmp.display()))?;
+        fs::rename(&tmp, &path).with_context(|| format!("placing {}", path.display()))?;
+        let mut extra = note.extra.clone();
+        if let Some(map) = extra.as_object_mut() {
+            map.insert("bytes".into(), json!(new.len()));
+            map.insert(
+                "sha256".into(),
+                json!(hex(digest::digest(&digest::SHA256, new.as_bytes()).as_ref())),
+            );
+            map.insert("rebuilt_at".into(), json!(now));
+        }
+        knowledge::set_extra(conn, &note.workspace, &note.slug, &extra)?;
+        out.push((
+            note.workspace,
+            note.slug,
+            Outcome::Rebuilt {
+                archived,
+                bytes: new.len(),
+            },
+        ));
+    }
+    Ok(out)
+}
+
 /// `ccdash export`: the HTML next to the note's markdown, when it exists.
 pub fn export_file(dir: &Path, workspace: &str, slug: &str) -> Option<Vec<u8>> {
     if !plain(workspace) || !valid_slug(slug) {
@@ -529,6 +634,93 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("ccdash-reports-{}-{n}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         (Reports::open(&dir, 1).unwrap(), dir)
+    }
+
+    #[test]
+    fn rebuild_rewraps_built_reports_archives_the_old_file_and_leaves_imports_alone() {
+        let (reports, dir) = store();
+        let conn = crate::store::open_writer(&dir.join("db.sqlite")).unwrap();
+        let note = |slug: &str| knowledge::Upsert {
+            slug: slug.into(),
+            kind: NoteKind::Report,
+            project: None,
+            title: slug.into(),
+            summary: None,
+            status: Status::Active,
+            extra: json!({"bytes": 1, "sha256": "x", "host": "h"}),
+            body: "abstract".into(),
+            links: Vec::new(),
+            created_at: None,
+            updated_at: None,
+            verified: true,
+        };
+        for slug in ["old", "fresh", "foreign", "gone"] {
+            knowledge::upsert(&conn, "ws", &note(slug), None, 1).unwrap();
+        }
+        let meta = report::Meta {
+            title: "T",
+            date: "2026-11-01",
+        };
+        let fresh = report::build(&meta, "<h2>A</h2><p>b</p>");
+        // an older chrome: the same report with one token of the template changed
+        let old = fresh.replace("--text: 15px", "--text: 16px");
+        assert_ne!(old, fresh);
+        let place = |slug: &str, html: &str| {
+            reports
+                .stage("ws", slug, html.as_bytes())
+                .unwrap()
+                .commit()
+                .unwrap();
+        };
+        place("old", &old);
+        place("fresh", &fresh);
+        place(
+            "foreign",
+            "<!doctype html><html><head><title>F</title></head><body><h2>x</h2></body></html>",
+        );
+        let archive = dir.join("archive");
+        let dry = rebuild(&conn, reports.dir(), &archive, &[], true, 5).unwrap();
+        let of = |r: &[(String, String, Outcome)], slug: &str| {
+            r.iter()
+                .find(|(_, s, _)| s == slug)
+                .map(|(_, _, o)| o.clone())
+                .unwrap()
+        };
+        assert_eq!(of(&dry, "old"), Outcome::Outdated);
+        assert_eq!(of(&dry, "fresh"), Outcome::Current);
+        assert_eq!(of(&dry, "foreign"), Outcome::Foreign);
+        assert_eq!(of(&dry, "gone"), Outcome::Missing);
+        assert!(!archive.exists());
+        assert_eq!(reports.read("ws", "old").unwrap().unwrap(), old.as_bytes());
+
+        let done = rebuild(&conn, reports.dir(), &archive, &["ws/old".into()], false, 7).unwrap();
+        assert_eq!(done.len(), 1);
+        let Outcome::Rebuilt { archived, bytes } = of(&done, "old") else {
+            panic!("{done:?}");
+        };
+        assert_eq!(bytes, fresh.len());
+        assert_eq!(fs::read(&archived).unwrap(), old.as_bytes());
+        assert_eq!(archived, archive.join("ws/old.html"));
+        assert_eq!(
+            reports.read("ws", "old").unwrap().unwrap(),
+            fresh.as_bytes()
+        );
+        let n = knowledge::get(&conn, "ws", "old").unwrap().unwrap();
+        assert_eq!(n.extra["bytes"], json!(fresh.len()));
+        assert_eq!(n.extra["host"], json!("h"));
+        assert_eq!(n.extra["rebuilt_at"], json!(7));
+        assert_eq!(
+            n.version, 1,
+            "the version stays: the chrome changed, not the report"
+        );
+        // a second archive of the same slug sits beside the first
+        place("old", &old);
+        let again = rebuild(&conn, reports.dir(), &archive, &["old".into()], false, 8).unwrap();
+        let Outcome::Rebuilt { archived, .. } = of(&again, "old") else {
+            panic!("{again:?}");
+        };
+        assert_eq!(archived, archive.join("ws/old.2.html"));
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
