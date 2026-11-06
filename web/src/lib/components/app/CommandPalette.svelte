@@ -1,10 +1,12 @@
 <script lang="ts">
-	// Ctrl K from anywhere: the sessions and pages matching the text, and the
+	// Ctrl K from anywhere: the sessions and pages matching the text (and a
+	// search of the past sessions for it), and the
 	// note search the Projects page has (`NoteSearch`). The hub ranks the
 	// notes, so nothing here filters them again: a hit can match in its body
 	// alone. A note opens beside the page; from the composer's `[[` it is
 	// handed back instead, and only notes are offered.
 	import { goto } from '$app/navigation';
+	import ArchiveRestoreIcon from '@lucide/svelte/icons/archive-restore';
 	import * as Command from '#lib/components/ui/command/index.js';
 	import type { Hit } from '#lib/api/index.js';
 	import NoteRow from '#lib/components/notes/NoteRow.svelte';
@@ -15,6 +17,7 @@
 	import { reportHref } from '#lib/notes.js';
 	import { NoteSearch } from '#lib/notesearch.svelte.js';
 	import { palette } from '#lib/palette.svelte.js';
+	import { PAST, pastHref } from '#lib/past.js';
 	import { scope } from '#lib/scope.svelte.js';
 	import { ACTIVITY, label, shown } from '#lib/session.js';
 
@@ -44,10 +47,16 @@
 			)
 			.sort((a, b) => b.last_event_at - a.last_event_at)
 	);
-	const pages = $derived(areas.filter((area) => matches(area.label)));
+	const pages = $derived([
+		...areas.filter((area) => matches(area.label)),
+		...(matches('past sessions resume old closed history')
+			? [{ href: PAST, label: 'Past sessions', icon: ArchiveRestoreIcon }]
+			: [])
+	]);
+	const pastQuery = $derived(palette.query.trim());
 	const notes = $derived(search.shown ?? []);
 	const empty = $derived(
-		!notes.length && (palette.notesOnly || (!sessions.length && !pages.length))
+		!notes.length && (palette.notesOnly || (!sessions.length && !pages.length && !pastQuery))
 	);
 
 	function pickNote(hit: Hit) {
@@ -107,6 +116,18 @@
 						<span class="ml-auto text-xs text-muted-foreground">{ACTIVITY[shown(s)].label}</span>
 					</Command.Item>
 				{/each}
+			</Command.Group>
+		{/if}
+		{#if !palette.notesOnly && pastQuery}
+			<Command.Group heading="Past sessions">
+				<Command.Item
+					value="past {pastQuery}"
+					onSelect={() =>
+						go(pastHref({ q: pastQuery, hosts: [], project: '', when: '', sort: '' }))}
+				>
+					<ArchiveRestoreIcon class="size-4 opacity-70" />
+					<span class="truncate">Search past sessions for “{pastQuery}”</span>
+				</Command.Item>
 			</Command.Group>
 		{/if}
 		{#if notes.length}

@@ -14,6 +14,7 @@ On the hub:
 | History    | `/var/lib/ccdash-hub/ccdash.db` (SQLite, WAL), `ccdash` user                        |
 | Backups    | `/var/lib/ccdash-hub/backups/`, nightly, checked                                    |
 | State sync | `/var/lib/ccdash-hub/claude/`, plain files (not in backups)                         |
+| Catalog    | `/var/lib/ccdash-hub/catalog.db`, past sessions read from the synced transcripts    |
 | Workspace  | `/var/lib/ccdash-hub/claude/workspace/<unit>.git`, bare repos                       |
 | Reports    | `/var/lib/ccdash-hub/reports/<workspace>/<slug>.html`, plain files (not in backups) |
 | Config     | `/etc/ccdash/hub.toml`                                                              |
@@ -53,6 +54,16 @@ device tokens and their push subscriptions, `sync_files`,
 `workspace_units`, `workspace_refs`, `workspace_conflicts`,
 `workspace_config`, `workspace_seen` (workspace sync; `workspace_events`
 keeps 90 days).
+
+The **catalog** (`catalog.db` next to the database, SQLite) is what Sessions
+› Past searches: a row per transcript the state sync holds (titles, first and
+last prompt, Claude's last text, dates, size, numbers, the machines that
+wrote it) and every prompt and block of Claude's text (up to 16 KiB each)
+with a full-text index. It is derived only: the nightly copy leaves it out,
+deleting it (hub stopped) rebuilds it from the transcripts, and a new
+version of what it extracts rebuilds it by itself. Nothing is pruned; a
+transcript that grows is read from where it stopped, one replaced is read
+again.
 
 ## 3. Backups and imports
 

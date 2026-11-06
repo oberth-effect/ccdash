@@ -3,7 +3,9 @@
 With sync on, the hub keeps Claude Code's state for every machine and each
 collector keeps its machine's copy in step: a session ended on one machine
 resumes on another with a plain `claude --resume` (the picker lists it), and
-the up arrow and Ctrl+R know the prompts of every machine.
+the up arrow and Ctrl+R know the prompts of every machine. The panel's
+Sessions › Past searches every machine's transcripts and resumes one on the
+machine you pick ([sessions](sessions.md#2-resume)).
 
 1. [Turning it on](#1-turning-it-on)
 2. [What travels](#2-what-travels)

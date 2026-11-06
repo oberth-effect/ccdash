@@ -51,6 +51,7 @@ use crate::{
     actions::{self, MAX_PROMPT, PERMISSION_MODES},
     analytics::{self, Analytics, LimitTracks},
     ask::Answer,
+    catalog::{self, Catalog},
     config::HubConfig,
     conversation,
     history::{self, History},
@@ -104,6 +105,8 @@ pub struct App {
     revoked: broadcast::Sender<i64>,
     /// The workspace repositories, when the workspace sync is on.
     git: Option<GitState>,
+    /// Every past session, from the synced transcripts.
+    catalog: Catalog,
 }
 
 /// What `auth` checks a bearer against.
@@ -145,6 +148,7 @@ pub async fn serve(
     sync: sync::hub::Mirror,
     git: Option<GitState>,
     reports: Arc<reports::Reports>,
+    catalog: Catalog,
 ) {
     let api = Router::new()
         .route("/snapshot", get(snapshot))
@@ -167,6 +171,9 @@ pub async fn serve(
         .route("/launch-targets", get(launch_targets))
         .route("/skills", get(skills))
         .route("/launches/{id}", get(launch_of))
+        .route("/past", get(past))
+        .route("/past/{id}", get(past_session))
+        .route("/past/{id}/conversation", get(past_conversation))
         .route("/prompts", get(prompts))
         .route("/history", get(history))
         .route("/analytics", get(analytics))
@@ -241,6 +248,7 @@ pub async fn serve(
             revoked: broadcast::channel(16).0,
             git,
             reports,
+            catalog,
         });
     if let Err(e) = axum::serve(listener, app).await {
         warn!("http: {e}");
@@ -595,11 +603,32 @@ async fn launch(
             }
             let s = match live {
                 Some(s) => s,
-                None => ended(&app, key)
-                    .await?
-                    .ok_or(ApiError(StatusCode::NOT_FOUND, "no such session".into()))?,
+                None => match ended(&app, key).await? {
+                    Some(s) => s,
+                    None => past_stub(&app, key)
+                        .await?
+                        .ok_or(ApiError(StatusCode::NOT_FOUND, "no such session".into()))?,
+                },
             };
+            if s.workspace.is_none() {
+                return Err(refuse(format!(
+                    "the session ran outside every workspace ({}): resume it in a terminal there",
+                    s.cwd
+                )));
+            }
             if s.host != body.host && !continues_elsewhere(&app, &s.id, &body.host).await? {
+                if !app
+                    .hub
+                    .sync_hosts()
+                    .await?
+                    .iter()
+                    .any(|h| h.host == body.host && h.connected)
+                {
+                    return Err(ApiError(
+                        StatusCode::CONFLICT,
+                        format!("{} is not connected", body.host),
+                    ));
+                }
                 return Err(refuse(format!(
                     "the session ran on {}, and {} does not get its transcript through the hub",
                     s.host, body.host
@@ -658,6 +687,160 @@ async fn launch(
         .await?
         .map_err(|e| ApiError(StatusCode::CONFLICT, e))?;
     Ok((StatusCode::ACCEPTED, Json(json!({ "launch": launch }))))
+}
+
+/// A session only the catalog knows (its transcript is on the hub, the
+/// store never saw it run), as an ended session to continue.
+async fn past_stub(app: &App, id: &str) -> Result<Option<Session>, ApiError> {
+    let (catalog, workspaces, id) = (app.catalog.clone(), app.workspaces.clone(), id.to_owned());
+    let found = tokio::task::spawn_blocking(move || -> Result<_> {
+        catalog::find(&catalog.reader()?, &workspaces, &Default::default(), &id)
+    })
+    .await
+    .map_err(anyhow::Error::from)??;
+    Ok(found.map(|p| {
+        let mut s = Session::stub(&p.host, &p.id, &p.cwd);
+        s.workspace = p.workspace;
+        s.project = p.project;
+        s.title = p.title;
+        s.activity = Activity::Gone;
+        s.activity_since = p.last_at;
+        s.started_at = p.first_at;
+        s.last_event_at = p.last_at;
+        s
+    }))
+}
+
+/// Ids of the sessions running now.
+async fn open_ids(app: &App) -> Result<std::collections::HashSet<String>, ApiError> {
+    Ok(app
+        .hub
+        .snapshot()
+        .await?
+        .sessions
+        .into_iter()
+        .filter(|s| s.activity != Activity::Gone)
+        .map(|s| s.id)
+        .collect())
+}
+
+#[derive(Deserialize)]
+struct PastQuery {
+    /// Words to find in prompts, replies and titles.
+    q: Option<String>,
+    /// Machines, comma-separated: sessions any of them wrote to.
+    host: Option<String>,
+    /// The scope's workspaces, comma-separated.
+    workspace: Option<String>,
+    /// A facet key: `workspace/project`, `workspace/`, `-` (outside).
+    project: Option<String>,
+    /// Sessions active since then (ms).
+    since: Option<i64>,
+    sort: Option<catalog::Sort>,
+    offset: Option<usize>,
+    limit: Option<usize>,
+}
+
+fn list_param(raw: Option<&str>) -> Vec<String> {
+    raw.unwrap_or_default()
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
+/// Every past session, filtered, counted, searched and sorted (`PastPage`).
+async fn past(
+    State(app): State<App>,
+    Query(query): Query<PastQuery>,
+) -> Result<Json<catalog::Page>, ApiError> {
+    let workspaces = list_param(query.workspace.as_deref());
+    if let Some(unknown) = workspaces.iter().find(|w| app.workspaces.dir(w).is_none()) {
+        return Err(ApiError(
+            StatusCode::BAD_REQUEST,
+            format!("unknown workspace {unknown:?}"),
+        ));
+    }
+    let q = catalog::Query {
+        text: query.q.filter(|q| !q.trim().is_empty()),
+        hosts: list_param(query.host.as_deref()),
+        workspaces,
+        project: query.project.filter(|p| !p.is_empty()),
+        since: query.since,
+        sort: query.sort.unwrap_or_default(),
+        offset: query.offset.unwrap_or(0),
+        limit: query.limit.unwrap_or(50),
+    };
+    let open = open_ids(&app).await?;
+    let (catalog, workspaces) = (app.catalog.clone(), app.workspaces.clone());
+    let mut page = tokio::task::spawn_blocking(move || -> Result<_> {
+        catalog::list(&catalog.reader()?, &workspaces, &open, &q, now_ms())
+    })
+    .await
+    .map_err(anyhow::Error::from)??;
+    page.pending = app.catalog.progress.pending();
+    page.ready = app.catalog.progress.ready();
+    Ok(Json(page))
+}
+
+#[derive(Deserialize)]
+struct PastSessionQuery {
+    /// The list's search, to show where it matched.
+    q: Option<String>,
+}
+
+/// One past session's overview (`PastDetail`).
+async fn past_session(
+    State(app): State<App>,
+    Path(id): Path<String>,
+    Query(query): Query<PastSessionQuery>,
+) -> Result<Json<catalog::PastDetail>, ApiError> {
+    let open = open_ids(&app).await?;
+    let (catalog, workspaces) = (app.catalog.clone(), app.workspaces.clone());
+    tokio::task::spawn_blocking(move || -> Result<_> {
+        catalog::detail(
+            &catalog.reader()?,
+            &workspaces,
+            &open,
+            &id,
+            query.q.as_deref(),
+        )
+    })
+    .await
+    .map_err(anyhow::Error::from)??
+    .map(Json)
+    .ok_or(ApiError(StatusCode::NOT_FOUND, "no such session".into()))
+}
+
+#[derive(Deserialize)]
+struct PastConversationQuery {
+    offset: Option<i64>,
+    /// A text's id: the page starts a few texts before it.
+    around: Option<i64>,
+    limit: Option<i64>,
+}
+
+/// A page of a past session's prompts and Claude's text (`PastConversation`).
+async fn past_conversation(
+    State(app): State<App>,
+    Path(id): Path<String>,
+    Query(query): Query<PastConversationQuery>,
+) -> Result<Json<catalog::Conversation>, ApiError> {
+    let catalog = app.catalog.clone();
+    tokio::task::spawn_blocking(move || -> Result<_> {
+        catalog::conversation(
+            &catalog.reader()?,
+            &id,
+            query.offset,
+            query.around,
+            query.limit.unwrap_or(60),
+        )
+    })
+    .await
+    .map_err(anyhow::Error::from)??
+    .map(Json)
+    .ok_or(ApiError(StatusCode::NOT_FOUND, "no such session".into()))
 }
 
 /// Where sessions can start: connected hosts, the workspaces whose

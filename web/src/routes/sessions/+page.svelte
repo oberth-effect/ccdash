@@ -4,6 +4,7 @@
 	import { Unauthorized } from '#lib/api/client.js';
 	import { fetchHistory, type Lane, type Session } from '#lib/api/index.js';
 	import SessionCard from '#lib/components/app/SessionCard.svelte';
+	import SessionsTabs from '#lib/components/past/SessionsTabs.svelte';
 	import { live } from '#lib/live/store.svelte.js';
 	import { scope } from '#lib/scope.svelte.js';
 	import { group } from '#lib/session.js';
@@ -52,9 +53,13 @@
 </script>
 
 <div class="mx-auto flex max-w-6xl flex-col gap-5 p-3 sm:p-4">
+	<SessionsTabs />
 	{#if live.ready && !groups.all.length}
 		<p class="p-6 text-center text-sm text-muted-foreground">
-			No Claude Code sessions are running.
+			No Claude Code sessions are running. <a
+				class="underline underline-offset-2"
+				href="/sessions/past">Past sessions</a
+			> has every earlier one, to resume.
 		</p>
 	{/if}
 	{#each sections as [title, sessions, note, collapsed] (title)}

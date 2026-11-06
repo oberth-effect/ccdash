@@ -81,7 +81,10 @@ pending and, if so, ends the turn ([sessions](sessions.md#4-interrupt)).
 - Serves the panel (`web/`, built into the `ccdash-web` package) and the
   HTTP API under `/api/v1`, with server-sent events for live updates.
 - Sends Web Push for prompts and finished turns, with answer buttons.
-- Keeps the synced `~/.claude` files and the knowledge notes.
+- Keeps the synced `~/.claude` files and the knowledge notes, and reads
+  the synced transcripts into a searchable catalog of past sessions
+  (`src/catalog/`, its own `catalog.db`), which is what Sessions › Past and
+  resuming a session the store never saw run use.
 - Keeps every node's last report across restarts, reads its own machine,
   and sends wake-on-LAN magic packets ([machines](machines.md)).
 

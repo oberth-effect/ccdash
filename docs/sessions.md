@@ -6,7 +6,7 @@ sessions that need you, and the session page pins **Open on** and
 **Resolved**. An action that cannot run shows disabled, with why.
 
 1. [Start](#1-start)
-2. [Continue](#2-continue)
+2. [Resume](#2-resume)
 3. [Resolve](#3-resolve)
 4. [Interrupt](#4-interrupt)
 5. [Kill](#5-kill)
@@ -55,10 +55,58 @@ A host has to trust the workspace first: `--bg` refuses a directory nobody
 accepted the trust prompt for, and the failure shows in the start sheet.
 Run `claude` once in the workspace's directory on a new machine.
 
-## 2. Continue
+## 2. Resume
 
-An ended session's page offers **Continue** on any connected machine that
-[syncs](state-sync.md): the collector fetches the transcript first.
+Any past session resumes on any connected machine that
+[syncs](state-sync.md): the collector fetches the transcript first. An
+ended session's page has **Resume…** at its foot (and in its Actions menu);
+every other one is found under **Sessions › Past**.
+
+### Finding it: Sessions › Past
+
+**Past** (`/sessions/past`, also **Resume…** on Now and "Search past
+sessions for …" in `Ctrl K`) lists every conversation the hub holds: the
+transcripts of every machine that syncs, the ones from before ccdash too,
+newest first and grouped by day.
+
+- **Search** looks through what was said: your prompts, Claude's replies
+  and the titles, by word prefix, diacritics ignored; `"…"` for a phrase.
+  Sessions with every word come first; when none has them all, the ones
+  with some (the line above the list says so). Each card shows where it
+  matched, who said it and when.
+- **Machines** (any number; all by default, the bar's host when one is
+  picked): sessions any of them wrote to. **Project**, **When** (24 hours
+  to a year) and **Sort** (best match, last active, started, most prompts,
+  largest, most expensive) sit beside it, each with its counts. Filters and
+  the open session are in the address, so back and links work.
+- A **card** has the machine it last ran on (and how many others), the
+  workspace and project, the branch, when it was last active, the title,
+  what you asked first and where it ended (Claude Code's recap when it wrote
+  one, else Claude's last words), the prompts, the time Claude worked, the
+  transcript's size, the cost and the model; marks for **running**,
+  **continued** (resumed later as a copy), **headless** (`claude -p`, the
+  SDK) and **outside workspaces**.
+- A session **opens** beside the list (its own view on a phone): every
+  machine it ran on (online or not), the directory and branch, **Resume…**,
+  its page when the hub has its chat, and the terminal command
+  (`cd <dir> && claude --resume <id>`) to copy. **Overview** has the recap,
+  what you asked first, where it ended (your last prompt and Claude's last
+  reply), the matches of the search, every prompt (a click reads from
+  there), the files it edited, dates, size, cost, models and the Claude
+  Code version. **Conversation** has your prompts and Claude's text in
+  order, tool calls left out, paged.
+- Keys: `/` search, `↑ ↓` (or `j k`) move, `Enter` resume, `Esc` close.
+
+The hub reads the transcripts into its catalog as the sync brings them; on
+the first start that takes a minute or so, and the page says how many are
+left. A session started from a machine without the state sync is not
+there: its page (from Sessions) still resumes it on its own machine.
+
+### What runs
+
+**Resume…** opens the start sheet: pick the **machine** (the connected ones
+with the session's workspace; the one it last ran on is marked, an offline
+one shows why it cannot be picked), the model, the mode and the prompt.
 
 | Where, how                                                           | What runs                               | Session                    |
 | -------------------------------------------------------------------- | --------------------------------------- | -------------------------- |
@@ -69,7 +117,10 @@ Claude Code keeps a job's options itself: with any flag it starts a copy
 instead, so a job of that machine runs with none, `launch.command`'s
 included. Those options name the launch's settings file, and without it the
 job fails to restart, so ccdash notes which job a file belongs to and takes
-the copy when it cannot tell. The page follows a copy.
+the copy when it cannot tell. The page follows a copy. A session that ran
+outside every workspace, or runs now, cannot be resumed from the panel: the
+first resumes in a terminal (the copied command), the second is open
+already.
 
 ## 3. Resolve
 
@@ -151,7 +202,7 @@ Why the escalation: Claude Code acts on SIGTERM only once an editor it
 opened for the prompt (Ctrl+G), or a running command, has finished.
 
 A killed session stays ended: Claude Code goes on listing its job as
-`done`, and a listed job only keeps an open session open. **Continue**
+`done`, and a listed job only keeps an open session open. **Resume**
 brings it back.
 
 ## 6. Open on the desktop, forget
@@ -180,23 +231,23 @@ treats them alike:
 | `working`           | a turn is running                                  | Working                |
 | `blocked`           | it needs something from you                        | your turn, then parked |
 | `done`              | finished what you asked, ready for the next prompt | your turn, then parked |
-| `failed`, `stopped` | it ended                                           | ended, with Continue   |
+| `failed`, `stopped` | it ended                                           | ended, with Resume     |
 
 **Asleep.** After about an hour unattached (8 h with Remote Control, a
 minute when memory runs low) Claude Code stops an idle session's process
 and keeps its job. The session stays open, marked asleep, and the composer
 stays: a message runs `claude --bg --resume <id>`, the session comes back on
 its saved options, channel included, and reads the message as its prompt
-(or as a copy, as with [Continue](#2-continue); the old row then ends). If
+(or as a copy, as with [Resume](#2-resume); the old row then ends). If
 that fails, the session says why and your text stays on the page. An
-asleep `done` session stops showing as open after 7 days; Continue still
+asleep `done` session stops showing as open after 7 days; Resume still
 brings it back. A job Claude Code no longer lists ends its session.
 
 The supervisor that runs these sessions is its own user service (see
 [Configuration](#8-configuration)), so a collector restart leaves them
 alone, and so does restarting the service: the next supervisor adopts them.
-A machine shutdown still stops them; they show as ended, and Continue
-resumes the conversation.
+A machine shutdown still stops them; they show as ended, and Resume
+brings the conversation back.
 
 ## 8. Configuration
 

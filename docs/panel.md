@@ -33,10 +33,16 @@ links can be shared and the back button works.
 - **Sessions** groups every session: those that need you, then working,
   parked and idle, then the ones Claude started (which show the session that
   started them and "Finished" instead of "Your turn").
+- **Sessions › Past** is every earlier conversation the hub holds, from
+  every machine: a search over what was said, filters for the machines
+  (any number), project and time, cards with what you asked and where it
+  ended, an overview and the conversation beside the list, and **Resume…**
+  on the machine you pick ([sessions](sessions.md#2-resume)). **Resume…** on
+  Now opens it.
 - A session left on your turn for an hour is **parked**: most likely done,
   it no longer counts as needing you.
 - Every session card has an **Actions** menu: Open on, Resolved, Keep open,
-  Continue, Kill, Forget, whichever apply ([sessions](sessions.md)).
+  Resume, Kill, Forget, whichever apply ([sessions](sessions.md)).
 
 ### Limits on Now
 
@@ -115,7 +121,7 @@ button lists the shortcuts:
 The title
 renames in
 place; **Open on** and **Resolved** sit beside it, the other actions in its
-**Actions** menu, **Continue** at the foot once it ended
+**Actions** menu, **Resume** at the foot once it ended
 ([sessions](sessions.md)).
 
 ## 3. Projects
@@ -129,9 +135,10 @@ page. It looks through every note's title, summary and body by word prefix,
 ranked across workspaces (those in the scope), with the matching text shown.
 Narrow it by kind (or `kind:issue` in the text), order it by best match,
 newest or most recalled, and leave out retired notes, which otherwise come
-after the live ones. `Ctrl K` finds sessions and pages too, and a note opens
-beside the page you are on. Typing `[[` in the composer searches the same way
-and inserts the link.
+after the live ones. `Ctrl K` finds sessions and pages too (and offers to
+search the past sessions for the text), and a note opens beside the page you
+are on. Typing `[[` in the composer searches the same way and inserts the
+link.
 
 **Graph** is for exploring what the notes say about each other.
 

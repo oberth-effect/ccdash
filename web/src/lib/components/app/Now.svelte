@@ -4,7 +4,9 @@
 	// Kill pinned), then what is working, each session told well enough not
 	// to open it, then the rest that is open. On the right the limits over
 	// their windows, the system and the last progress; a phone stacks them.
-	// "Start a session" opens the start sheet in the scope's workspace.
+	// "Start a session" opens the start sheet in the scope's workspace;
+	// "Resume…" goes to the past sessions.
+	import ArchiveRestoreIcon from '@lucide/svelte/icons/archive-restore';
 	import PlayIcon from '@lucide/svelte/icons/play';
 	import { Unauthorized } from '#lib/api/client.js';
 	import {
@@ -168,7 +170,15 @@
 				</h2>
 				<Button
 					size="sm"
+					variant="outline"
 					class="ml-auto"
+					href="/sessions/past"
+					title="Find an earlier session and resume it"
+				>
+					<ArchiveRestoreIcon /> Resume…
+				</Button>
+				<Button
+					size="sm"
 					disabled={!live.hosts.some((h) => h.connected)}
 					title={live.hosts.some((h) => h.connected) ? undefined : 'No host is connected'}
 					onclick={() => starter.show({ ws: scope.current.ws[0] ?? null })}

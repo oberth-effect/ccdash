@@ -4,6 +4,7 @@ mod agents;
 mod analytics;
 mod api;
 mod ask;
+mod catalog;
 mod channel;
 mod claims;
 mod client;

@@ -630,6 +630,14 @@ impl HubConfig {
             .map_or_else(|| PathBuf::from("claude"), |dir| dir.join("claude"))
     }
 
+    /// The session catalog (derived from the synced transcripts, rebuilt
+    /// when missing): `catalog.db` next to the database.
+    pub fn catalog_path(&self) -> PathBuf {
+        self.store_path()
+            .parent()
+            .map_or_else(|| PathBuf::from("catalog.db"), |dir| dir.join("catalog.db"))
+    }
+
     /// Where the reports' HTML files are kept: `reports.dir`, else
     /// `reports/` next to the database.
     pub fn reports_dir(&self) -> PathBuf {

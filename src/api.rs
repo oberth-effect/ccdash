@@ -60,6 +60,10 @@ mod tests {
         crate::workspace::Preview::export_all(&cfg).unwrap();
         crate::hub::http::PushPrefs::export_all(&cfg).unwrap();
         crate::notify::Category::export_all(&cfg).unwrap();
+        crate::catalog::Page::export_all(&cfg).unwrap();
+        crate::catalog::PastDetail::export_all(&cfg).unwrap();
+        crate::catalog::Conversation::export_all(&cfg).unwrap();
+        crate::catalog::Sort::export_all(&cfg).unwrap();
     }
 
     #[test]

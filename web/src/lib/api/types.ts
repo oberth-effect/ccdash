@@ -472,6 +472,11 @@ omitted: number, };
 
 export type ExportBody = { notes: Array<NoteRef>, };
 
+/**
+ * Counts for the filters, each under every other filter.
+ */
+export type Facets = { hosts: Array<HostCount>, projects: Array<ProjectCount>, };
+
 export type Forecast = { used_pct: number, 
 /**
  * When the window resets, in ms.
@@ -567,6 +572,8 @@ issue: string | null, excerpt: string, };
  * report live), carried or not.
  */
 export type HomeDir = { unit: string, path: string, bytes: number, files: number, hosts: Array<string>, carried: boolean, };
+
+export type HostCount = { host: string, count: number, };
 
 /**
  * A machine whose collector reports to the hub. The hub keeps every one
@@ -1052,6 +1059,147 @@ queued_ms: number, peak_waiting: number,
  */
 blocked_ms: number, };
 
+/**
+ * A page of a session's conversation: prompts and Claude's text in order.
+ */
+export type PastConversation = { items: Array<PastItem>, 
+/**
+ * Texts in the whole conversation.
+ */
+total: number, 
+/**
+ * Position of `items[0]`.
+ */
+offset: number, };
+
+/**
+ * One session's overview.
+ */
+export type PastDetail = { session: PastSession, 
+/**
+ * The first prompt in full.
+ */
+first_prompt: PastText | null, 
+/**
+ * The last prompt in full, when it is not the first.
+ */
+last_prompt: PastText | null, 
+/**
+ * Claude's last text, rendered.
+ */
+last_reply_html: string | null, last_reply_at: number | null, 
+/**
+ * Every prompt, cut to a few lines each.
+ */
+prompts: Array<PastText>, 
+/**
+ * Prompts left out of `prompts`.
+ */
+more_prompts: number, 
+/**
+ * The files it edited most, with how often.
+ */
+files: Array<[string, number]>, 
+/**
+ * Models and how many of its replies each wrote.
+ */
+models: Array<[string, number]>, 
+/**
+ * Where the search matched in this session.
+ */
+matches: Array<Snippet>, };
+
+export type PastItem = { id: number, at: number, role: string, html: string, };
+
+/**
+ * A page of the list.
+ */
+export type PastPage = { sessions: Array<PastSession>, 
+/**
+ * Sessions matching, over every page.
+ */
+total: number, 
+/**
+ * `all` when every word matched, `any` when no session had all of
+ * them and some had some; none without a search.
+ */
+matched: string | null, facets: Facets, 
+/**
+ * Sessions in the catalog.
+ */
+indexed: number, 
+/**
+ * Transcripts the indexer has still to read.
+ */
+pending: number, 
+/**
+ * The indexer finished a pass since the hub started.
+ */
+ready: boolean, };
+
+/**
+ * A past session as the list shows it.
+ */
+export type PastSession = { id: string, cwd: string, workspace: string | null, project: string | null, 
+/**
+ * The machine that wrote to it last: where it last ran.
+ */
+host: string, 
+/**
+ * Every machine that wrote to it.
+ */
+hosts: Array<string>, 
+/**
+ * Its title: renamed, else Claude Code's, else an older summary.
+ */
+title: string | null, 
+/**
+ * Claude Code's recap ("We're … Next: …"), when it wrote one.
+ */
+recap: string | null, first_prompt: string | null, last_prompt: string | null, last_reply: string | null, first_at: number, last_at: number, 
+/**
+ * Bytes of the transcript.
+ */
+size: number, prompts: number, replies: number, tools: number, 
+/**
+ * Time Claude worked on its turns, where Claude Code recorded it.
+ */
+active_ms: number, compactions: number, 
+/**
+ * The model most of its replies came from.
+ */
+model: string | null, branch: string | null, version: string | null, 
+/**
+ * `cli`, `sdk-cli` (headless), …
+ */
+entrypoint: string | null, cost_usd: number | null, lines_added: number | null, lines_removed: number | null, 
+/**
+ * The session it was continued in (a copy under a new id).
+ */
+continued_in: string | null, 
+/**
+ * It runs now: go to it rather than resume it.
+ */
+open: boolean, 
+/**
+ * The store has it, so its page has the whole chat.
+ */
+known: boolean, 
+/**
+ * Where the search matched, best first.
+ */
+snippets: Array<Snippet>, };
+
+/**
+ * How the list is ordered.
+ */
+export type PastSort = "best" | "recent" | "started" | "prompts" | "size" | "cost";
+
+/**
+ * A prompt or a reply.
+ */
+export type PastText = { id: number, at: number, text: string, };
+
 export type Permissions = { asks: number, allowed: number, denied: number, median_answer_ms: number | null, questions: number, median_question_ms: number | null, plans: number, plans_approved: number, 
 /**
  * Tool calls auto mode refused, by tool.
@@ -1106,6 +1254,13 @@ progress: Array<Entry>,
  * Active memories first, then the flagged ones; by recalls within.
  */
 memories: Array<Card>, };
+
+export type ProjectCount = { 
+/**
+ * `workspace/project`, `workspace/` for the workspace itself, `-` for
+ * sessions outside every workspace.
+ */
+key: string, workspace: string | null, project: string | null, count: number, };
 
 export type ProjectUse = { cwd: string, sessions: number, working_ms: number, permission_ms: number, 
 /**
@@ -1407,6 +1562,20 @@ hosts: Array<HostStatus>, sessions: Array<Session>, rate_limits: RateLimits | nu
  * The hub's own machine; None from a collector's mirror.
  */
 hub: HubStatus | null, };
+
+/**
+ * A match: the text around it with `\u{2}` before and `\u{3}` after each
+ * matched word.
+ */
+export type Snippet = { 
+/**
+ * The text's id, for [`conversation`]'s `around`.
+ */
+text: number, at: number, 
+/**
+ * `you` or `claude`; `title` for the title.
+ */
+role: string, snippet: string, };
 
 export type SourceUse = { source: string, requests: number, tokens: number, };
 

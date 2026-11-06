@@ -31,6 +31,10 @@ import type {
 	Prompt,
 	PushOutcome,
 	PutNote,
+	PastConversation,
+	PastDetail,
+	PastPage,
+	PastSort,
 	Session,
 	Stats,
 	Subscription,
@@ -82,6 +86,31 @@ export const answerAsk = (id: string, ask: string, answer: Answer) =>
 /** Starts a background session (or continues an ended one); the launch
  * moves on through `launch` updates on the stream. */
 export const startLaunch = (body: LaunchBody) => postJson<{ launch: Launch }>('launches', body);
+
+/** The list of past sessions: every transcript on the hub, filtered and searched. */
+export const fetchPast = (params: {
+	q?: string;
+	/** Machines, comma-separated. */
+	host?: string;
+	/** The scope's workspaces, comma-separated. */
+	workspace?: string;
+	/** A facet key (`ProjectCount.key`). */
+	project?: string;
+	since?: number;
+	sort?: PastSort;
+	offset?: number;
+	limit?: number;
+}) => getJson<PastPage>(`past${query(params)}`);
+
+/** A past session's overview; with `q`, where the search matched in it. */
+export const fetchPastSession = (id: string, q?: string) =>
+	getJson<PastDetail>(`past/${encodeURIComponent(id)}${query({ q })}`);
+
+/** A page of a past session's prompts and Claude's text, from `offset` or around a text. */
+export const fetchPastConversation = (
+	id: string,
+	params: { offset?: number; around?: number; limit?: number } = {}
+) => getJson<PastConversation>(`past/${encodeURIComponent(id)}/conversation${query(params)}`);
 
 /** Connected hosts, their workspaces and the projects with notes and a directory there. */
 export const fetchTargets = () => getJson<{ hosts: LaunchTarget[] }>('launch-targets');

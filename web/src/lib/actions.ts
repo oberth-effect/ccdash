@@ -21,7 +21,7 @@ import {
 } from './api/index';
 import { live } from './live/store.svelte';
 import { busy, isBackground, label } from './session';
-import { starter } from './starter.svelte';
+import { resumableSession, starter } from './starter.svelte';
 
 export type ActionId = 'open' | 'interrupt' | 'resolve' | 'keep' | 'continue' | 'kill' | 'forget';
 
@@ -112,10 +112,10 @@ export const ACTIONS: SessionAction[] = [
 	},
 	{
 		id: 'continue',
-		label: () => 'Continue…',
+		label: () => 'Resume…',
 		icon: PlayIcon,
 		offered: (s) => !running(s) && Boolean(s.workspace),
-		run: async (s) => starter.show({ resume: s })
+		run: async (s) => starter.show({ resume: resumableSession(s) })
 	},
 	{
 		id: 'kill',

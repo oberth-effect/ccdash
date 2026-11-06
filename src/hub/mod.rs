@@ -120,6 +120,13 @@ async fn serve(cfg: Arc<HubConfig>) -> Result<()> {
     let reports = Arc::new(
         reports::Reports::open(&cfg.reports_dir(), cfg.reports.max_mb).context("reports")?,
     );
+    let catalog = crate::catalog::Catalog::open(&cfg.catalog_path(), &cfg.store_path())
+        .context("session catalog")?;
+    crate::catalog::spawn(catalog.clone(), cfg.sync_dir(), sync.changed.subscribe());
+    info!(
+        "keeping the session catalog in {}",
+        cfg.catalog_path().display()
+    );
     info!("keeping reports in {}", cfg.reports_dir().display());
     let tokens = collect::Tokens::new(cfg.collect.tokens.clone());
     if cfg.collect.tokens.is_empty() {
@@ -143,6 +150,7 @@ async fn serve(cfg: Arc<HubConfig>) -> Result<()> {
             sync.clone(),
             git.clone(),
             reports.clone(),
+            catalog.clone(),
         ));
     }
     tokio::spawn(ticker(hub.sender()));

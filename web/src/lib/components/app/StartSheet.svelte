@@ -26,7 +26,6 @@
 	import { issuePrompt } from '#lib/notes.js';
 	import { prefs } from '#lib/prefs.svelte.js';
 	import { scope } from '#lib/scope.svelte.js';
-	import { label } from '#lib/session.js';
 	import { starter } from '#lib/starter.svelte.js';
 
 	const MODELS: [string, string][] = [
@@ -64,6 +63,14 @@
 		resume ? `resume:${resume.id}` : issue ? `issue:${issue.slug}` : 'start'
 	);
 	const connected = $derived((targets ?? []).map((t) => t.host));
+	/** Where a session to resume can run: connected machines with its workspace. */
+	const resumeHosts = $derived(
+		resume
+			? (targets ?? [])
+					.filter((t) => t.workspaces.some((w) => w.name === resume.workspace))
+					.map((t) => t.host)
+			: []
+	);
 	const workspacesHere = $derived(targets?.find((t) => t.host === host)?.workspaces ?? []);
 	const names = $derived(workspacesHere.find((w) => w.name === ws)?.projects);
 	const launch = $derived<Launch | undefined>(pending ? live.launches.get(pending) : undefined);
@@ -99,8 +106,10 @@
 	function pick(preset: StartPreset, hosts: LaunchTarget[]) {
 		const r = preset.resume;
 		const last = prefs.start.host;
-		const has = (h: string | undefined) => hosts.some((t) => t.host === h);
-		host = (r && has(r.host) ? r.host : has(last) ? last : hosts[0]?.host) ?? '';
+		const has = (h: string | undefined) =>
+			hosts.some((t) => t.host === h && (!r || t.workspaces.some((w) => w.name === r.workspace)));
+		host =
+			(r && has(r.host) ? r.host : has(last) ? last : hosts.find((t) => has(t.host))?.host) ?? '';
 		const here = hosts.find((t) => t.host === host)?.workspaces ?? [];
 		const want = r?.workspace ?? preset.ws ?? scope.current.ws[0] ?? '';
 		ws = r?.workspace ?? (here.some((w) => w.name === want) ? want : (here[0]?.name ?? ''));
@@ -205,7 +214,7 @@
 		<Sheet.Header class="p-0 pr-8">
 			<Sheet.Title
 				>{resume
-					? 'Continue the session'
+					? 'Resume the session'
 					: issue
 						? 'Work on this issue'
 						: 'Start a session'}</Sheet.Title
@@ -215,8 +224,8 @@
 					Starts a session on “{issue.title}”. It claims the issue when it reports, so the board
 					shows it in progress.
 				{:else if resume}
-					Continues “{label(resume)}” in the background on {host || resume.host}, in
-					{place(resume.cwd)}.
+					Resumes “{resume.title}” in the background on {host || resume.host}, in
+					{place(resume.cwd)}: its conversation goes on from where it stopped.
 				{:else}
 					Runs <code class="font-mono">claude --bg</code> on the host at the workspace's root (its harness
 					and direnv), placed under the project: notes default to it. Its questions and approvals reach
@@ -258,16 +267,38 @@
 					</label>
 				</div>
 			{:else}
-				<label class="flex min-w-0 flex-col gap-1 text-xs text-muted-foreground sm:w-1/3">
-					Host
-					<select class={selectClass} bind:value={host}>
-						{#each connected as h (h)}<option value={h}>{h}</option>{/each}
-					</select>
-				</label>
-				{#if host && host !== resume.host}
+				<div
+					class="flex flex-col gap-1 text-xs text-muted-foreground"
+					role="group"
+					aria-label="Machine"
+				>
+					Machine
+					<div class="flex flex-wrap gap-1.5">
+						{#each resumeHosts as h (h)}
+							<Button
+								variant={host === h ? 'default' : 'outline'}
+								size="sm"
+								aria-pressed={host === h}
+								onclick={() => (host = h)}
+								>{h}{#if h === resume.host}<span class="opacity-70">· last ran here</span
+									>{/if}</Button
+							>
+						{/each}
+						{#if !connected.includes(resume.host)}
+							<Button variant="outline" size="sm" disabled title="Its collector is not connected"
+								>{resume.host} <span class="opacity-70">· offline</span></Button
+							>
+						{/if}
+					</div>
+				</div>
+				{#if !resumeHosts.length}
+					<p class="text-xs text-critical">
+						No connected machine has the workspace {resume.workspace}.
+					</p>
+				{:else if host && host !== resume.host}
 					<p class="text-xs text-muted-foreground">
-						It ran on {resume.host}{connected.includes(resume.host) ? '' : ', which is offline'}; {host}
-						fetches its transcript from the hub first.
+						It last ran on {resume.host}; {host} fetches its transcript from the hub first, then resumes
+						it as a copy under a new id (the old one stays as it was).
 					</p>
 				{/if}
 			{/if}
@@ -301,7 +332,7 @@
 				{#snippet actions()}
 					<Button type="submit" size="sm" disabled={!ready}>
 						{#if busy || pending}<LoaderCircleIcon class="animate-spin" />{/if}
-						{resume ? 'Continue' : 'Start'}
+						{resume ? 'Resume' : 'Start'}
 					</Button>
 				{/snippet}
 			</PromptField>

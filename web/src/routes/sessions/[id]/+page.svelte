@@ -3,7 +3,7 @@
 	// branch, context, cost, Open in Claude, Open on and Resolved with the
 	// other actions in a menu), Chat / Shell / Details, the open asks pinned
 	// above the composer; an ended session (also one only history still
-	// knows) offers Continue.
+	// knows) offers Resume.
 	import { tick, untrack } from 'svelte';
 	import { page } from '$app/state';
 	import ArrowDownIcon from '@lucide/svelte/icons/arrow-down';
@@ -29,7 +29,7 @@
 	import { fmtStamp, fmtUsd, known } from '#lib/format.js';
 	import { live } from '#lib/live/store.svelte.js';
 	import { claimPaths, isAgent, label, signature, shown } from '#lib/session.js';
-	import { starter } from '#lib/starter.svelte.js';
+	import { resumableSession, starter } from '#lib/starter.svelte.js';
 
 	const id = $derived(page.params.id!);
 	let convo = $state<Convo>(new Convo(''));
@@ -275,12 +275,14 @@
 				<div class="mx-auto flex w-full max-w-3xl flex-wrap items-center gap-2">
 					<p class="text-xs text-muted-foreground">
 						Ended {fmtStamp(s.activity_since)}.{s.workspace
-							? ` Continue it in the background on ${s.host}.`
-							: ' It ran outside every workspace, so it cannot be continued from here.'}
+							? ` Resume it in the background, on ${s.host} or another machine.`
+							: ' It ran outside every workspace, so it cannot be resumed from here.'}
 					</p>
 					{#if s.workspace}
-						<Button size="sm" class="ml-auto" onclick={() => starter.show({ resume: s })}
-							>Continue…</Button
+						<Button
+							size="sm"
+							class="ml-auto"
+							onclick={() => starter.show({ resume: resumableSession(s) })}>Resume…</Button
 						>
 					{/if}
 				</div>

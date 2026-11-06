@@ -453,3 +453,9 @@ pointer goes through to the line beneath. */
 	-webkit-mask-image: linear-gradient(#000 80%, transparent);
 	mask-image: linear-gradient(#000 80%, transparent);
 }
+
+/* Search words in a past session's overview and conversation (`highlightTerms`). */
+::highlight(past-match) {
+	background-color: color-mix(in oklch, var(--warning) 35%, transparent);
+	color: inherit;
+}

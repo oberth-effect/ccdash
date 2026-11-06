@@ -396,7 +396,7 @@ fn prune(conn: &Connection, cutoff: i64) -> Result<()> {
 
 /// The database holds prompts and replies: owner-only. SQLite gives the
 /// `-wal`/`-shm` files it creates the database file's mode.
-fn make_private(path: &Path) -> Result<()> {
+pub(crate) fn make_private(path: &Path) -> Result<()> {
     OpenOptions::new()
         .create(true)
         .append(true)
