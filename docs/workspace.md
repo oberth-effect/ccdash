@@ -107,18 +107,32 @@ four worker threads (a unit is in one pass at a time):
   `refs/sync/diverged/<host>/<branch>`. Remote-tracking refs follow the
   machine that fetched further; one that moved apart on both sides (the
   remote was rewritten between two fetches) stays as it is here and is
-  never shown as diverged, the next `git fetch` settles it. The remotes
-  themselves (`.git/config`) do not travel: a unit created from the hub
-  on a new machine carries the refs but needs its `origin` added by hand
-  before it can push. Stashes from the snapshot are recreated when
-  missing (`git stash store`).
+  never shown as diverged, the next `git fetch` settles it. Stashes from
+  the snapshot are recreated when missing (`git stash store`).
+- **Remotes and upstreams.** A repository's snapshot also carries its
+  remotes (`remote.<name>.url`, `pushurl`, `fetch`, `push`) and branch
+  upstreams (`branch.<name>.remote`, `merge`, `pushRemote`); nothing else
+  from `.git/config` travels. A remote whose URL holds a password or a
+  token (`https://user:token@…`, or any user in an `http(s)` URL) stays
+  home, and so does every upstream naming it. The other machines only
+  add: a remote, or a branch's upstream, they lack entirely is written;
+  one they have in any form is never changed or removed, so two machines
+  may keep different URLs for good. A unit created from the hub fetches
+  and pushes like the copy it came from. A changed remote alone makes no
+  snapshot (two machines that disagree on a URL would take turns for
+  ever): it rides along with the next one, or with
+  `ccdash workspace resync`. A resync also adds what the other machines'
+  snapshots on the hub carry and this copy lacks: run it once on every
+  machine after the update that made remotes travel (older snapshots
+  carry none), or after another git held `config.lock` during an apply.
 
 Every git call the collector makes runs with `core.excludesFile` set to
 the never-travelling list, `core.hooksPath` pointing at an empty directory
 (a `pre-push` hook would otherwise run on every sync push), `gc.auto` off,
 no credential helpers, no prompts, stdin closed, a timeout, and the hub
 token in `GIT_CONFIG_*` environment variables, never on the command line.
-Nothing is written into a repository's configuration.
+Nothing is written into a repository's configuration but the remotes and
+upstreams it lacks (above).
 
 Left alone until done: units with `index.lock`, a merge, rebase, cherry-pick
 or bisect in progress; applies while a live Claude Code session's tool call
@@ -205,7 +219,7 @@ refs/sync/<me>` … `>>>>>>> refs/sync/<other>`), every other file merges
 
 ```sh
 ccdash workspace status [unit] [--json]   # every unit's state on this machine
-ccdash workspace resync [unit]            # fetch and snapshot again
+ccdash workspace resync [unit]            # fetch and snapshot again, remotes and upstreams included
 ccdash workspace init                     # create what the hub has and this machine lacks
 ccdash workspace adopt [unit] [--prefer mine|hub]   # copies that exist on both sides: merge, or one side wins
 ```

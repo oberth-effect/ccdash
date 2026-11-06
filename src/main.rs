@@ -181,7 +181,9 @@ enum Workspace {
         #[arg(long)]
         json: bool,
     },
-    /// Fetch and snapshot everything (or one unit) again.
+    /// Fetch and snapshot everything (or one unit) again, changed remotes
+    /// and upstreams included; adds those the other machines' snapshots
+    /// carry and this copy lacks.
     Resync { unit: Option<String> },
     /// A new machine: create every unit the hub has and this one lacks.
     Init,

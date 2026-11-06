@@ -252,8 +252,22 @@ async fn handle(
                         status
                     }
                     "resync" => {
-                        ws.send(WsCmd::Resync(unit));
-                        json!({ "type": "ok", "message": "fetching and snapshotting again" })
+                        // NOTE: a unit id that names nothing is reported, not swallowed
+                        let status = ws.status().await?;
+                        let known = unit.as_deref().is_none_or(|w| {
+                            status["units"]
+                                .as_array()
+                                .is_some_and(|units| units.iter().any(|u| u["unit"] == w))
+                        });
+                        if known {
+                            ws.send(WsCmd::Resync(unit));
+                            json!({ "type": "ok", "message": "fetching and snapshotting again, remotes and upstreams included" })
+                        } else {
+                            error(format!(
+                                "no unit {:?} here: `ccdash workspace status` lists them (ids are <bundle>/<dir>)",
+                                unit.unwrap_or_default()
+                            ))
+                        }
                     }
                     "init" => {
                         ws.send(WsCmd::Init);

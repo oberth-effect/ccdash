@@ -3,9 +3,9 @@
 //! ignored paths), the staged state as a second tree, both under one
 //! wrapper tree (`work/`, `index/`) so they travel together, and a commit
 //! on the host's own chain whose message carries HEAD, the branch, the
-//! index tree, every branch and tag, the stashes and the empty
-//! directories. The real index is never written. See
-//! `meta/plans/ccdash-hub/h9.md`.
+//! index tree, every branch and tag, the stashes, the empty directories
+//! and the remotes and upstreams (`remotes.rs`). The real index is never
+//! written. See `meta/plans/ccdash-hub/h9.md`.
 
 use std::{
     collections::BTreeMap,
@@ -18,6 +18,7 @@ use anyhow::{Context, Result};
 use super::{
     EMPTY_TREE, HELD_FILES, HELD_SHARE, HeldReport, Rules, SYNC_REFS,
     git::{Git, Opts, Repo},
+    remotes::{self, Setting},
     units::blocker,
 };
 use crate::util::now_ms;
@@ -46,6 +47,10 @@ pub struct Meta {
     pub stash: Vec<(u32, String)>,
     /// Empty directories, which git does not track.
     pub dirs: Vec<String>,
+    /// Remotes and branch upstreams as the snapshot's host had them when
+    /// it was taken (`remotes::read`): what the other hosts add when they
+    /// lack it. A change here alone makes no snapshot, a resync does.
+    pub config: Vec<Setting>,
 }
 
 impl Meta {
@@ -72,7 +77,22 @@ impl Meta {
                 out.push_str(&format!("dir {dir}\n"));
             }
         }
+        for (key, value) in &self.config {
+            if !key.contains([' ', '\n']) && !value.contains('\n') {
+                out.push_str(&format!("config {key} {value}\n"));
+            }
+        }
         out
+    }
+
+    /// Equal in everything but the remotes and upstreams.
+    pub fn same_but_config(&self, other: &Self) -> bool {
+        self.head == other.head
+            && self.branch == other.branch
+            && self.index == other.index
+            && self.refs == other.refs
+            && self.stash == other.stash
+            && self.dirs == other.dirs
     }
 
     /// The meta of a commit message; None for a commit that is not a
@@ -104,6 +124,11 @@ impl Meta {
                     }
                 }
                 "dir" => meta.dirs.push(value.to_owned()),
+                "config" => {
+                    if let Some((key, value)) = value.split_once(' ') {
+                        meta.config.push((key.to_owned(), value.to_owned()));
+                    }
+                }
                 _ => {}
             }
         }
@@ -148,7 +173,7 @@ pub enum Outcome {
     Unchanged,
     /// Too many files added or deleted: kept under `refs/sync/held/<host>`.
     Held(HeldReport),
-    Taken(Local),
+    Taken(Box<Local>),
 }
 
 /// A snapshot and what it noticed on the way.
@@ -179,6 +204,10 @@ pub struct Take<'a> {
     pub previous: Option<&'a Local>,
     /// The process holding a file open under a quiescent directory.
     pub busy: &'a dyn Fn(&Path) -> Option<String>,
+    /// A resync: remotes or upstreams changed since `previous` make a
+    /// snapshot too. Never otherwise: two hosts that disagree on a URL
+    /// would take turns for ever.
+    pub resync: bool,
 }
 
 /// Where the work index of a unit is kept between the snapshot and the
@@ -360,19 +389,23 @@ pub fn take(t: &Take) -> Result<Report> {
         Vec::new()
     };
     dirs.sort();
-    let meta = Meta {
+    let mut meta = Meta {
         head: head.clone(),
         branch,
         index: index_tree,
         refs,
         stash,
         dirs,
+        config: Vec::new(),
     };
-
-    if let Some(prev) = t.previous
-        && prev.work == work_tree
-        && prev.meta == meta
-    {
+    let same = t
+        .previous
+        .filter(|prev| prev.work == work_tree && prev.meta.same_but_config(&meta));
+    if same.is_some() && !t.resync {
+        return Ok(report);
+    }
+    meta.config = remotes::read(t.git, t.repo)?;
+    if same.is_some_and(|prev| prev.meta.config == meta.config) {
         return Ok(report);
     }
     let tree = t.git.wrap(t.repo, &work_tree, &meta.index)?;
@@ -429,14 +462,14 @@ pub fn take(t: &Take) -> Result<Report> {
         .commit_tree(t.repo, &tree, &parents, &meta.message(t.host))?;
     t.git
         .update_ref(t.repo, &format!("{SYNC_REFS}/{}", t.host), &commit)?;
-    report.outcome = Outcome::Taken(Local {
+    report.outcome = Outcome::Taken(Box::new(Local {
         commit,
         tree,
         work: work_tree,
         index: meta.index.clone(),
         meta,
         tracked,
-    });
+    }));
     Ok(report)
 }
 
@@ -586,6 +619,7 @@ pub(crate) mod tests {
             children: &[],
             previous,
             busy,
+            resync: false,
         })
         .unwrap()
     }
@@ -620,6 +654,7 @@ pub(crate) mod tests {
             children: &children,
             previous: None,
             busy: &|_| None,
+            resync: false,
         })
         .unwrap();
         let Outcome::Taken(local) = report.outcome else {
@@ -650,6 +685,10 @@ pub(crate) mod tests {
             ]),
             stash: vec![(0, "d".repeat(40))],
             dirs: vec!["empty dir".into(), "x/y".into()],
+            config: vec![
+                ("remote.origin.url".into(), "/srv/a repo.git".into()),
+                ("branch.main.merge".into(), "refs/heads/main".into()),
+            ],
         };
         let text = meta.message("navi");
         assert_eq!(Meta::host_of(&text), Some("navi"));

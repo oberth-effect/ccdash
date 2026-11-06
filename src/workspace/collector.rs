@@ -71,7 +71,8 @@ pub enum Cmd {
     Setup(WorkspaceSetup),
     /// A push by `host` landed on the hub for `unit`.
     Changed { unit: String, host: String },
-    /// Fetch and snapshot everything (or one unit) now.
+    /// Fetch and snapshot everything (or one unit) now, remotes and
+    /// upstreams that changed included.
     Resync(Option<String>),
     /// Write one side of a conflict over the file; answered to the hub.
     Resolve {
@@ -404,6 +405,8 @@ struct PassJob {
     defer_apply: Option<String>,
     /// Quiescent directories to write once free.
     lagging: Vec<String>,
+    /// A resync: changed remotes or upstreams make a snapshot too.
+    resync: bool,
 }
 
 #[derive(Default)]
@@ -433,6 +436,8 @@ struct PassResult {
     caught_up: Vec<String>,
     /// Directories that lagged behind an apply this pass.
     lagged: Vec<String>,
+    /// The resync's snapshot was taken (or nothing had changed).
+    resynced: bool,
 }
 
 /// What creating a unit comes to.
@@ -536,6 +541,8 @@ struct Entry {
     /// Why the unit can never be synced from here (a linked worktree):
     /// no passes, the hub is told through the seen list.
     blocked: Option<String>,
+    /// A resync was asked for and its snapshot not taken yet.
+    resync: bool,
 }
 
 impl Entry {
@@ -576,6 +583,7 @@ impl Entry {
             held_action: None,
             lagging: BTreeSet::new(),
             blocked: None,
+            resync: false,
         }
     }
 
@@ -830,6 +838,7 @@ impl Scheduler {
                 prefer: if e.adopt { e.adopt_prefer } else { None },
                 defer_apply,
                 lagging: e.lagging.iter().cloned().collect(),
+                resync: e.resync,
             };
             e.running = true;
             e.burst = None;
@@ -868,10 +877,14 @@ impl Scheduler {
                     if let Some(e) = self.units.get_mut(&id) {
                         e.due_fetch = true;
                         e.due_apply = true;
+                        e.resync = true;
                         e.burst = Some((Instant::now() - BURST_MAX, Instant::now() - BURST_MAX));
                     }
                 }
                 None => {
+                    for e in self.units.values_mut() {
+                        e.resync = true;
+                    }
                     self.sweep_due = true;
                     self.discover_due = true;
                 }
@@ -1227,6 +1240,9 @@ impl Scheduler {
                     self.discover_due = true;
                     self.changed.insert(unit);
                     return;
+                }
+                if result.resynced {
+                    e.resync = false;
                 }
                 if let Some(local) = result.local {
                     e.files = local.tracked;
@@ -2011,6 +2027,7 @@ fn run_pass(shared: &Shared, job: &PassJob, res: &mut PassResult) -> Result<()> 
                 children: &children,
                 previous: local.as_ref(),
                 busy: &busy,
+                resync: job.resync,
             })?;
             res.waiting = report.waiting.clone();
             res.oversize = report.oversize.clone();
@@ -2032,8 +2049,11 @@ fn run_pass(shared: &Shared, job: &PassJob, res: &mut PassResult) -> Result<()> 
                     res.state = Some(UnitState::Held);
                     break;
                 }
-                Snap::Taken(l) => local = Some(l),
-                Snap::Unchanged => {}
+                Snap::Taken(l) => {
+                    local = Some(*l);
+                    res.resynced |= job.resync;
+                }
+                Snap::Unchanged => res.resynced |= job.resync,
             }
         }
         if let Some(l) = local.as_ref()
@@ -2125,8 +2145,16 @@ fn run_pass(shared: &Shared, job: &PassJob, res: &mut PassResult) -> Result<()> 
                 remote: sha,
                 busy: &busy,
                 prefer: job.prefer,
+                kind: job.kind,
             })?;
             res.waiting = report.waiting.clone();
+            if !report.added.is_empty() {
+                info!(
+                    "workspace {}: added {} from {host}",
+                    job.unit,
+                    report.added.join(", ")
+                );
+            }
             hold_push = false;
             match report.outcome {
                 apply::Outcome::Ahead => {
@@ -2176,6 +2204,27 @@ fn run_pass(shared: &Shared, job: &PassJob, res: &mut PassResult) -> Result<()> 
     res.local = local.clone();
     res.pushed = pushed.clone();
     res.remotes = remotes_now.clone();
+
+    // NOTE: a resync also adds what the others' snapshots carry and this copy
+    // lacks: snapshots applied before remotes travelled, or an add that failed
+    if job.resync && job.kind == UnitKind::Git {
+        for (host, sha) in &remotes_now {
+            let added = apply::read_snapshot(&shared.git, &repo, sha).and_then(|snap| {
+                super::remotes::add_missing(&shared.git, &repo, &snap.meta.config)
+            });
+            match added {
+                Ok(added) if !added.is_empty() => {
+                    info!(
+                        "workspace {}: added {} from {host}",
+                        job.unit,
+                        added.join(", ")
+                    );
+                }
+                Ok(_) => {}
+                Err(e) => debug!("workspace {}: remotes from {host}: {e:#}", job.unit),
+            }
+        }
+    }
 
     // conflicts whose markers are gone are over; a binary one, or one kept
     // whole (`set_aside`), once the file is no longer the kept version
@@ -2509,9 +2558,19 @@ fn create_in(shared: &Shared, unit: &str, kind: UnitKind, rules: &Rules) -> Resu
         &shared.host,
         &host,
         &sha,
+        kind,
     )?;
     if let apply::Outcome::Retry(reason) = report.outcome {
         bail!("{reason}");
+    }
+    if !report.added.is_empty() {
+        info!(
+            "workspace {unit}: added {} from {host}",
+            report.added.join(", ")
+        );
+    }
+    for note in &report.notes {
+        debug!("workspace {unit}: {note}");
     }
     let local = apply::own_snapshot(&shared.git, &repo, &shared.host)?
         .ok_or_else(|| anyhow!("no snapshot after creating the unit"))?;

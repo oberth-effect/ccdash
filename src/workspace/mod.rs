@@ -9,6 +9,7 @@ pub mod apply;
 pub mod collector;
 pub mod git;
 pub mod hub;
+pub mod remotes;
 pub mod snapshot;
 pub mod units;
 mod watch;

@@ -5,7 +5,8 @@
 //! keep the local version, a path staged differently on both sides ends
 //! unstaged; both blobs are reported. HEAD, branches, tags and stashes
 //! follow the snapshot; a branch moved on both sides is set aside under
-//! `refs/sync/diverged/`. The working tree is written through `read-tree
+//! `refs/sync/diverged/`; remotes and upstreams the unit lacks are added
+//! (`remotes.rs`). The working tree is written through `read-tree
 //! -u -m`, which refuses when a file changed underneath (the pass retries
 //! after the next snapshot). See `meta/plans/ccdash-hub/h9.md`.
 
@@ -20,7 +21,9 @@ use tracing::debug;
 
 use super::{
     ConflictMode, ConflictReport, DIVERGED_REFS, Diverged, EMPTY_TREE, Rules, SYNC_REFS, Side,
+    UnitKind,
     git::{Conflicted, Git, Opts, Repo},
+    remotes,
     snapshot::{Local, Meta, expand, work_index},
     units::blocker,
 };
@@ -50,8 +53,12 @@ pub struct Report {
     pub waiting: Vec<(String, String)>,
     /// Paths the working tree changed in.
     pub files: u64,
-    /// Refs that could not follow (their objects are missing here).
+    /// Refs that could not follow (their objects are missing here), and
+    /// remotes that could not be added.
     pub notes: Vec<String>,
+    /// Remotes and upstreams this unit lacked, added from the snapshot
+    /// (`remote.origin`, `branch.main`).
+    pub added: Vec<String>,
 }
 
 /// Everything an apply needs.
@@ -71,6 +78,9 @@ pub struct Apply<'a> {
     /// An adoption where one side wins outright instead of merging: the
     /// result is that side's content (set only for the adopting pass).
     pub prefer: Option<Side>,
+    /// A git unit takes the remotes and upstreams it lacks; a plain
+    /// unit's hidden repository takes none.
+    pub kind: UnitKind,
 }
 
 /// A snapshot commit read back.
@@ -137,6 +147,7 @@ pub fn apply(a: &Apply) -> Result<Report> {
         waiting: Vec::new(),
         files: 0,
         notes: Vec::new(),
+        added: Vec::new(),
     };
     if let Some(reason) = blocker(&a.repo.git_dir) {
         report.outcome = Outcome::Retry(reason.into());
@@ -282,6 +293,7 @@ pub fn apply(a: &Apply) -> Result<Report> {
                 refs,
                 stash,
                 dirs: dirs.into_iter().collect(),
+                config: Vec::new(),
             },
         )
     };
@@ -465,6 +477,14 @@ pub fn apply(a: &Apply) -> Result<Report> {
         }
     }
 
+    // NOTE: added only, never changed: hosts may disagree on a URL for good
+    if a.kind == UnitKind::Git {
+        match remotes::add_missing(a.git, a.repo, &remote.meta.config) {
+            Ok(added) => report.added = added,
+            Err(e) => report.notes.push(format!("remotes: {e:#}")),
+        }
+    }
+
     // this host's snapshot
     let own = format!("{SYNC_REFS}/{}", a.host);
     if fast_forward {
@@ -493,11 +513,19 @@ pub fn apply(a: &Apply) -> Result<Report> {
             // one: the other host must fast-forward to it, not merge by itself
             report.outcome = Outcome::Ahead;
         } else {
+            let config = match a.kind {
+                UnitKind::Git => remotes::read(a.git, a.repo)?,
+                UnitKind::Plain => Vec::new(),
+            };
+            let meta = Meta {
+                config,
+                ..target_meta
+            };
             let commit = a.git.commit_tree(
                 a.repo,
                 &tree,
                 &[&local.commit, a.remote],
-                &target_meta.message(a.host),
+                &meta.message(a.host),
             )?;
             a.git.update_ref(a.repo, &own, &commit)?;
             report.outcome = Outcome::Merged { commit };
@@ -590,6 +618,7 @@ fn preferred(
             refs,
             stash,
             dirs: dirs.into_iter().collect(),
+            config: Vec::new(),
         },
     ))
 }
@@ -924,6 +953,7 @@ fn set_head(a: &Apply, target: &Meta) -> Result<()> {
 /// # Errors
 ///
 /// git fails.
+#[allow(clippy::too_many_arguments)]
 pub fn create(
     git: &Git,
     repo: &Repo,
@@ -932,6 +962,7 @@ pub fn create(
     host: &str,
     other: &str,
     remote: &str,
+    kind: UnitKind,
 ) -> Result<Report> {
     apply(&Apply {
         git,
@@ -945,6 +976,7 @@ pub fn create(
         remote,
         busy: &|_| None,
         prefer: None,
+        kind,
     })
 }
 
@@ -1080,6 +1112,8 @@ pub fn roll_back(
         remote: "",
         busy: &|_| None,
         prefer: None,
+        // NOTE: only set_staged reads this Apply
+        kind: UnitKind::Plain,
     };
     set_staged(&a, &previous.work, &previous.index)
 }
@@ -1219,7 +1253,7 @@ mod tests {
 
     fn snapshot(git: &Git, repo: &Repo, scratch: &Path, prev: Option<&Local>) -> Local {
         match take_in(git, repo, scratch, &rules(), prev, &|_| None).outcome {
-            Snap::Taken(local) => local,
+            Snap::Taken(local) => *local,
             Snap::Unchanged => prev.unwrap().clone(),
             other => panic!("{other:?}"),
         }
@@ -1264,6 +1298,7 @@ mod tests {
             remote,
             busy: &|_| None,
             prefer,
+            kind: UnitKind::Git,
         })
         .unwrap()
     }
@@ -1796,7 +1831,17 @@ mod tests {
             .unwrap();
         carry(&navi, &krup, &krup_git, "navi");
         let ks = dir.join("scratch-krup");
-        let r = create(&krup_git, &krup, &ks, &rules(), "krup", "navi", &n0.commit).unwrap();
+        let r = create(
+            &krup_git,
+            &krup,
+            &ks,
+            &rules(),
+            "krup",
+            "navi",
+            &n0.commit,
+            UnitKind::Git,
+        )
+        .unwrap();
         assert!(matches!(r.outcome, Outcome::FastForward { .. }), "{r:?}");
         assert_eq!(
             fs::read_to_string(krup.work_tree.join("a.txt")).unwrap(),
@@ -1835,6 +1880,7 @@ mod tests {
             remote: &n1.commit,
             busy: &busy,
             prefer: None,
+            kind: UnitKind::Git,
         })
         .unwrap();
         assert!(matches!(r.outcome, Outcome::FastForward { .. }), "{r:?}");
@@ -1856,6 +1902,158 @@ mod tests {
             k1.commit, n1.commit,
             "the kept directory made a new snapshot"
         );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    fn config_of(git: &Git, repo: &Repo) -> Vec<(String, String)> {
+        remotes::read(git, repo).unwrap()
+    }
+
+    /// A pass of the scheduler after `ccdash workspace resync`.
+    fn resync(git: &Git, repo: &Repo, scratch: &Path, prev: &Local) -> Snap {
+        crate::workspace::snapshot::take(&crate::workspace::snapshot::Take {
+            git,
+            repo,
+            scratch,
+            excludes: None,
+            rules: &rules(),
+            host: &git.host,
+            children: &[],
+            previous: Some(prev),
+            busy: &|_| None,
+            resync: true,
+        })
+        .unwrap()
+        .outcome
+    }
+
+    /// Remotes and upstreams reach a unit created from the hub; afterwards
+    /// a resync carries what a host lacks, never a change, and hosts that
+    /// disagree on a URL settle.
+    #[test]
+    fn remotes_and_upstreams_travel_added_only() {
+        let (dir, navi_git, navi) = fixture("remotes-travel");
+        let ns = dir.join("scratch-navi");
+        let o = Opts::default();
+        for args in [
+            &["remote", "add", "origin", "git@example.com:r.git"][..],
+            &["config", "branch.main.remote", "origin"],
+            &["config", "branch.main.merge", "refs/heads/main"],
+        ] {
+            navi_git.ok(Some(&navi), args, &o).unwrap();
+        }
+        let n0 = snapshot(&navi_git, &navi, &ns, None);
+        assert_eq!(n0.meta.config, config_of(&navi_git, &navi));
+        assert_eq!(n0.meta.config.len(), 4, "{:?}", n0.meta.config);
+
+        // a unit created from the hub gets them
+        let krup = Repo {
+            git_dir: dir.join("krup/.git"),
+            work_tree: dir.join("krup"),
+        };
+        fs::create_dir_all(&krup.work_tree).unwrap();
+        let mut krup_git = navi_git.clone();
+        krup_git.host = "krup".into();
+        krup_git.ok(Some(&krup), &["init", "-q"], &o).unwrap();
+        carry(&navi, &krup, &krup_git, "navi");
+        let ks = dir.join("scratch-krup");
+        let r = create(
+            &krup_git,
+            &krup,
+            &ks,
+            &rules(),
+            "krup",
+            "navi",
+            &n0.commit,
+            UnitKind::Git,
+        )
+        .unwrap();
+        assert_eq!(r.added, ["remote.origin", "branch.main"]);
+        assert_eq!(config_of(&krup_git, &krup), n0.meta.config);
+        let k0 = fresh(&krup_git, &krup, &ks);
+        assert_eq!(k0.commit, n0.commit, "nothing to snapshot after creating");
+
+        // a changed remote alone makes no snapshot, a resync does; the other
+        // host adds what it lacks and keeps the URL it has
+        krup_git
+            .ok(
+                Some(&krup),
+                &[
+                    "remote",
+                    "set-url",
+                    "origin",
+                    "git@mirror.example.com:r.git",
+                ],
+                &o,
+            )
+            .unwrap();
+        navi_git
+            .ok(
+                Some(&navi),
+                &["remote", "add", "upstream", "git@example.com:up.git"],
+                &o,
+            )
+            .unwrap();
+        assert_eq!(fresh(&navi_git, &navi, &ns).commit, n0.commit);
+        let Snap::Taken(n1) = resync(&navi_git, &navi, &ns, &n0) else {
+            panic!("a resync snapshots changed remotes");
+        };
+        assert!(matches!(
+            resync(&navi_git, &navi, &ns, &n1),
+            Snap::Unchanged
+        ));
+        carry(&navi, &krup, &krup_git, "navi");
+        let r = apply_from(&krup_git, &krup, &ks, &k0, "navi", &n1.commit);
+        assert!(matches!(r.outcome, Outcome::FastForward { .. }), "{r:?}");
+        assert_eq!(r.added, ["remote.upstream"]);
+        let url = |git: &Git, repo: &Repo| {
+            git.ok(Some(repo), &["remote", "get-url", "origin"], &o)
+                .unwrap()
+                .text()
+        };
+        assert_eq!(url(&krup_git, &krup), "git@mirror.example.com:r.git");
+
+        // krup's resync carries its own URL; navi keeps its own; both settle
+        let k1 = fresh(&krup_git, &krup, &ks);
+        assert_eq!(
+            k1.commit, n1.commit,
+            "a differing URL alone makes no snapshot"
+        );
+        let Snap::Taken(k2) = resync(&krup_git, &krup, &ks, &k1) else {
+            panic!("krup's remotes differ from navi's snapshot");
+        };
+        carry(&krup, &navi, &navi_git, "krup");
+        let n1 = fresh(&navi_git, &navi, &ns);
+        let r = apply_from(&navi_git, &navi, &ns, &n1, "krup", &k2.commit);
+        assert!(matches!(r.outcome, Outcome::FastForward { .. }), "{r:?}");
+        assert!(r.added.is_empty(), "{:?}", r.added);
+        assert_eq!(url(&navi_git, &navi), "git@example.com:r.git");
+        assert_eq!(fresh(&navi_git, &navi, &ns).commit, k2.commit, "settled");
+        assert_eq!(fresh(&krup_git, &krup, &ks).commit, k2.commit, "settled");
+
+        // a plain unit's hidden repository takes none
+        let plain = Repo {
+            git_dir: dir.join("hidden/plain.git"),
+            work_tree: dir.join("plain"),
+        };
+        fs::create_dir_all(&plain.work_tree).unwrap();
+        fs::create_dir_all(&plain.git_dir).unwrap();
+        krup_git.ok(Some(&plain), &["init", "-q"], &o).unwrap();
+        carry(&navi, &plain, &krup_git, "navi");
+        let ps = dir.join("scratch-plain");
+        let r = create(
+            &krup_git,
+            &plain,
+            &ps,
+            &rules(),
+            "krup",
+            "navi",
+            &n1.commit,
+            UnitKind::Plain,
+        )
+        .unwrap();
+        assert!(matches!(r.outcome, Outcome::FastForward { .. }), "{r:?}");
+        assert!(r.added.is_empty() && config_of(&krup_git, &plain).is_empty());
         fs::remove_dir_all(&dir).unwrap();
     }
 }
