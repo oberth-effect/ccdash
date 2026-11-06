@@ -12,6 +12,7 @@ mod collector;
 mod command;
 mod config;
 mod conversation;
+mod drafts;
 mod emit;
 mod git;
 mod history;

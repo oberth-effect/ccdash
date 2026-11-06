@@ -38,6 +38,8 @@ pub struct Link {
     pub cfg: HubLink,
     pub host: String,
     pub terminals: Vec<String>,
+    /// This machine opens drafts in an editor (`[edit] command` is set).
+    pub edit: bool,
     pub queue: Queue,
     /// Fires when the machine woke from a long sleep: the socket is most
     /// likely dead, so the link starts over at once.
@@ -138,6 +140,7 @@ async fn session(
         v: VERSION,
         host: link.host.clone(),
         terminals: link.terminals.clone(),
+        edit: link.edit,
     };
     ws.send(Message::Text(serde_json::to_string(&hello)?.into()))
         .await?;

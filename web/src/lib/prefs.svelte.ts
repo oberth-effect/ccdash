@@ -18,6 +18,9 @@ const GRID_KEY = 'ccdash.grid';
 const QUICK_KEY = 'ccdash.quick';
 const TEMPLATES_KEY = 'ccdash.templates';
 const DRAFT_KEY = 'ccdash.draft.';
+const VIM_KEY = 'ccdash.vim';
+const VIMRC_KEY = 'ccdash.vimrc';
+const EDIT_HOST_KEY = 'ccdash.edithost';
 const START_KEY = 'ccdash.start';
 const GRAPH_KEY = 'ccdash.graph';
 const REPORT_SIZE_KEY = 'ccdash.reportsize';
@@ -31,6 +34,22 @@ export const DEFAULT_QUICK = [
 ];
 
 export type Template = { name: string; text: string };
+
+/** Vim keys in the composer: `auto` is on with a mouse or trackpad, off on touch. */
+export type VimMode = 'auto' | 'on' | 'off';
+export const isVimMode = (x: unknown): x is VimMode => x === 'auto' || x === 'on' || x === 'off';
+
+/** What the composer's vim starts with: the owner's Neovim habits, as far
+ * as the emulation follows (`:help map` syntax, one command per line,
+ * `"` comments). Settings edits it. */
+export const DEFAULT_VIMRC = `" The panel's vim, set up like your Neovim: one ex command per line.
+imap jk <Esc>
+imap kj <Esc>
+vmap jk <Esc>
+vmap kj <Esc>
+nmap <Space>w :w<CR>
+nmap <Space>q :q<CR>
+nmap <Space>r :noh<CR>`;
 
 /** What the start sheet picked last; empty strings are the host's defaults. */
 export type StartChoice = { host: string; model: string; mode: string };
@@ -92,6 +111,18 @@ class Prefs {
 	grid = $state<boolean>(browser && localStorage.getItem(GRID_KEY) === 'on');
 	quick = $state<string[]>(load(QUICK_KEY, DEFAULT_QUICK));
 	templates = $state<Template[]>(load(TEMPLATES_KEY, []));
+	/** Vim keys in the composer. */
+	vim = $state<VimMode>(
+		browser && isVimMode(localStorage.getItem(VIM_KEY))
+			? (localStorage.getItem(VIM_KEY) as VimMode)
+			: 'auto'
+	);
+	vimrc = $state<string>(
+		browser ? (localStorage.getItem(VIMRC_KEY) ?? DEFAULT_VIMRC) : DEFAULT_VIMRC
+	);
+	/** The machine whose editor "Edit in nvim" opens; empty picks the
+	 * session's host, else the first connected one that can. */
+	editHost = $state<string>(browser ? (localStorage.getItem(EDIT_HOST_KEY) ?? '') : '');
 	start = $state<StartChoice>(load(START_KEY, { host: '', model: '', mode: '' }));
 	graph = $state<GraphLook>({ ...DEFAULT_GRAPH, ...load<Partial<GraphLook>>(GRAPH_KEY, {}) });
 	/** Reports in the panel's frame have no storage of their own (an opaque
@@ -177,6 +208,28 @@ class Prefs {
 	setTemplates(list: Template[]) {
 		this.templates = list.filter((t) => t.name.trim() && t.text.trim());
 		localStorage.setItem(TEMPLATES_KEY, JSON.stringify(this.templates));
+	}
+
+	setVim(mode: VimMode) {
+		this.vim = mode;
+		localStorage.setItem(VIM_KEY, mode);
+	}
+
+	setVimrc(text: string) {
+		this.vimrc = text;
+		localStorage.setItem(VIMRC_KEY, text);
+	}
+
+	setEditHost(host: string) {
+		this.editHost = host;
+		if (host) localStorage.setItem(EDIT_HOST_KEY, host);
+		else localStorage.removeItem(EDIT_HOST_KEY);
+	}
+
+	/** Whether the composer uses vim keys on this device. */
+	get vimOn(): boolean {
+		if (this.vim !== 'auto') return this.vim === 'on';
+		return browser && !matchMedia('(pointer: coarse)').matches;
 	}
 
 	setGraph(changes: Partial<GraphLook>) {

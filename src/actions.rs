@@ -36,6 +36,90 @@ pub const PERMISSION_MODES: &[&str] = &["plan", "acceptEdits"];
 /// Longest prompt a launch takes, in characters.
 pub const MAX_PROMPT: usize = 20_000;
 
+/// Opens `text` in the machine's editor (`[edit] command`, `{file}` the
+/// draft's file) and waits for it to close; `opened` gets the editor's pid
+/// (its process group's) so a cancel can end it. Exit status 0 gives the
+/// file's content; anything else (`:cq`) is a cancel. The file lives
+/// under the state dir, owner-only, and goes when the editor closes.
+pub async fn edit(
+    command: &[String],
+    id: &str,
+    text: &str,
+    opened: impl FnOnce(u32),
+) -> Result<String, String> {
+    edit_in(&paths::state_dir().join("edit"), command, id, text, opened).await
+}
+
+/// [`edit`] with the draft's file under `dir`.
+async fn edit_in(
+    dir: &Path,
+    command: &[String],
+    id: &str,
+    text: &str,
+    opened: impl FnOnce(u32),
+) -> Result<String, String> {
+    let (program, args) = command
+        .split_first()
+        .ok_or("this machine does not open an editor from the panel (`[edit] command` is empty)")?;
+    if id.is_empty() || !id.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(format!("{id:?} is not an edit id"));
+    }
+    std::fs::create_dir_all(dir).map_err(|e| format!("creating {}: {e}", dir.display()))?;
+    let _ = std::fs::set_permissions(dir, Permissions::from_mode(0o700));
+    let file = dir.join(format!("{id}.md"));
+    let write = || -> std::io::Result<()> {
+        let mut f = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&file)?;
+        f.write_all(text.as_bytes())
+    };
+    write().map_err(|e| format!("writing {}: {e}", file.display()))?;
+    let path = file.to_string_lossy();
+    let args: Vec<String> = args.iter().map(|a| a.replace("{file}", &path)).collect();
+    let spawned = Command::new(program)
+        .args(&args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .process_group(0)
+        .spawn();
+    let mut child = match spawned {
+        Ok(child) => child,
+        Err(e) => {
+            let _ = std::fs::remove_file(&file);
+            return Err(format!("running {program}: {e}"));
+        }
+    };
+    if let Some(pid) = child.id() {
+        opened(pid);
+    }
+    let status = child.wait().await;
+    let content = std::fs::read_to_string(&file);
+    let _ = std::fs::remove_file(&file);
+    let status = status.map_err(|e| format!("waiting for {program}: {e}"))?;
+    if !status.success() {
+        return Err(match status.code() {
+            Some(code) => format!("cancelled: the editor exited with status {code}"),
+            None => "cancelled: the editor was ended by a signal".into(),
+        });
+    }
+    content.map_err(|e| format!("reading {} back: {e}", file.display()))
+}
+
+/// Sends SIGTERM to the process group of `pid` (a process started with its
+/// own group), as a cancel of its editor.
+pub fn end_group(pid: u32) {
+    if let Ok(pid) = i32::try_from(pid) {
+        // SAFETY: kill(2) with a negative pid signals a process group; no memory is touched.
+        unsafe {
+            libc::kill(-pid, libc::SIGTERM);
+        }
+    }
+}
+
 /// Focuses the session's window, or attaches to a background session in a new
 /// terminal when it has none.
 pub async fn open(local: &Local, attach_command: &[String], key: &str) -> Result<String> {
@@ -640,6 +724,61 @@ mod tests {
             "{how}"
         );
         assert!(child.wait().unwrap().success());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn an_editor_saves_cancels_or_is_ended() {
+        let dir = std::env::temp_dir().join(format!("ccdash-edit-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let script = dir.join("editor");
+        // the "editor" prepends a line, and cancels when the text says so
+        std::fs::write(
+            &script,
+            "#!/bin/sh\ncase \"$(cat \"$1\")\" in *cancel*) exit 1;; esac\n\
+            { echo edited; cat \"$1\"; } > \"$1.new\" && mv \"$1.new\" \"$1\"\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, Permissions::from_mode(0o755)).unwrap();
+        let cmd = vec![script.to_string_lossy().into_owned(), "{file}".to_owned()];
+        let files = dir.join("drafts");
+        let mut pid = None;
+        let text = edit_in(&files, &cmd, "ab12", "hello\n", |p| pid = Some(p))
+            .await
+            .unwrap();
+        assert_eq!(text, "edited\nhello\n");
+        assert!(pid.is_some());
+        assert!(
+            std::fs::read_dir(&files).unwrap().next().is_none(),
+            "file kept"
+        );
+        let err = edit_in(&files, &cmd, "ab13", "please cancel", |_| {})
+            .await
+            .unwrap_err();
+        assert!(err.starts_with("cancelled"), "{err}");
+        assert!(edit_in(&files, &[], "ab14", "x", |_| {}).await.is_err());
+        assert!(edit_in(&files, &cmd, "../x", "x", |_| {}).await.is_err());
+        // a cancel ends the editor's process group; the result is a cancel
+        let slow = vec!["sh".to_owned(), "-c".to_owned(), "sleep 30".to_owned()];
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let waited = tokio::spawn(async move {
+            edit_in(
+                &std::env::temp_dir().join(format!("ccdash-edit-slow-{}", std::process::id())),
+                &slow,
+                "ab15",
+                "x",
+                |p| {
+                    let _ = tx.send(p);
+                },
+            )
+            .await
+        });
+        let pid = rx.await.unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        end_group(pid);
+        let err = waited.await.unwrap().unwrap_err();
+        assert!(err.starts_with("cancelled"), "{err}");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

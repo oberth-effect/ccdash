@@ -101,6 +101,7 @@ channel plugin in Claude Code's managed settings.
 | `launch.stop`, `.remove`                    | `claude stop {id}`, `claude rm {id}`            | stop a background session; remove one nothing runs                                       |
 | `launch.direnv`, `.env`                     | `[]`, `[]`                                      | `direnv export json` in the launch dir; the globs of the variables launched sessions get |
 | `attach.command`                            | `ghostty -e claude attach {id}`                 | opens a background session on the desktop                                                |
+| `edit.command`                              | `ghostty -e nvim {file}`                        | opens a draft from the panel in an editor; `{file}` is its path (`[]` is off)            |
 | `niri.enable`, `.terminals`                 | `true`, `["com.mitchellh.ghostty"]`             | window focus and which windows are terminals                                             |
 | `procs.enable`, `.interval_secs`            | `true`, `5`                                     | CPU and memory sampling                                                                  |
 | `telemetry.listen`                          | `[]`                                            | OTLP receiver (loopback only)                                                            |

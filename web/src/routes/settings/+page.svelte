@@ -26,7 +26,7 @@
 	import { fmtDuration, fmtStamp } from '#lib/format.js';
 	import { live } from '#lib/live/store.svelte.js';
 	import { CATEGORIES, wants } from '#lib/notify.js';
-	import { DEFAULT_QUICK, prefs, type Theme } from '#lib/prefs.svelte.js';
+	import { DEFAULT_QUICK, DEFAULT_VIMRC, prefs, type Theme } from '#lib/prefs.svelte.js';
 	import { pwa } from '#lib/pwa.svelte.js';
 	import { paletteSwatch, SCHEMES, swatch, WALLPAPER } from '#lib/theme.js';
 
@@ -56,6 +56,10 @@
 
 	let quickText = $state(prefs.quick.join('\n'));
 	let templates = $state(prefs.templates.map((t) => ({ ...t })));
+	let vimrcText = $state(prefs.vimrc);
+	let vimrcErrors = $state<string[] | null>(null);
+	/** Machines whose collector opens an editor from the panel. */
+	const editors = $derived(live.hosts.filter((h) => h.edit));
 
 	const current = $derived(devices?.tokens.find((t) => t.current) ?? null);
 
@@ -242,6 +246,12 @@
 	function saveQuick() {
 		prefs.setQuick(quickText.split('\n'));
 		quickText = prefs.quick.join('\n');
+	}
+
+	async function saveVimrc() {
+		const { checkVimrc } = await import('#lib/vim.js');
+		vimrcErrors = checkVimrc(vimrcText);
+		prefs.setVimrc(vimrcText);
 	}
 
 	function saveTemplates() {
@@ -549,6 +559,67 @@
 
 	<section class="flex flex-col gap-2">
 		<h2 class="text-base font-semibold">Composer</h2>
+		<p class="text-sm text-muted-foreground">
+			Enter is a new line; Ctrl Enter sends. The field keeps its draft on the hub, so a prompt begun
+			on the phone is on the desktop, and Ctrl G opens it in nvim on a machine.
+		</p>
+		<div class="grid gap-2 sm:grid-cols-2">
+			<label class="flex flex-col gap-1 text-sm">
+				<span>Vim keys in the field</span>
+				<select
+					class="h-8 rounded-lg border border-input bg-transparent px-2 text-sm dark:bg-input/30"
+					value={prefs.vim}
+					onchange={(e) => {
+						const v = e.currentTarget.value;
+						if (v === 'auto' || v === 'on' || v === 'off') prefs.setVim(v);
+					}}
+				>
+					<option value="auto">Auto: on with a mouse, off on touch</option>
+					<option value="on">On</option>
+					<option value="off">Off</option>
+				</select>
+			</label>
+			<label class="flex flex-col gap-1 text-sm">
+				<span>Edit in nvim on</span>
+				<select
+					class="h-8 rounded-lg border border-input bg-transparent px-2 text-sm dark:bg-input/30"
+					value={prefs.editHost}
+					onchange={(e) => prefs.setEditHost(e.currentTarget.value)}
+				>
+					<option value="">Auto: the session's machine, else the first that can</option>
+					{#each editors as h (h.name)}
+						<option value={h.name}>{h.name}{h.connected ? '' : ' (offline)'}</option>
+					{/each}
+				</select>
+				{#if !editors.length}
+					<span class="text-xs text-muted-foreground">
+						No machine opens an editor yet: its collector needs
+						<code class="font-mono">[edit] command</code> (the default runs
+						<code class="font-mono">ghostty -e nvim</code>).
+					</span>
+				{/if}
+			</label>
+		</div>
+		<label class="flex flex-col gap-1 text-sm">
+			<span>Vimrc: ex commands the field's vim starts with (maps, one per line)</span>
+			<Textarea bind:value={vimrcText} rows={8} class="font-mono text-xs" spellcheck={false} />
+		</label>
+		<div class="flex flex-wrap items-center gap-2">
+			<Button size="sm" onclick={saveVimrc}>Save vimrc</Button>
+			<Button
+				variant="outline"
+				size="sm"
+				onclick={() => {
+					vimrcText = DEFAULT_VIMRC;
+					vimrcErrors = null;
+				}}>Defaults</Button
+			>
+			{#if vimrcErrors !== null}
+				<span class="text-xs {vimrcErrors.length ? 'text-warning' : 'text-muted-foreground'}">
+					{vimrcErrors.length ? `Not taken: ${vimrcErrors.join('; ')}` : 'Saved; every line taken.'}
+				</span>
+			{/if}
+		</div>
 		<label class="flex flex-col gap-1 text-sm">
 			<span>Quick replies, one per line</span>
 			<Textarea bind:value={quickText} rows={5} class="font-mono text-xs" />

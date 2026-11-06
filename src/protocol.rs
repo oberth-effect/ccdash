@@ -23,6 +23,8 @@ use crate::{
     },
 };
 
+/// 15: drafts opened in an editor on a machine (`Hello.edit`, `Edit` and
+/// `EditCancel` down, `Edited` up).
 /// 13: the machine's report (`Machine` up) and its power from the panel
 /// (`Power` down, `PowerDone` up).
 /// 12: the desktop's colours (`Palette` up).
@@ -43,7 +45,7 @@ use crate::{
 /// `Stop`, `Open` down; `Launched`, `Stopped` up), `branch` and `launched`
 /// on sessions, `branch` on agents entries and envelopes, `launch` on
 /// envelopes.
-pub const VERSION: u32 = 14;
+pub const VERSION: u32 = 15;
 
 /// Collector → hub.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -55,6 +57,9 @@ pub enum ToHub {
         host: String,
         /// Window `app_id`s that count as terminals on this host.
         terminals: Vec<String>,
+        /// This machine opens drafts in an editor (`[edit] command` is set).
+        #[serde(default)]
+        edit: bool,
     },
     /// A hook or statusline payload, as `ccdash emit` sent it.
     Envelope {
@@ -119,6 +124,17 @@ pub enum ToHub {
         launch: String,
         #[serde(default)]
         session: Option<String>,
+        #[serde(default)]
+        error: Option<String>,
+    },
+    /// The editor opened by `Edit` `id` closed: with the file's text, or
+    /// with why there is none (cancelled, failed). Durable: the text must
+    /// not be lost to a link that is down when the editor closes.
+    Edited {
+        id: String,
+        key: String,
+        #[serde(default)]
+        text: Option<String>,
         #[serde(default)]
         error: Option<String>,
     },
@@ -220,6 +236,7 @@ impl ToHub {
                 | Self::Telemetry { .. }
                 | Self::Queued { .. }
                 | Self::Interrupted { .. }
+                | Self::Edited { text: Some(_), .. }
         )
     }
 }
@@ -444,6 +461,17 @@ pub enum ToCollector {
         session: String,
         at: i64,
     },
+    /// Opens draft `key`'s `text` in the machine's editor (`[edit] command`,
+    /// a terminal with nvim); answered by `Edited` when the editor closes.
+    Edit {
+        id: String,
+        key: String,
+        text: String,
+    },
+    /// Closes the editor `Edit` `id` opened; its `Edited` is then ignored.
+    EditCancel {
+        id: String,
+    },
     /// Focuses the session's window, or attaches to a background session
     /// (what `ccdash open` does on that host).
     Open {
@@ -522,6 +550,7 @@ mod tests {
             v: VERSION,
             host: "navi".into(),
             terminals: vec!["ghostty".into()],
+            edit: true,
         };
         let text = serde_json::to_string(&hello).unwrap();
         assert!(text.starts_with(r#"{"type":"hello""#), "{text}");

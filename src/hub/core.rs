@@ -28,12 +28,13 @@ use crate::{
     ask::{self, Answer},
     claims,
     config::Knowledge as KnowledgeCfg,
+    drafts,
     knowledge::{self, Query},
     machine::{self, MachineReport, Power, PowerAction, Wake},
     messages,
     model::{
-        Activity, Ask, HostStatus, HubStatus, Launch, LaunchState, Message, RateLimits,
-        ScopedLimit, Session, Snapshot, Update,
+        Activity, Ask, Draft, Editing, HostStatus, HubStatus, Launch, LaunchState, Message,
+        RateLimits, ScopedLimit, Session, Snapshot, Update,
     },
     notify::{self, Category, Composer, Note},
     paths,
@@ -144,6 +145,8 @@ pub enum Cmd {
         host: String,
         conn: u64,
         terminals: Vec<String>,
+        /// The machine opens drafts in an editor.
+        edit: bool,
         tx: mpsc::Sender<ToCollector>,
     },
     CollectorClosed {
@@ -199,6 +202,33 @@ pub enum Cmd {
     },
     /// The launch with this id, while the hub keeps it.
     LaunchOf(String, oneshot::Sender<Option<Launch>>),
+    /// The panel wrote draft `key`; an empty text drops it.
+    Draft {
+        key: String,
+        text: String,
+        reply: oneshot::Sender<Result<Draft, String>>,
+    },
+    /// Opens draft `key` (with `text`, the panel's latest) in `host`'s
+    /// editor; the draft waits until the editor closes.
+    Edit {
+        key: String,
+        host: String,
+        text: String,
+        reply: oneshot::Sender<Result<Draft, String>>,
+    },
+    /// Closes the editor open on draft `key`; the text stays as it was.
+    EditCancel {
+        key: String,
+        reply: oneshot::Sender<Result<Draft, String>>,
+    },
+    /// The editor `host` opened for edit `id` closed.
+    Edited {
+        host: String,
+        id: String,
+        key: String,
+        text: Option<String>,
+        error: Option<String>,
+    },
     /// What `claude --bg` on `host` made of a launch.
     Launched {
         host: String,
@@ -615,6 +645,18 @@ impl Hub {
                 (h.name.clone(), h)
             })
             .collect();
+        let drafts = reader
+            .as_ref()
+            .map(drafts::all)
+            .transpose()
+            .unwrap_or_else(|e| {
+                warn!("reading the kept drafts: {e:#}");
+                None
+            })
+            .unwrap_or_default()
+            .into_iter()
+            .map(|d| (d.key.clone(), d))
+            .collect();
         let mut core = Core {
             hub: HubStatus {
                 name: host.clone(),
@@ -627,6 +669,8 @@ impl Hub {
             states: HashMap::new(),
             links: HashMap::new(),
             hosts,
+            drafts,
+            cancelled_edits: HashSet::new(),
             channels: HashSet::new(),
             store,
             reader,
@@ -808,6 +852,47 @@ impl Hub {
         rx.await.context("hub stopped")
     }
 
+    /// Writes a draft (an empty text drops it); the draft as kept.
+    pub async fn draft(&self, key: &str, text: &str) -> Result<Result<Draft, String>> {
+        let (reply, rx) = oneshot::channel();
+        self.send(Cmd::Draft {
+            key: key.to_owned(),
+            text: text.to_owned(),
+            reply,
+        })
+        .await?;
+        rx.await.context("hub stopped")
+    }
+
+    /// Opens a draft in `host`'s editor.
+    pub async fn edit_draft(
+        &self,
+        key: &str,
+        host: &str,
+        text: &str,
+    ) -> Result<Result<Draft, String>> {
+        let (reply, rx) = oneshot::channel();
+        self.send(Cmd::Edit {
+            key: key.to_owned(),
+            host: host.to_owned(),
+            text: text.to_owned(),
+            reply,
+        })
+        .await?;
+        rx.await.context("hub stopped")
+    }
+
+    /// Closes the editor open on a draft.
+    pub async fn cancel_edit(&self, key: &str) -> Result<Result<Draft, String>> {
+        let (reply, rx) = oneshot::channel();
+        self.send(Cmd::EditCancel {
+            key: key.to_owned(),
+            reply,
+        })
+        .await?;
+        rx.await.context("hub stopped")
+    }
+
     /// Sends a session command (`Stop`, `Forget`, `Open`) and waits for it.
     /// Every host with its sync status.
     pub async fn sync_hosts(&self) -> Result<Vec<SyncHost>> {
@@ -900,6 +985,10 @@ struct Core {
     links: HashMap<String, Link>,
     /// Every host seen, with its link status.
     hosts: BTreeMap<String, HostStatus>,
+    /// The prompts being written in the panel, by key (see `drafts`).
+    drafts: BTreeMap<String, Draft>,
+    /// Edits the owner cancelled: what their editor still reports is dropped.
+    cancelled_edits: HashSet<String>,
     /// `(host, pid)` of Claude processes connected through `ccdash channel`.
     channels: HashSet<(String, u32)>,
     store: Store,
@@ -1087,8 +1176,9 @@ async fn run(mut core: Core, mut rx: mpsc::Receiver<Cmd>) {
                 host,
                 conn,
                 terminals,
+                edit,
                 tx,
-            } => core.collector_open(host, conn, terminals, tx),
+            } => core.collector_open(host, conn, terminals, edit, tx),
             Cmd::CollectorClosed { host, conn } => core.collector_closed(&host, conn),
             Cmd::ChannelOpen { host, pid } => core.channel(&host, pid, true),
             Cmd::ChannelClosed { host, pid } => core.channel(&host, pid, false),
@@ -1147,6 +1237,27 @@ async fn run(mut core: Core, mut rx: mpsc::Receiver<Cmd>) {
             Cmd::LaunchOf(id, reply) => {
                 let _ = reply.send(core.launches.get(&id).map(|s| s.launch.clone()));
             }
+            Cmd::Draft { key, text, reply } => {
+                let _ = reply.send(core.set_draft(&key, text));
+            }
+            Cmd::Edit {
+                key,
+                host,
+                text,
+                reply,
+            } => {
+                let _ = reply.send(core.edit_draft(&key, &host, text));
+            }
+            Cmd::EditCancel { key, reply } => {
+                let _ = reply.send(core.cancel_edit(&key));
+            }
+            Cmd::Edited {
+                host,
+                id,
+                key,
+                text,
+                error,
+            } => core.edited(&host, &id, &key, text, error),
             Cmd::Launched {
                 host,
                 launch,
@@ -1418,6 +1529,7 @@ impl Core {
             sessions,
             rate_limits: self.rate_limits(),
             hub: Some(self.hub.clone()),
+            drafts: self.drafts.values().cloned().collect(),
         }
     }
 
@@ -1574,6 +1686,7 @@ impl Core {
         host: String,
         conn: u64,
         terminals: Vec<String>,
+        edit: bool,
         tx: mpsc::Sender<ToCollector>,
     ) {
         let now = now_ms();
@@ -1620,6 +1733,7 @@ impl Core {
                 machine,
                 power: None,
                 wake: None,
+                edit,
             },
         );
         self.refresh_wake(&host);
@@ -3262,6 +3376,220 @@ impl Core {
         }
         self.flush(host, fx);
         self.hosts_changed();
+        let open: Vec<String> = self
+            .drafts
+            .values()
+            .filter(|d| d.editing.as_ref().is_some_and(|e| e.host == host))
+            .map(|d| d.key.clone())
+            .collect();
+        for key in open {
+            self.settle_edit(
+                &key,
+                None,
+                Some(format!("{host} disconnected while the editor was open")),
+            );
+        }
+    }
+
+    // ---- drafts: the panel's prompts, and editors opened on them ----
+
+    fn publish_draft(&self, draft: &Draft) {
+        let _ = self.updates.send(Update::Draft {
+            draft: draft.clone(),
+        });
+    }
+
+    /// The draft's text as the panel wrote it; an empty text drops it. A
+    /// draft open in an editor keeps its text until the editor closes.
+    fn set_draft(&mut self, key: &str, text: String) -> Result<Draft, String> {
+        drafts::check(key, &text)?;
+        if let Some(e) = self.drafts.get(key).and_then(|d| d.editing.as_ref()) {
+            return Err(format!(
+                "the draft is open in an editor on {}; close or cancel that first",
+                e.host
+            ));
+        }
+        let now = now_ms();
+        let draft = if text.trim().is_empty() {
+            self.drafts.remove(key);
+            self.store.send(
+                &self.host,
+                StoreMsg::DraftRemove {
+                    key: key.to_owned(),
+                },
+            );
+            Draft {
+                key: key.to_owned(),
+                text: String::new(),
+                updated_at: now,
+                editing: None,
+                notice: None,
+            }
+        } else {
+            self.store.send(
+                &self.host,
+                StoreMsg::Draft {
+                    key: key.to_owned(),
+                    text: text.clone(),
+                    at: now,
+                },
+            );
+            let draft = Draft {
+                key: key.to_owned(),
+                text,
+                updated_at: now,
+                editing: None,
+                notice: None,
+            };
+            self.drafts.insert(key.to_owned(), draft.clone());
+            draft
+        };
+        self.publish_draft(&draft);
+        Ok(draft)
+    }
+
+    fn edit_draft(&mut self, key: &str, host: &str, text: String) -> Result<Draft, String> {
+        drafts::check(key, &text)?;
+        if !self.links.contains_key(host) {
+            return Err(format!("{host} is not connected"));
+        }
+        if !self.hosts.get(host).is_some_and(|h| h.edit) {
+            return Err(format!(
+                "{host} does not open an editor from the panel (`[edit] command` is off)"
+            ));
+        }
+        if let Some(e) = self.drafts.get(key).and_then(|d| d.editing.as_ref()) {
+            return Err(format!(
+                "the draft is open in an editor on {} already",
+                e.host
+            ));
+        }
+        let id = util::random_hex(8).map_err(|e| format!("{e:#}"))?;
+        let now = now_ms();
+        self.store.send(
+            &self.host,
+            StoreMsg::Draft {
+                key: key.to_owned(),
+                text: text.clone(),
+                at: now,
+            },
+        );
+        let draft = Draft {
+            key: key.to_owned(),
+            text: text.clone(),
+            updated_at: now,
+            editing: Some(Editing {
+                id: id.clone(),
+                host: host.to_owned(),
+                since: now,
+            }),
+            notice: None,
+        };
+        self.drafts.insert(key.to_owned(), draft.clone());
+        info!("edit {id}: draft {key} opens on {host}");
+        self.tell(
+            host,
+            ToCollector::Edit {
+                id,
+                key: key.to_owned(),
+                text,
+            },
+        );
+        self.publish_draft(&draft);
+        Ok(draft)
+    }
+
+    fn cancel_edit(&mut self, key: &str) -> Result<Draft, String> {
+        let Some(e) = self.drafts.get(key).and_then(|d| d.editing.clone()) else {
+            return Err("no editor is open on that draft".into());
+        };
+        self.tell(&e.host, ToCollector::EditCancel { id: e.id.clone() });
+        self.cancelled_edits.insert(e.id);
+        self.settle_edit(key, None, Some("cancelled".into()));
+        self.drafts
+            .get(key)
+            .cloned()
+            .ok_or_else(|| "the draft is gone".into())
+    }
+
+    /// What `host`'s editor made of edit `id`: the text when it saved, a
+    /// notice when it did not. A result for an edit the hub no longer waits
+    /// on (cancelled, or another one opened since) is dropped, except text
+    /// for a draft with no editor at all: the hub restarted, or the machine
+    /// was away, meanwhile, and the text is still the owner's.
+    fn edited(
+        &mut self,
+        host: &str,
+        id: &str,
+        key: &str,
+        text: Option<String>,
+        error: Option<String>,
+    ) {
+        if !drafts::valid_key(key) {
+            warn!("edit {id} from {host}: {key:?} is not a draft key");
+            return;
+        }
+        if self.cancelled_edits.remove(id) {
+            info!("edit {id} from {host}: dropped, it was cancelled");
+            return;
+        }
+        match self.drafts.get(key).and_then(|d| d.editing.as_ref()) {
+            Some(e) if e.id == id => {}
+            Some(e) => {
+                info!("edit {id} from {host}: dropped, edit {} is open now", e.id);
+                return;
+            }
+            None if text.is_some() => info!("edit {id} from {host}: late text taken"),
+            None => return,
+        }
+        match (&text, &error) {
+            (Some(_), _) => info!("edit {id}: saved"),
+            (None, Some(e)) => info!("edit {id}: {e}"),
+            (None, None) => info!("edit {id}: closed without text"),
+        }
+        self.settle_edit(key, text, error);
+    }
+
+    /// Closes the editor state of draft `key`, with the new text or why
+    /// there is none.
+    fn settle_edit(&mut self, key: &str, text: Option<String>, notice: Option<String>) {
+        let now = now_ms();
+        let Some(draft) = self.drafts.get_mut(key) else {
+            return;
+        };
+        draft.editing = None;
+        draft.notice = notice;
+        if let Some(text) = text {
+            if text.chars().count() > drafts::MAX_TEXT {
+                draft.notice = Some(format!(
+                    "the editor's text is longer than {} characters; the draft kept the old one",
+                    drafts::MAX_TEXT
+                ));
+            } else {
+                draft.text = text;
+                draft.updated_at = now;
+            }
+        }
+        let draft = draft.clone();
+        if draft.text.trim().is_empty() {
+            self.drafts.remove(key);
+            self.store.send(
+                &self.host,
+                StoreMsg::DraftRemove {
+                    key: key.to_owned(),
+                },
+            );
+        } else {
+            self.store.send(
+                &self.host,
+                StoreMsg::Draft {
+                    key: key.to_owned(),
+                    text: draft.text.clone(),
+                    at: draft.updated_at,
+                },
+            );
+        }
+        self.publish_draft(&draft);
     }
 
     fn hosts_changed(&self) {
@@ -4149,6 +4477,7 @@ mod tests {
                 host: host.into(),
                 conn: conn as u64,
                 terminals: Vec::new(),
+                edit: false,
                 tx,
             })
             .await
@@ -4262,6 +4591,7 @@ mod tests {
             host: "navi".into(),
             conn: 1,
             terminals: Vec::new(),
+            edit: false,
             tx,
         })
         .await
@@ -4404,6 +4734,7 @@ mod tests {
             host: "navi".into(),
             conn: 2,
             terminals: Vec::new(),
+            edit: false,
             tx,
         })
         .await
@@ -4533,6 +4864,7 @@ mod tests {
             host: "navi".into(),
             conn: 1,
             terminals: Vec::new(),
+            edit: false,
             tx,
         })
         .await
@@ -4608,6 +4940,7 @@ mod tests {
             host: "navi".into(),
             conn: 1,
             terminals: Vec::new(),
+            edit: false,
             tx,
         })
         .await
@@ -4859,6 +5192,7 @@ mod tests {
             host: "navi".into(),
             conn: 1,
             terminals: Vec::new(),
+            edit: false,
             tx,
         })
         .await
@@ -4930,6 +5264,7 @@ mod tests {
             host: "navi".into(),
             conn: 1,
             terminals: Vec::new(),
+            edit: false,
             tx,
         })
         .await
@@ -5092,6 +5427,7 @@ mod tests {
             host: "navi".into(),
             conn: 1,
             terminals: Vec::new(),
+            edit: false,
             tx,
         })
         .await
@@ -5246,5 +5582,161 @@ mod tests {
         .unwrap();
         assert!(hub.snapshot().await.unwrap().hosts.is_empty());
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn drafts_are_kept_and_edited_on_a_machine() {
+        let (hub, rx, dir) = hub_on_navi("drafts").await;
+        let mut updates = hub.subscribe();
+        // bad keys and the wrong length are refused
+        assert!(hub.draft("nope", "x").await.unwrap().is_err());
+        assert!(
+            hub.draft("start", &"x".repeat(drafts::MAX_TEXT + 1))
+                .await
+                .unwrap()
+                .is_err()
+        );
+        // a write lands in the snapshot and on the stream
+        let d = hub.draft("start", "first words").await.unwrap().unwrap();
+        assert_eq!(d.text, "first words");
+        assert!(d.editing.is_none());
+        let snap = hub.snapshot().await.unwrap();
+        assert_eq!(snap.drafts.len(), 1);
+        assert_eq!(snap.drafts[0].key, "start");
+        let streamed = loop {
+            match tokio::time::timeout(Duration::from_secs(5), updates.recv())
+                .await
+                .expect("a draft update")
+                .unwrap()
+            {
+                Update::Draft { draft } => break draft,
+                _ => continue,
+            }
+        };
+        assert_eq!(streamed.text, "first words");
+        // navi came without an editor: refused; another machine: not connected
+        let err = hub
+            .edit_draft("start", "navi", "first words")
+            .await
+            .unwrap()
+            .unwrap_err();
+        assert!(err.contains("[edit] command"), "{err}");
+        let err = hub
+            .edit_draft("start", "flat", "first words")
+            .await
+            .unwrap()
+            .unwrap_err();
+        assert!(err.contains("not connected"), "{err}");
+        // reconnect navi with an editor
+        let (tx, rx2) = mpsc::channel(64);
+        hub.send(Cmd::CollectorOpen {
+            host: "navi".into(),
+            conn: 2,
+            terminals: Vec::new(),
+            edit: true,
+            tx,
+        })
+        .await
+        .unwrap();
+        drop(rx);
+        let mut rx = rx2;
+        let d = hub
+            .edit_draft("start", "navi", "second words")
+            .await
+            .unwrap()
+            .unwrap();
+        let editing = d.editing.clone().expect("editing");
+        assert_eq!(editing.host, "navi");
+        let msg = next(&mut rx, |m| matches!(m, ToCollector::Edit { .. })).await;
+        let ToCollector::Edit { id, key, text } = msg else {
+            unreachable!()
+        };
+        assert_eq!(
+            (id.as_str(), key.as_str(), text.as_str()),
+            (editing.id.as_str(), "start", "second words")
+        );
+        // the panel may not write over an open editor; a second editor is refused
+        assert!(
+            hub.draft("start", "typed meanwhile")
+                .await
+                .unwrap()
+                .is_err()
+        );
+        assert!(hub.edit_draft("start", "navi", "x").await.unwrap().is_err());
+        // a stale result (another id) is dropped; the right one lands
+        hub.send(Cmd::Edited {
+            host: "navi".into(),
+            id: "0ld".into(),
+            key: "start".into(),
+            text: Some("stale".into()),
+            error: None,
+        })
+        .await
+        .unwrap();
+        hub.send(Cmd::Edited {
+            host: "navi".into(),
+            id: id.clone(),
+            key: "start".into(),
+            text: Some("edited words\n".into()),
+            error: None,
+        })
+        .await
+        .unwrap();
+        let snap = hub.snapshot().await.unwrap();
+        assert_eq!(snap.drafts[0].text, "edited words\n");
+        assert!(snap.drafts[0].editing.is_none());
+        // a cancel closes the editor and keeps the text; the collector hears
+        let d = hub
+            .edit_draft("start", "navi", "edited words\n")
+            .await
+            .unwrap()
+            .unwrap();
+        let open = d.editing.unwrap().id;
+        next(&mut rx, |m| matches!(m, ToCollector::Edit { .. })).await;
+        let d = hub.cancel_edit("start").await.unwrap().unwrap();
+        assert!(d.editing.is_none());
+        assert_eq!(d.notice.as_deref(), Some("cancelled"));
+        assert_eq!(d.text, "edited words\n");
+        assert!(matches!(
+            next(&mut rx, |m| matches!(m, ToCollector::EditCancel { .. })).await,
+            ToCollector::EditCancel { id } if id == open
+        ));
+        assert!(hub.cancel_edit("start").await.unwrap().is_err());
+        // the editor's late text after a cancel is dropped
+        hub.send(Cmd::Edited {
+            host: "navi".into(),
+            id: open,
+            key: "start".into(),
+            text: Some("after cancel".into()),
+            error: None,
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            hub.snapshot().await.unwrap().drafts[0].text,
+            "edited words\n"
+        );
+        // the machine going away while an editor is open frees the draft
+        hub.edit_draft("start", "navi", "edited words\n")
+            .await
+            .unwrap()
+            .unwrap();
+        hub.send(Cmd::CollectorClosed {
+            host: "navi".into(),
+            conn: 2,
+        })
+        .await
+        .unwrap();
+        let d = &hub.snapshot().await.unwrap().drafts[0];
+        assert!(d.editing.is_none());
+        assert!(
+            d.notice.as_deref().unwrap_or("").contains("disconnected"),
+            "{d:?}"
+        );
+        // an empty text drops the draft
+        let d = hub.draft("start", "  ").await.unwrap().unwrap();
+        assert_eq!(d.text, "");
+        assert!(hub.snapshot().await.unwrap().drafts.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -3,13 +3,18 @@
 	// the workspace's root, under a project with notes and a directory on
 	// that host) or continues an ended one, on the host it ran on or
 	// another that syncs it: host, workspace and project, the model, the
-	// permission mode, the prompt. For an issue the prompt is written
-	// already, to edit. Waits for the session to report and opens its page.
+	// permission mode, the prompt. A dialog over most of the page, the
+	// prompt's editor filling it: the longest prompts are written here. For
+	// an issue the prompt is written already, to edit. The draft lives on
+	// the hub, so closing the dialog loses nothing. Waits for the session to
+	// report and opens its page.
 	import { untrack } from 'svelte';
 	import { goto } from '$app/navigation';
 	import LoaderCircleIcon from '@lucide/svelte/icons/loader-circle';
 	import { Unauthorized } from '#lib/api/client.js';
 	import {
+		cancelEdit,
+		editDraft,
 		fetchLaunch,
 		fetchPrompts,
 		fetchTargets,
@@ -19,8 +24,17 @@
 	} from '#lib/api/index.js';
 	import type { StartPreset } from '#lib/starter.svelte.js';
 	import { Button } from '#lib/components/ui/button/index.js';
-	import * as Sheet from '#lib/components/ui/sheet/index.js';
+	import * as Dialog from '#lib/components/ui/dialog/index.js';
 	import PromptField from '#lib/components/session/PromptField.svelte';
+	import {
+		clearDraft,
+		editHostFor,
+		flushDraft,
+		initialDraft,
+		markSynced,
+		noteDraft,
+		remoteDraft
+	} from '#lib/drafts.js';
 	import { place } from '#lib/format.js';
 	import { live } from '#lib/live/store.svelte.js';
 	import { issuePrompt } from '#lib/notes.js';
@@ -62,6 +76,8 @@
 	const draftKey = $derived(
 		resume ? `resume:${resume.id}` : issue ? `issue:${issue.slug}` : 'start'
 	);
+	const draft = $derived(starter.open ? live.drafts.get(draftKey) : undefined);
+	const editHost = $derived(editHostFor(host));
 	const connected = $derived((targets ?? []).map((t) => t.host));
 	/** Where a session to resume can run: connected machines with its workspace. */
 	const resumeHosts = $derived(
@@ -75,9 +91,12 @@
 	const names = $derived(workspacesHere.find((w) => w.name === ws)?.projects);
 	const launch = $derived<Launch | undefined>(pending ? live.launches.get(pending) : undefined);
 	const ready = $derived(
-		Boolean(host && ws && (resume || project) && text.trim() && !busy && !pending)
+		Boolean(
+			host && ws && (resume || project) && text.trim() && !busy && !pending && !draft?.editing
+		)
 	);
-	const touch = () => matchMedia('(pointer: coarse)').matches;
+	const vimEsc = $derived(prefs.vimOn);
+	let fieldFocused = $state(false);
 
 	// A fresh sheet: where sessions can start, then the preset, else the
 	// last choice and the scope.
@@ -131,13 +150,25 @@
 		if (project !== ROOT && !known.includes(project)) project = '';
 	}
 
+	// the draft of this key, else the issue's prompt
 	$effect(() => {
 		if (!starter.open) return;
-		text = prefs.draft(draftKey) || (issue ? issuePrompt(issue.slug, issue.title) : '');
+		const key = draftKey;
+		const forIssue = issue;
+		untrack(() => {
+			text = initialDraft(key) || (forIssue ? issuePrompt(forIssue.slug, forIssue.title) : '');
+		});
 	});
 
 	$effect(() => {
-		if (starter.open) prefs.setDraft(draftKey, text);
+		if (starter.open) noteDraft(draftKey, text);
+	});
+
+	// what the hub says (another device, an editor) lands unless typed over
+	$effect(() => {
+		if (!starter.open) return;
+		const adopted = remoteDraft(draftKey, draft);
+		if (adopted !== null) text = adopted;
 	});
 
 	// The launch moves on through the stream; polled too, for a missed update.
@@ -161,6 +192,7 @@
 		if (current.state === 'started') {
 			pending = null;
 			text = '';
+			clearDraft(draftKey);
 			starter.open = false;
 			goto(`/sessions/${current.session}`);
 		} else if (current.state === 'failed') {
@@ -202,24 +234,49 @@
 		}
 	}
 
+	async function edit() {
+		if (!editHost) return;
+		error = '';
+		try {
+			const sent = text;
+			const { draft } = await editDraft(draftKey, editHost, sent);
+			markSynced(draftKey, sent);
+			live.putDraft(draft);
+		} catch (e) {
+			if (e instanceof Unauthorized) live.needToken = true;
+			else error = (e as Error).message;
+		}
+	}
+
+	async function cancel() {
+		error = '';
+		try {
+			live.putDraft((await cancelEdit(draftKey)).draft);
+		} catch (e) {
+			if (e instanceof Unauthorized) live.needToken = true;
+			else error = (e as Error).message;
+		}
+	}
+
 	const selectClass =
 		'h-8 w-full min-w-0 rounded-lg border border-input bg-transparent px-2 text-sm text-foreground dark:bg-input/30';
+	const choiceClass = 'flex min-w-0 flex-col gap-1 text-xs text-muted-foreground';
 </script>
 
-<Sheet.Root bind:open={starter.open}>
-	<Sheet.Content
-		side={touch() ? 'bottom' : 'right'}
-		class="flex max-h-[92vh] flex-col gap-3 overflow-y-auto p-4 sm:max-w-lg"
+<Dialog.Root bind:open={starter.open}>
+	<Dialog.Content
+		class="flex h-[min(92dvh,70rem)] w-[min(96vw,80rem)] max-w-none flex-col gap-3 p-4 max-sm:h-dvh max-sm:w-screen max-sm:max-w-none max-sm:rounded-none sm:max-w-none"
+		escapeKeydownBehavior={vimEsc && fieldFocused ? 'ignore' : 'close'}
 	>
-		<Sheet.Header class="p-0 pr-8">
-			<Sheet.Title
+		<Dialog.Header class="gap-1 pr-8">
+			<Dialog.Title
 				>{resume
 					? 'Resume the session'
 					: issue
 						? 'Work on this issue'
-						: 'Start a session'}</Sheet.Title
+						: 'Start a session'}</Dialog.Title
 			>
-			<Sheet.Description>
+			<Dialog.Description>
 				{#if issue}
 					Starts a session on “{issue.title}”. It claims the issue when it reports, so the board
 					shows it in progress.
@@ -228,11 +285,11 @@
 					{place(resume.cwd)}: its conversation goes on from where it stopped.
 				{:else}
 					Runs <code class="font-mono">claude --bg</code> on the host at the workspace's root (its harness
-					and direnv), placed under the project: notes default to it. Its questions and approvals reach
-					this device.
+					and direnv), placed under the project. Its questions and approvals reach this device; the draft
+					stays on the hub until the session starts.
 				{/if}
-			</Sheet.Description>
-		</Sheet.Header>
+			</Dialog.Description>
+		</Dialog.Header>
 
 		{#if !targets}
 			<p class="text-sm text-muted-foreground">Loading…</p>
@@ -241,21 +298,21 @@
 				No host is connected: sessions start on a workstation whose ccdash collector is up.
 			</p>
 		{:else}
-			{#if !resume}
-				<div class="grid grid-cols-1 gap-2 sm:grid-cols-3">
-					<label class="flex min-w-0 flex-col gap-1 text-xs text-muted-foreground">
+			<div class="flex flex-wrap items-end gap-2">
+				{#if !resume}
+					<label class="{choiceClass} w-36">
 						Host
 						<select class={selectClass} bind:value={host} onchange={pickHost}>
 							{#each connected as h (h)}<option value={h}>{h}</option>{/each}
 						</select>
 					</label>
-					<label class="flex min-w-0 flex-col gap-1 text-xs text-muted-foreground">
+					<label class="{choiceClass} w-40">
 						Workspace
 						<select class={selectClass} bind:value={ws} onchange={() => (project = '')}>
 							{#each workspacesHere as w (w.name)}<option value={w.name}>{w.name}</option>{/each}
 						</select>
 					</label>
-					<label class="flex min-w-0 flex-col gap-1 text-xs text-muted-foreground">
+					<label class="{choiceClass} w-56 flex-1">
 						Project
 						<select class={selectClass} bind:value={project}>
 							<option value="" disabled
@@ -265,32 +322,42 @@
 							<option value={ROOT}>(no project: the workspace itself)</option>
 						</select>
 					</label>
-				</div>
-			{:else}
-				<div
-					class="flex flex-col gap-1 text-xs text-muted-foreground"
-					role="group"
-					aria-label="Machine"
-				>
-					Machine
-					<div class="flex flex-wrap gap-1.5">
-						{#each resumeHosts as h (h)}
-							<Button
-								variant={host === h ? 'default' : 'outline'}
-								size="sm"
-								aria-pressed={host === h}
-								onclick={() => (host = h)}
-								>{h}{#if h === resume.host}<span class="opacity-70">· last ran here</span
-									>{/if}</Button
-							>
-						{/each}
-						{#if !connected.includes(resume.host)}
-							<Button variant="outline" size="sm" disabled title="Its collector is not connected"
-								>{resume.host} <span class="opacity-70">· offline</span></Button
-							>
-						{/if}
+				{:else}
+					<div class="{choiceClass} flex-1" role="group" aria-label="Machine">
+						Machine
+						<div class="flex flex-wrap gap-1.5">
+							{#each resumeHosts as h (h)}
+								<Button
+									variant={host === h ? 'default' : 'outline'}
+									size="sm"
+									aria-pressed={host === h}
+									onclick={() => (host = h)}
+									>{h}{#if h === resume.host}<span class="opacity-70">· last ran here</span
+										>{/if}</Button
+								>
+							{/each}
+							{#if !connected.includes(resume.host)}
+								<Button variant="outline" size="sm" disabled title="Its collector is not connected"
+									>{resume.host} <span class="opacity-70">· offline</span></Button
+								>
+							{/if}
+						</div>
 					</div>
-				</div>
+				{/if}
+				<label class="{choiceClass} w-32">
+					Model
+					<select class={selectClass} bind:value={model}>
+						{#each MODELS as [value, name] (value)}<option {value}>{name}</option>{/each}
+					</select>
+				</label>
+				<label class="{choiceClass} w-36">
+					Permission mode
+					<select class={selectClass} bind:value={mode}>
+						{#each MODES as [value, name] (value)}<option {value}>{name}</option>{/each}
+					</select>
+				</label>
+			</div>
+			{#if resume}
 				{#if !resumeHosts.length}
 					<p class="text-xs text-critical">
 						No connected machine has the workspace {resume.workspace}.
@@ -302,40 +369,39 @@
 					</p>
 				{/if}
 			{/if}
-			<div class="grid grid-cols-2 gap-2">
-				<label class="flex min-w-0 flex-col gap-1 text-xs text-muted-foreground">
-					Model
-					<select class={selectClass} bind:value={model}>
-						{#each MODELS as [value, name] (value)}<option {value}>{name}</option>{/each}
-					</select>
-				</label>
-				<label class="flex min-w-0 flex-col gap-1 text-xs text-muted-foreground">
-					Permission mode
-					<select class={selectClass} bind:value={mode}>
-						{#each MODES as [value, name] (value)}<option {value}>{name}</option>{/each}
-					</select>
-				</label>
-			</div>
-			<PromptField
-				bind:this={field}
-				bind:text
-				{prompts}
-				historyNote="The workspace's prompts."
-				{host}
-				workspace={ws || null}
-				placeholder={resume ? 'What next?' : 'What should Claude do?'}
-				label="Prompt"
-				rows={3}
-				disabled={busy || Boolean(pending)}
-				onsubmit={start}
+			<div
+				class="flex min-h-0 flex-1 flex-col"
+				onfocusin={() => (fieldFocused = true)}
+				onfocusout={() => (fieldFocused = false)}
 			>
-				{#snippet actions()}
-					<Button type="submit" size="sm" disabled={!ready}>
-						{#if busy || pending}<LoaderCircleIcon class="animate-spin" />{/if}
-						{resume ? 'Resume' : 'Start'}
-					</Button>
-				{/snippet}
-			</PromptField>
+				<PromptField
+					bind:this={field}
+					bind:text
+					{prompts}
+					historyNote="The workspace's prompts."
+					{host}
+					workspace={ws || null}
+					placeholder={resume ? 'What next?' : 'What should Claude do?'}
+					label="Prompt"
+					rows={6}
+					fill
+					disabled={busy || Boolean(pending)}
+					editing={draft?.editing ?? null}
+					{editHost}
+					notice={draft?.notice ?? null}
+					onsubmit={start}
+					onedit={edit}
+					oncanceledit={cancel}
+					onsave={() => flushDraft(draftKey)}
+				>
+					{#snippet actions()}
+						<Button type="submit" size="sm" disabled={!ready} title="Ctrl Enter">
+							{#if busy || pending}<LoaderCircleIcon class="animate-spin" />{/if}
+							{resume ? 'Resume' : 'Start'}
+						</Button>
+					{/snippet}
+				</PromptField>
+			</div>
 			{#if pending}
 				<p class="text-xs text-muted-foreground" role="status">
 					Starting on {host}; the session's page opens when it reports.
@@ -343,5 +409,5 @@
 			{/if}
 		{/if}
 		{#if error}<p class="text-xs text-critical" role="alert">{error}</p>{/if}
-	</Sheet.Content>
-</Sheet.Root>
+	</Dialog.Content>
+</Dialog.Root>

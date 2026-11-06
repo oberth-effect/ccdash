@@ -6,6 +6,7 @@ import type {
 	Answer,
 	Conversation,
 	Coverage,
+	Draft,
 	HeldAction,
 	HistoryEntry,
 	HostStatus,
@@ -86,6 +87,21 @@ export const answerAsk = (id: string, ask: string, answer: Answer) =>
 /** Starts a background session (or continues an ended one); the launch
  * moves on through `launch` updates on the stream. */
 export const startLaunch = (body: LaunchBody) => postJson<{ launch: Launch }>('launches', body);
+
+/** Keeps a draft on the hub (`session:<id>`, `start`, `issue:<slug>`,
+ * `resume:<id>`); an empty text drops it. Every panel hears through the
+ * stream. */
+export const putDraft = (key: string, text: string) =>
+	putJson<{ draft: Draft }>(`drafts/${encodeURIComponent(key)}`, { text });
+
+/** Opens the draft in an editor on `host` (its collector's `[edit] command`);
+ * the draft shows as editing until the editor closes with the text. */
+export const editDraft = (key: string, host: string, text: string) =>
+	postJson<{ draft: Draft }>(`drafts/${encodeURIComponent(key)}/edit`, { host, text });
+
+/** Closes the editor open on the draft; the text stays. */
+export const cancelEdit = (key: string) =>
+	postJson<{ draft: Draft }>(`drafts/${encodeURIComponent(key)}/edit/cancel`, {});
 
 /** The list of past sessions: every transcript on the hub, filtered and searched. */
 export const fetchPast = (params: {

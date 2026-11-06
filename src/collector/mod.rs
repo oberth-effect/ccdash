@@ -262,7 +262,11 @@ async fn serve(cfg: Arc<CollectorConfig>) -> Result<()> {
             local.updates.clone(),
             paths::notes_cache(),
         )
-        .with_commands(cfg.launch.clone(), cfg.attach.command.clone())
+        .with_commands(
+            cfg.launch.clone(),
+            cfg.attach.command.clone(),
+            cfg.edit.command.clone(),
+        )
         .with_skills(cfg.skills.plugin_dirs.clone())
         .with_sync(sync.clone())
         .with_workspace(workspace.clone())
@@ -275,6 +279,7 @@ async fn serve(cfg: Arc<CollectorConfig>) -> Result<()> {
             cfg: cfg.hub.clone(),
             host: host.clone(),
             terminals: cfg.niri.terminals.clone(),
+            edit: !cfg.edit.command.is_empty(),
             queue: queue::Queue::open(paths::outbox_file(), cfg.queue.max_bytes),
             resumed: resumed.clone(),
         },
@@ -573,6 +578,11 @@ struct Actor {
     launch: Launch,
     /// `[attach] command`, for the hub's `Open`.
     attach: Vec<String>,
+    /// `[edit] command`, for the hub's `Edit`.
+    edit: Vec<String>,
+    /// The editors open for the hub's edits, by edit id: the pid of their
+    /// process group, for `EditCancel`.
+    edits: Arc<std::sync::Mutex<HashMap<String, u32>>>,
     /// The project directories last reported (`ToHub::Dirs`), and when
     /// they were last read.
     dirs: BTreeMap<String, Vec<String>>,
@@ -650,6 +660,8 @@ impl Actor {
                 env: Vec::new(),
             },
             attach: Vec::new(),
+            edit: Vec::new(),
+            edits: Arc::default(),
             dirs: BTreeMap::new(),
             dirs_at: 0,
             skills: Vec::new(),
@@ -760,9 +772,10 @@ impl Actor {
         self.to_hub(ToHub::Palette { palette });
     }
 
-    fn with_commands(mut self, launch: Launch, attach: Vec<String>) -> Self {
+    fn with_commands(mut self, launch: Launch, attach: Vec<String>, edit: Vec<String>) -> Self {
         self.launch = launch;
         self.attach = attach;
+        self.edit = edit;
         self
     }
 
@@ -904,6 +917,53 @@ impl Actor {
                 error: result.err(),
             });
         });
+    }
+
+    /// Opens the draft in the machine's editor (`[edit] command`) and
+    /// answers with `Edited` when it closes.
+    fn edit(&self, id: String, key: String, text: String) {
+        let (hub, cfg, edits) = (self.hub.clone(), self.edit.clone(), self.edits.clone());
+        tokio::spawn(async move {
+            let opened = {
+                let (id, edits) = (id.clone(), edits.clone());
+                move |pid: u32| {
+                    edits
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .insert(id, pid);
+                }
+            };
+            let result = actions::edit(&cfg, &id, &text, opened).await;
+            edits.lock().unwrap_or_else(|e| e.into_inner()).remove(&id);
+            match &result {
+                Ok(_) => info!("edit {id}: the editor closed with text"),
+                Err(e) => warn!("edit {id}: {e}"),
+            }
+            let _ = hub.send(ToHub::Edited {
+                id,
+                key,
+                text: result.as_ref().ok().cloned(),
+                error: result.err(),
+            });
+        });
+    }
+
+    /// Ends the editor of edit `id` (its process group): `edit` then
+    /// reports it closed without text.
+    fn cancel_edit(&self, id: &str) {
+        let pid = self
+            .edits
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(id)
+            .copied();
+        match pid {
+            Some(pid) => {
+                info!("edit {id}: cancelled, ending the editor ({pid})");
+                actions::end_group(pid);
+            }
+            None => info!("edit {id}: cancelled, no editor open here"),
+        }
     }
 
     fn open(&self, id: &str) {
@@ -1078,10 +1138,12 @@ impl Actor {
                 machine: self.machine.clone(),
                 power: None,
                 wake: None,
+                edit: !self.edit.is_empty(),
             }],
             sessions,
             rate_limits: self.rate_limits.clone(),
             hub: None,
+            drafts: Vec::new(),
         }
     }
 
@@ -1181,6 +1243,7 @@ impl Actor {
                     Update::Hosts { .. }
                     | Update::Hub { .. }
                     | Update::Notes { .. }
+                    | Update::Draft { .. }
                     | Update::Launch { .. } => {
                         return;
                     }
@@ -1256,6 +1319,8 @@ impl Actor {
                 }
             }
             ToCollector::Open { session } => self.open(&session),
+            ToCollector::Edit { id, key, text } => self.edit(id, key, text),
+            ToCollector::EditCancel { id } => self.cancel_edit(&id),
             ToCollector::Power { id, action } => self.power(id, action),
             ToCollector::SyncChanged { .. } => self.kick_sync(SyncCmd::Changed),
             ToCollector::SyncResync => self.kick_sync(SyncCmd::Resync),

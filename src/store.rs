@@ -224,6 +224,7 @@ pub fn open_writer(path: &Path) -> Result<Connection> {
     conn.execute_batch(tokens::SCHEMA)?;
     conn.execute_batch(messages::SCHEMA)?;
     conn.execute_batch(claims::SCHEMA)?;
+    conn.execute_batch(crate::drafts::SCHEMA)?;
     conn.execute_batch(crate::sync::hub::SCHEMA)?;
     conn.execute_batch(crate::workspace::hub::SCHEMA)?;
     migrate(&conn)?;
@@ -370,6 +371,8 @@ fn write_batch(conn: &mut Connection, batch: &[(String, StoreMsg)]) -> Result<()
             StoreMsg::ForgetHost => {
                 tx.execute("DELETE FROM hosts WHERE name = ?1", [host])?;
             }
+            StoreMsg::Draft { key, text, at } => crate::drafts::put(&tx, key, text, *at)?,
+            StoreMsg::DraftRemove { key } => crate::drafts::remove(&tx, key)?,
         }
     }
     tx.commit()?;

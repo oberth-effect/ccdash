@@ -272,4 +272,7 @@ remove = ["claude", "rm", "{id}"]     # when stop fails on a job nothing runs
 
 [attach]
 command = ["ghostty", "-e", "claude", "attach", "{id}"]
+
+[edit]
+command = ["ghostty", "-e", "nvim", "{file}"]   # the panel's Edit in nvim ([panel](panel.md#2-a-sessions-page))
 ```

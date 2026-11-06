@@ -6,6 +6,7 @@ import { browser } from '$app/env';
 import { SvelteMap } from 'svelte/reactivity';
 import { Unauthorized, api, getJson, token } from '../api/client';
 import type {
+	Draft,
 	HostStatus,
 	HubStatus,
 	Launch,
@@ -26,6 +27,8 @@ class Live {
 	sessions = new SvelteMap<string, Session>();
 	/** Launches this panel saw on the stream, by id. */
 	launches = new SvelteMap<string, Launch>();
+	/** The prompts being written, on every device, by draft key. */
+	drafts = new SvelteMap<string, Draft>();
 	rateLimits = $state<RateLimits | null>(null);
 	workspaces = $state<string[]>([]);
 	hosts = $state<HostStatus[]>([]);
@@ -173,6 +176,9 @@ class Live {
 		this.workspaces = snapshot.workspaces ?? [];
 		this.hosts = snapshot.hosts ?? [];
 		this.hub = snapshot.hub ?? null;
+		const keys = new Set((snapshot.drafts ?? []).map((d) => d.key));
+		for (const key of [...this.drafts.keys()]) if (!keys.has(key)) this.drafts.delete(key);
+		for (const d of snapshot.drafts ?? []) this.drafts.set(d.key, d);
 		this.ready = true;
 	}
 
@@ -199,7 +205,17 @@ class Live {
 			case 'launch':
 				this.launches.set(update.launch.id, update.launch);
 				break;
+			case 'draft':
+				this.putDraft(update.draft);
+				break;
 		}
+	}
+
+	/** Puts a draft the stream or the API returned into the store; an empty
+	 * one with no editor is gone. */
+	putDraft(draft: Draft) {
+		if (!draft.text && !draft.editing && !draft.notice) this.drafts.delete(draft.key);
+		else this.drafts.set(draft.key, draft);
 	}
 
 	/** Puts a host status the API returned into the store. */

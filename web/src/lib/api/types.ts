@@ -419,7 +419,29 @@ export type Doc = { hot: boolean, workspace: string, slug: string, kind: NoteKin
  */
 issue: string | null, excerpt: string, };
 
+/**
+ * A prompt being written in the panel, kept on the hub so it survives a
+ * reload and follows the owner from one device to another. One per key:
+ * `session:<id>` (a session's composer), `start`, `issue:<slug>` and
+ * `resume:<id>` (the start sheet).
+ */
+export type Draft = { key: string, text: string, updated_at: number, 
+/**
+ * Open in an editor on a machine; the text lands when the editor
+ * closes, and the field waits meanwhile.
+ */
+editing: Editing | null, 
+/**
+ * How the last edit ended when not with text: cancelled, failed.
+ */
+notice?: string, };
+
 export type EditUse = { language: string, accepted: number, rejected: number, };
+
+/**
+ * An editor open on a draft.
+ */
+export type Editing = { id: string, host: string, since: number, };
 
 /**
  * A progress entry with what the timeline shows around it.
@@ -603,7 +625,11 @@ power: Power | null,
 /**
  * Whether and how the hub can wake the machine.
  */
-wake: Wake | null, };
+wake: Wake | null, 
+/**
+ * Its collector opens drafts in an editor (`[edit] command`).
+ */
+edit: boolean, };
 
 export type HostTotals = { host: string, sessions: number, working_ms: number, permission_ms: number, 
 /**
@@ -1561,7 +1587,11 @@ hosts: Array<HostStatus>, sessions: Array<Session>, rate_limits: RateLimits | nu
 /**
  * The hub's own machine; None from a collector's mirror.
  */
-hub: HubStatus | null, };
+hub: HubStatus | null, 
+/**
+ * The prompts being written, every key.
+ */
+drafts: Array<Draft>, };
 
 /**
  * A match: the text around it with `\u{2}` before and `\u{3}` after each
@@ -1955,7 +1985,7 @@ refs: { [key in string]: string }, paused: boolean, };
 
 export type Unsubscribe = { endpoint: string, };
 
-export type Update = { "type": "session", session: Session, } | { "type": "removed", host: string, id: string, } | { "type": "rate_limits", rate_limits: RateLimits, } | { "type": "hosts", hosts: Array<HostStatus>, } | { "type": "hub", hub: HubStatus, } | { "type": "notes", workspace: string, } | { "type": "launch", launch: Launch, };
+export type Update = { "type": "session", session: Session, } | { "type": "removed", host: string, id: string, } | { "type": "rate_limits", rate_limits: RateLimits, } | { "type": "hosts", hosts: Array<HostStatus>, } | { "type": "hub", hub: HubStatus, } | { "type": "notes", workspace: string, } | { "type": "launch", launch: Launch, } | { "type": "draft", draft: Draft, };
 
 /**
  * A full write of one note, as the importer and the tools produce it;

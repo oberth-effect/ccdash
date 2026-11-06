@@ -99,24 +99,51 @@ Code delivers it again on its own.
 Open prompts are pinned above a composer that sends a turn through the
 channel or leaves a note for the next prompt; while Claude works, **Stop**
 interrupts the turn, so what you type next is what Claude reads
-([sessions](sessions.md#4-interrupt)). The composer walks the prompt
-history, inserts `[[note]]` links, keeps drafts, and when a message starts
-with `/` offers the skills Claude Code loads for that session (the
-machine's, the plugins', the workspace's), as the terminal does. Its keyboard
-button lists the shortcuts:
+([sessions](sessions.md#4-interrupt)). The composer is an editor made for
+long prompts: Enter is always a new line and only `Ctrl Enter` sends, on
+every device; it wraps, highlights markdown lightly, keeps an undo history
+that survives what the toolbar inserts, and **Expand** (`Ctrl Shift F`)
+gives it most of the screen. With a mouse it has vim keys (Settings turns
+them on or off, and holds a vimrc of maps it starts with: `jk` leaves
+insert mode, `Space w` is `:w`); `:w` keeps the draft now, `:x` is done
+editing. The composer walks the prompt history, inserts `[[note]]` links,
+and when a message starts with `/` offers the skills Claude Code loads for
+that session (the machine's, the plugins', the workspace's), as the
+terminal does. Its keyboard button lists the shortcuts:
 
-| Keys                  | Does                                                                   |
-| --------------------- | ---------------------------------------------------------------------- |
-| `Enter`, `Ctrl Enter` | Send (`Shift Enter` breaks the line; on touch only `Ctrl Enter` sends) |
-| `Ctrl Shift Enter`    | Next prompt instead of a turn                                          |
-| `Ctrl Shift 1–9`      | That quick reply                                                       |
-| `Ctrl .`              | Stop the turn                                                          |
-| `Ctrl J`              | Go to the open question                                                |
-| `↑` `↓`               | Walk the prompt history                                                |
-| `Ctrl R`              | Search the prompt history                                              |
-| `Ctrl E`              | Code fence around the selection                                        |
-| `Ctrl P`              | Preview                                                                |
-| `Esc`, then `i`       | Back to your text, leave the field, come back                          |
+| Keys               | Does                                          |
+| ------------------ | --------------------------------------------- |
+| `Ctrl Enter`       | Send (`Enter` is a new line)                  |
+| `Ctrl Shift Enter` | Next prompt instead of a turn                 |
+| `Ctrl Shift 1–9`   | That quick reply                              |
+| `Ctrl .`           | Stop the turn                                 |
+| `Ctrl G`           | Edit in nvim on a machine (below)             |
+| `Ctrl Shift F`     | Expand the field, and back                    |
+| `Ctrl J`           | Go to the open question                       |
+| `Ctrl ↑` `Ctrl ↓`  | Walk the prompt history                       |
+| `Ctrl R`           | Search the prompt history                     |
+| `Ctrl E`           | Code fence around the selection               |
+| `Ctrl P`           | Preview                                       |
+| `Esc`, then `i`    | Leave the field (vim: normal mode), come back |
+
+**Drafts live on the hub.** What you type is kept there after a short
+pause (and on the device meanwhile), so a prompt begun on the phone is on
+the desktop, a reload or a closed tab loses nothing, and the start sheet
+opens with what you left in it. A draft is dropped when its prompt is
+sent, or after 90 days untouched.
+
+**Edit in nvim** (`Ctrl G`, the terminal button) opens the draft in an
+editor on a machine, as Claude Code's own `Ctrl G` opens the prompt in
+`$EDITOR`: the collector there writes the text to a file and runs its
+`edit.command` (the default is `ghostty -e nvim {file}`,
+[configuration](configuration.md#4-collector-keys)); the field waits,
+with Cancel, until the editor closes, then takes the file's content. Exit
+without saving (`:cq`) and the text stays as it was. Which machine:
+Settings › Composer names one, else the session's own machine, else the
+first connected one whose collector has the command. A machine without
+the command cannot be picked; one that disconnects while the editor is
+open frees the draft, and the text saved later still lands when its
+collector comes back.
 
 The title
 renames in

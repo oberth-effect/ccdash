@@ -26,7 +26,7 @@ let
     inherit (packageJson) version;
     inherit src nodejs;
     sourceRoot = "${src.name}/web";
-    npmDepsHash = "sha256-QO7FaA5haxgxzX4PX/ttA3xyRX1pBkFWYE64ihi2jJU=";
+    npmDepsHash = "sha256-k8TSZYUivA9n6CIikZyp2WpgNnL82spE8jtAE9WZ/Ko=";
     meta = {
       homepage = "https://github.com/tsandrini/ccdash";
       license = lib.licenses.eupl12;

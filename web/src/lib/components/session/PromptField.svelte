@@ -6,19 +6,23 @@
 	const SKILLS_TTL = 5 * 60_000;
 	/** How many skills the `/` menu shows at once. */
 	const SLASH_ROWS = 8;
+	/** The hub refuses longer prompts; the count shows from `WARN_AT`. */
+	const MAX_CHARS = 20_000;
+	const WARN_AT = 15_000;
 </script>
 
 <script lang="ts">
-	// A prompt: the textarea and its toolbar, shared by the session
-	// composer and the start sheet. Enter submits on the desktop
-	// (Shift+Enter breaks); on touch Enter is a newline and the buttons
-	// submit. Ctrl+Enter submits everywhere, Ctrl+Shift+Enter takes the
-	// other way (Next prompt). Up and down walk the prompt history; the
-	// clock button opens it with search. Templates, `[[` for a note link,
-	// a code fence around the selection, a markdown preview. A message
-	// that starts with `/` opens the skills of the field's host and
-	// workspace, as the terminal does; arrows, Enter, Tab or a tap
-	// complete one. The keyboard button lists the rest (`KEYS`).
+	// A prompt: the editor (`Editor`, CodeMirror with the owner's vim keys
+	// when on) and its toolbar, shared by the session composer and the
+	// start sheet. Enter is always a new line; Ctrl+Enter submits,
+	// Ctrl+Shift+Enter takes the other way (Next prompt). Ctrl+↑/↓ walk
+	// the prompt history (Ctrl+R searches it); templates, `[[` for a note
+	// link, a code fence around the selection, a markdown preview. Ctrl+G
+	// opens the text in an editor on a machine (`onedit`), Ctrl+Shift+F
+	// expands the field to most of the screen. A message that starts with
+	// `/` offers the skills of the field's host and workspace, as the
+	// terminal does; arrows, Enter, Tab or a tap complete one. The keyboard
+	// button lists the rest (`KEYS`).
 	import type { Snippet } from 'svelte';
 	import ChevronDownIcon from '@lucide/svelte/icons/chevron-down';
 	import CodeIcon from '@lucide/svelte/icons/code';
@@ -26,18 +30,24 @@
 	import HistoryIcon from '@lucide/svelte/icons/history';
 	import KeyboardIcon from '@lucide/svelte/icons/keyboard';
 	import LinkIcon from '@lucide/svelte/icons/link';
+	import Maximize2Icon from '@lucide/svelte/icons/maximize-2';
+	import Minimize2Icon from '@lucide/svelte/icons/minimize-2';
+	import SquareTerminalIcon from '@lucide/svelte/icons/square-terminal';
 	import { marked } from 'marked';
 	import { Unauthorized } from '#lib/api/client.js';
-	import { fetchSkills, type Prompt } from '#lib/api/index.js';
+	import { fetchSkills, type Editing, type Prompt } from '#lib/api/index.js';
 	import { Button } from '#lib/components/ui/button/index.js';
+	import * as Dialog from '#lib/components/ui/dialog/index.js';
 	import * as DropdownMenu from '#lib/components/ui/dropdown-menu/index.js';
 	import * as Popover from '#lib/components/ui/popover/index.js';
 	import * as Sheet from '#lib/components/ui/sheet/index.js';
 	import { Input } from '#lib/components/ui/input/index.js';
-	import { fmtStamp } from '#lib/format.js';
+	import { fmtDuration, fmtStamp } from '#lib/format.js';
 	import { live } from '#lib/live/store.svelte.js';
 	import { palette } from '#lib/palette.svelte.js';
 	import { prefs } from '#lib/prefs.svelte.js';
+	import { modeLabel } from '#lib/vim.js';
+	import Editor from './Editor.svelte';
 
 	let {
 		text = $bindable(''),
@@ -50,10 +60,18 @@
 		label = 'Prompt',
 		disabled = false,
 		rows = 1,
+		fill = false,
+		expandable = true,
+		editing = null,
+		editHost = null,
+		notice = null,
 		onsubmit,
 		onalternate,
 		onquick,
 		onstop,
+		onedit,
+		oncanceledit,
+		onsave,
 		actions
 	}: {
 		text?: string;
@@ -70,6 +88,15 @@
 		disabled?: boolean;
 		/** Lines the empty field shows; it grows with its text up to 220 px. */
 		rows?: number;
+		/** Fill the parent's height (the start sheet); no Expand then. */
+		fill?: boolean;
+		expandable?: boolean;
+		/** An editor on a machine has the text; the field waits. */
+		editing?: Editing | null;
+		/** The machine `onedit` opens the editor on; null when none can. */
+		editHost?: string | null;
+		/** How the last edit ended without text. */
+		notice?: string | null;
 		onsubmit: () => void;
 		/** Ctrl Shift Enter: the other way to send, if there is one. */
 		onalternate?: () => void;
@@ -77,12 +104,23 @@
 		onquick?: (index: number) => void;
 		/** Ctrl . : stop what the session is doing. */
 		onstop?: () => void;
+		/** Ctrl G: open the text in an editor on `editHost`. */
+		onedit?: () => void;
+		oncanceledit?: () => void;
+		/** `:w` in vim: keep the draft now. */
+		onsave?: () => void;
 		/** Buttons at the end of the toolbar. */
 		actions: Snippet;
 	} = $props();
 
-	let area = $state<HTMLTextAreaElement | null>(null);
+	let editor = $state<Editor | null>(null);
+	let inlineHost = $state<HTMLDivElement | null>(null);
+	let bigHost = $state<HTMLDivElement | null>(null);
+	let expanded = $state(false);
 	let preview = $state(false);
+	let focused = $state(false);
+	let mode = $state('');
+	let vimrcErrors = $state<string[]>([]);
 	let historyOpen = $state(false);
 	let historyQuery = $state('');
 	let history = $state<Prompt[]>([]);
@@ -97,22 +135,29 @@
 	let pick = $state(0);
 
 	const touch = () => matchMedia('(pointer: coarse)').matches;
+	const vimOn = $derived(prefs.vimOn);
+	const locked = $derived(disabled || Boolean(editing));
+	const chars = $derived(text.length);
 	/** The shortcuts this field has, for the keyboard button. */
 	const KEYS = $derived(
 		[
-			['Enter, Ctrl Enter', 'Send'],
-			['Shift Enter', 'New line'],
+			['Ctrl Enter', 'Send'],
+			['Enter', 'New line'],
 			onalternate ? ['Ctrl Shift Enter', 'Next prompt'] : null,
 			onquick ? ['Ctrl Shift 1–9', 'Quick reply'] : null,
 			onstop ? ['Ctrl .', 'Stop the turn'] : null,
+			onedit ? ['Ctrl G', `Edit in nvim${editHost ? ` on ${editHost}` : ''}`] : null,
+			expandable && !fill ? ['Ctrl Shift F', 'Expand the field'] : null,
 			['Ctrl J', 'Go to the open question'],
-			['↑ ↓', 'Prompt history'],
+			['Ctrl ↑ ↓', 'Prompt history'],
 			['Ctrl R', 'Search the prompt history'],
 			['Ctrl E', 'Code fence around the selection'],
 			['Ctrl P', 'Preview'],
 			['[[', 'Link a note'],
 			['/', 'Skills, at the start'],
-			['Esc', 'Back to your text, or leave the field'],
+			vimOn
+				? ['Esc, :w, :x', 'Vim: normal mode, keep the draft, done']
+				: ['Esc', 'Leave the field'],
 			onquick ? ['i', 'Back into the field'] : null,
 			['Ctrl K', 'Search everything']
 		].filter((row): row is string[] => row !== null)
@@ -142,16 +187,31 @@
 	);
 	const rendered = $derived(preview ? (marked.parse(text, { async: false }) as string) : '');
 
+	// the one editor lives in the field or in the expanded dialog
+	$effect(() => {
+		const el = editor?.element();
+		const target = expanded ? bigHost : inlineHost;
+		if (!el || !target || el.parentElement === target) return;
+		target.appendChild(el);
+		editor?.measure();
+		requestAnimationFrame(() => editor?.focus());
+	});
+
 	/** After a send: the text heads the history. */
 	export function remember(body: string) {
 		cursor = -1;
 		history = history.filter((p) => p.text !== body);
 		history.unshift({ at: live.now, session: session ?? '', text: body });
 		preview = false;
+		expanded = false;
 	}
 
 	export function focus() {
-		area?.focus();
+		editor?.focus();
+	}
+
+	export function hasFocus(): boolean {
+		return editor?.hasFocus() ?? false;
 	}
 
 	async function loadHistory() {
@@ -189,38 +249,19 @@
 	}
 
 	function useSkill(s: Skill) {
-		text = `/${s.command} `;
 		dismissed = true;
-		requestAnimationFrame(() => {
-			area?.focus();
-			area?.setSelectionRange(text.length, text.length);
-		});
+		editor?.replaceRange(0, text.length, `/${s.command} `);
 	}
 
-	function insert(snippet: string, select?: [number, number]) {
-		if (!area) return;
-		const start = area.selectionStart;
-		const end = area.selectionEnd;
-		text = text.slice(0, start) + snippet + text.slice(end);
-		requestAnimationFrame(() => {
-			area?.focus();
-			const [a, b] = select ?? [start + snippet.length, start + snippet.length];
-			area?.setSelectionRange(a, b);
-		});
+	function insert(snippet: string) {
+		editor?.insert(snippet);
 	}
 
 	function fence() {
-		if (!area) return;
-		const start = area.selectionStart;
-		const end = area.selectionEnd;
-		const selected = text.slice(start, end);
-		const block = `\n\`\`\`\n${selected}\n\`\`\`\n`;
-		text = text.slice(0, start) + block + text.slice(end);
-		const at = start + 5;
-		requestAnimationFrame(() => {
-			area?.focus();
-			area?.setSelectionRange(at, at + selected.length);
-		});
+		if (!editor) return;
+		const { from, to } = editor.selection();
+		const selected = text.slice(from, to);
+		editor.replaceRange(from, to, `\n\`\`\`\n${selected}\n\`\`\`\n`, [5, 5 + selected.length]);
 	}
 
 	function noteLink() {
@@ -236,14 +277,35 @@
 		const next = Math.min(history.length - 1, Math.max(-1, cursor + direction));
 		cursor = next;
 		text = next === -1 ? stash : history[next].text;
-		requestAnimationFrame(() => area?.setSelectionRange(text.length, text.length));
+	}
+
+	function toggleExpand() {
+		if (!expandable || fill) return;
+		expanded = !expanded;
+		preview = false;
 	}
 
 	/** Shortcuts with Ctrl or ⌘. NOTE: digits by position: a Czech keyboard
 	 * types `+ě` there. Not Alt: on Linux Firefox it switches tabs. */
 	function shortcut(event: KeyboardEvent): boolean {
 		const key = event.key.toLowerCase();
+		if (event.key === 'Enter') {
+			if (event.shiftKey) {
+				if (!onalternate) return false;
+				onalternate();
+			} else onsubmit();
+			return true;
+		}
+		if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {
+			if (cursor === -1 && event.key === 'ArrowDown') return false;
+			loadHistory().then(() => walk(event.key === 'ArrowUp' ? 1 : -1));
+			return true;
+		}
 		if (event.shiftKey) {
+			if (event.code === 'KeyF') {
+				toggleExpand();
+				return true;
+			}
 			const digit = /^Digit([1-9])$/.exec(event.code);
 			if (!digit || !onquick) return false;
 			onquick(Number(digit[1]) - 1);
@@ -251,7 +313,10 @@
 		}
 		if (key === 'e') fence();
 		else if (key === 'p') preview = !preview;
-		else if (key === 'r') {
+		else if (key === 'g') {
+			if (!onedit || !editHost || locked) return false;
+			onedit();
+		} else if (key === 'r') {
 			historyOpen = true;
 			loadHistory();
 		} else if (key === 'j') {
@@ -263,71 +328,57 @@
 		return true;
 	}
 
-	function onkeydown(event: KeyboardEvent) {
-		if (event.isComposing) return;
-		if ((event.ctrlKey || event.metaKey) && shortcut(event)) {
+	/** The editor's keys, before vim and the default bindings. */
+	function onkey(event: KeyboardEvent): boolean {
+		if (event.isComposing) return false;
+		if ((event.ctrlKey || event.metaKey) && !event.altKey && shortcut(event)) {
 			event.preventDefault();
-			return;
+			return true;
 		}
 		if (choices.length) {
 			if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
 				event.preventDefault();
 				const step = event.key === 'ArrowDown' ? 1 : choices.length - 1;
 				pick = (pick + step) % choices.length;
-				return;
+				return true;
 			}
 			if (event.key === 'Enter' || event.key === 'Tab') {
 				event.preventDefault();
 				useSkill(choices[pick]);
-				return;
+				return true;
 			}
 			if (event.key === 'Escape') {
 				// NOTE: a dialog around the field closes on a document-level Escape
 				event.preventDefault();
 				event.stopPropagation();
 				dismissed = true;
-				return;
+				return true;
 			}
-		}
-		if (event.key === 'Enter') {
-			const held = event.ctrlKey || event.metaKey;
-			if (held && event.shiftKey && onalternate) {
-				event.preventDefault();
-				onalternate();
-			} else if (!event.shiftKey && (held || !touch())) {
-				event.preventDefault();
-				onsubmit();
-			}
-			return;
 		}
 		if (event.key === 'Escape') {
-			if (cursor === -1) return void area?.blur();
-			// NOTE: a dialog around the field closes on a document-level Escape
-			event.stopPropagation();
-			cursor = -1;
-			text = stash;
-			return;
+			if (cursor !== -1) {
+				event.stopPropagation();
+				cursor = -1;
+				text = stash;
+				return true;
+			}
+			if (vimOn) return false;
+			(document.activeElement as HTMLElement | null)?.blur();
+			return true;
 		}
-		if ((event.key === 'ArrowUp' || event.key === 'ArrowDown') && area) {
-			const before = text.slice(0, area.selectionStart);
-			const after = text.slice(area.selectionEnd);
-			const edge = event.key === 'ArrowUp' ? !before.includes('\n') : !after.includes('\n');
-			if (!edge || (cursor === -1 && event.key === 'ArrowDown')) return;
-			event.preventDefault();
-			loadHistory().then(() => walk(event.key === 'ArrowUp' ? 1 : -1));
-			return;
-		}
-		if (event.key === '[' && area) {
-			const at = area.selectionStart;
-			if (text[at - 1] === '[' && text[at - 2] !== '[') {
+		if (event.key === '[' && editor) {
+			const { from, to } = editor.selection();
+			if (from === to && text[from - 1] === '[' && text[from - 2] !== '[') {
 				event.preventDefault();
-				text = text.slice(0, at - 1) + text.slice(area.selectionEnd);
+				editor.replaceRange(from - 1, from, '');
 				noteLink();
+				return true;
 			}
 		}
+		return false;
 	}
 
-	/** NOTE: the field is hidden during a preview, so its own keys stop: Ctrl P
+	/** NOTE: the editor is hidden during a preview, so its own keys stop: Ctrl P
 	 * would reach the browser and print. */
 	function onwindowkey(event: KeyboardEvent) {
 		if (!preview || event.defaultPrevented) return;
@@ -335,53 +386,224 @@
 		if (!again && event.key !== 'Escape') return;
 		event.preventDefault();
 		preview = false;
-		requestAnimationFrame(() => area?.focus());
+		requestAnimationFrame(() => editor?.focus());
 	}
 
 	function pickHistory(p: Prompt) {
 		text = p.text;
 		cursor = -1;
 		historyOpen = false;
-		requestAnimationFrame(() => area?.focus());
+		requestAnimationFrame(() => editor?.focus());
 	}
+
+	/** `:x` and `:q`: done here, back to the page (or out of Expand). */
+	function quit() {
+		if (expanded) expanded = false;
+		else (document.activeElement as HTMLElement | null)?.blur();
+	}
+
+	const frameClass =
+		'rounded-md border bg-background transition-colors focus-within:ring-2 focus-within:ring-ring/50';
 </script>
 
 <svelte:window onkeydown={onwindowkey} />
 
-{#if preview}
-	<div class="max-h-56 overflow-auto rounded-md border bg-card p-3 text-sm">
-		<div class="prose-chat">
-			<!-- eslint-disable-next-line svelte/no-at-html-tags -->
-			{@html rendered}
-		</div>
+{#snippet toolbar(big: boolean)}
+	<div class="flex flex-wrap items-center gap-1">
+		{#if editing}
+			<span class="flex items-center gap-2 px-1 text-xs text-muted-foreground" role="status">
+				<SquareTerminalIcon class="size-3.5 text-working" />
+				Editing in nvim on {editing.host} · {fmtDuration(live.now - editing.since)} · the text lands here
+				when it closes
+				{#if oncanceledit}
+					<Button variant="outline" size="xs" type="button" onclick={oncanceledit}>Cancel</Button>
+				{/if}
+			</span>
+		{:else}
+			<Button
+				variant="ghost"
+				size="icon-sm"
+				type="button"
+				title="Insert a note link ([[)"
+				aria-label="Insert a note link"
+				disabled={locked}
+				onclick={noteLink}
+			>
+				<LinkIcon />
+			</Button>
+			<Button
+				variant="ghost"
+				size="icon-sm"
+				type="button"
+				title="Code fence around the selection (Ctrl E)"
+				aria-label="Code fence"
+				disabled={locked}
+				onclick={fence}
+			>
+				<CodeIcon />
+			</Button>
+			<Button
+				variant={preview ? 'secondary' : 'ghost'}
+				size="icon-sm"
+				type="button"
+				title="Preview (Ctrl P)"
+				aria-label="Preview"
+				aria-pressed={preview}
+				onclick={() => (preview = !preview)}
+			>
+				<EyeIcon />
+			</Button>
+			<Button
+				variant="ghost"
+				size="icon-sm"
+				type="button"
+				title="Prompt history (Ctrl R)"
+				aria-label="Prompt history"
+				onclick={() => {
+					historyOpen = true;
+					loadHistory();
+				}}
+			>
+				<HistoryIcon />
+			</Button>
+			{#if onedit}
+				<Button
+					variant="ghost"
+					size="icon-sm"
+					type="button"
+					title={editHost
+						? `Edit in nvim on ${editHost} (Ctrl G)`
+						: 'No connected machine opens an editor: set [edit] command in its collector'}
+					aria-label="Edit in nvim"
+					disabled={locked || !editHost}
+					onclick={onedit}
+				>
+					<SquareTerminalIcon />
+				</Button>
+			{/if}
+			{#if expandable && !fill}
+				<Button
+					variant="ghost"
+					size="icon-sm"
+					type="button"
+					title={big ? 'Back to the page (Ctrl Shift F)' : 'Expand the field (Ctrl Shift F)'}
+					aria-label={big ? 'Shrink the field' : 'Expand the field'}
+					onclick={toggleExpand}
+				>
+					{#if big}<Minimize2Icon />{:else}<Maximize2Icon />{/if}
+				</Button>
+			{/if}
+			<Popover.Root>
+				<Popover.Trigger class="hidden sm:block">
+					{#snippet child({ props })}
+						<Button
+							variant="ghost"
+							size="icon-sm"
+							type="button"
+							title="Keyboard shortcuts"
+							aria-label="Keyboard shortcuts"
+							{...props}
+						>
+							<KeyboardIcon />
+						</Button>
+					{/snippet}
+				</Popover.Trigger>
+				<Popover.Content align="start" class="w-80 p-2">
+					<dl class="grid grid-cols-[auto_1fr] items-baseline gap-x-3 gap-y-1 text-xs">
+						{#each KEYS as [keys, what] (keys)}
+							<dt class="font-mono whitespace-nowrap text-muted-foreground">{keys}</dt>
+							<dd>{what}</dd>
+						{/each}
+					</dl>
+					{#if vimrcErrors.length}
+						<p class="mt-2 text-xs text-warning">
+							Vimrc lines not taken: {vimrcErrors.join('; ')}
+						</p>
+					{/if}
+				</Popover.Content>
+			</Popover.Root>
+			{#if prefs.templates.length}
+				<DropdownMenu.Root>
+					<DropdownMenu.Trigger>
+						{#snippet child({ props })}
+							<Button variant="ghost" size="sm" type="button" disabled={locked} {...props}>
+								Templates <ChevronDownIcon class="size-3" />
+							</Button>
+						{/snippet}
+					</DropdownMenu.Trigger>
+					<DropdownMenu.Content align="start">
+						{#each prefs.templates as t (t.name)}
+							<DropdownMenu.Item onSelect={() => insert(t.text)}>{t.name}</DropdownMenu.Item>
+						{/each}
+					</DropdownMenu.Content>
+				</DropdownMenu.Root>
+			{/if}
+			{#if vimOn && mode}
+				<span
+					class="hidden rounded px-1.5 py-0.5 font-mono text-[0.65rem] tracking-wide text-muted-foreground sm:inline {mode ===
+					'insert'
+						? 'bg-working/15 text-working'
+						: 'bg-muted'}"
+					aria-live="polite">{modeLabel(mode)}</span
+				>
+			{/if}
+			{#if chars >= WARN_AT}
+				<span
+					class="font-mono text-xs {chars > MAX_CHARS ? 'text-critical' : 'text-muted-foreground'}"
+					>{chars.toLocaleString('en')} / {MAX_CHARS.toLocaleString('en')}</span
+				>
+			{/if}
+		{/if}
+		<span class="ml-auto flex gap-1.5">{@render actions()}</span>
 	</div>
-{/if}
+	{#if notice && !editing}
+		<p class="text-xs text-muted-foreground" role="status">Editor: {notice}</p>
+	{/if}
+{/snippet}
+
 <form
-	class="flex flex-col gap-1.5"
+	class="flex min-h-0 flex-col gap-1.5 {fill ? 'flex-1' : ''}"
 	onsubmit={(e) => {
 		e.preventDefault();
 		onsubmit();
 	}}
 >
-	<!-- NOTE: grows by CSS: collapsing it to measure made Firefox clamp the chat's scroll -->
-	<textarea
-		bind:this={area}
-		bind:value={text}
-		oninput={() => {
-			cursor = -1;
-			dismissed = false;
-		}}
-		{onkeydown}
-		{rows}
-		maxlength={20000}
-		{placeholder}
-		aria-label={label}
-		{disabled}
-		style:min-height="calc({rows}lh + 1rem + 2px)"
-		class="field-sizing-content max-h-55 w-full resize-none rounded-md border bg-background px-3 py-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring/50 {preview
+	{#if preview && !expanded}
+		<div
+			class="max-h-56 overflow-auto rounded-md border bg-card p-3 text-sm {fill ? 'flex-1' : ''}"
+		>
+			<div class="prose-chat">
+				<!-- eslint-disable-next-line svelte/no-at-html-tags -->
+				{@html rendered}
+			</div>
+		</div>
+	{/if}
+	<!-- NOTE: the editor's element moves into the expanded dialog and back; it is created once, here -->
+	<div
+		bind:this={inlineHost}
+		class="{frameClass} {fill ? 'flex min-h-0 flex-1 flex-col' : ''} {preview || expanded
 			? 'hidden'
-			: ''}"></textarea>
-	{#if choices.length}
+			: ''} {locked ? 'opacity-60' : ''}"
+	>
+		<Editor
+			bind:this={editor}
+			bind:value={text}
+			{placeholder}
+			{label}
+			disabled={locked}
+			vim={vimOn}
+			vimrc={prefs.vimrc}
+			fill={fill || expanded}
+			{rows}
+			{onkey}
+			onfocus={(f) => (focused = f)}
+			onmode={(m, sub) => (mode = m ? modeLabel(m, sub).toLowerCase() : '')}
+			onwrite={onsave}
+			onquit={quit}
+			onvimrc={(errors) => (vimrcErrors = errors)}
+		/>
+	</div>
+	{#if choices.length && !expanded}
 		<ul
 			role="listbox"
 			aria-label="Skills"
@@ -413,94 +635,49 @@
 			{/each}
 		</ul>
 	{/if}
-	<div class="flex flex-wrap items-center gap-1">
-		<Button
-			variant="ghost"
-			size="icon-sm"
-			type="button"
-			title="Insert a note link ([[)"
-			aria-label="Insert a note link"
-			onclick={noteLink}
-		>
-			<LinkIcon />
-		</Button>
-		<Button
-			variant="ghost"
-			size="icon-sm"
-			type="button"
-			title="Code fence around the selection"
-			aria-label="Code fence"
-			onclick={fence}
-		>
-			<CodeIcon />
-		</Button>
-		<Button
-			variant={preview ? 'secondary' : 'ghost'}
-			size="icon-sm"
-			type="button"
-			title="Preview"
-			aria-label="Preview"
-			aria-pressed={preview}
-			onclick={() => (preview = !preview)}
-		>
-			<EyeIcon />
-		</Button>
-		<Button
-			variant="ghost"
-			size="icon-sm"
-			type="button"
-			title="Prompt history"
-			aria-label="Prompt history"
-			onclick={() => {
-				historyOpen = true;
-				loadHistory();
+	{#if !expanded}
+		{@render toolbar(false)}
+	{/if}
+</form>
+
+<Dialog.Root
+	bind:open={expanded}
+	onOpenChange={(open) => {
+		if (!open) requestAnimationFrame(() => editor?.focus());
+	}}
+>
+	<Dialog.Content
+		class="flex h-[min(92dvh,70rem)] w-[min(96vw,80rem)] max-w-none flex-col gap-2 p-3 max-sm:h-dvh max-sm:w-screen max-sm:max-w-none max-sm:rounded-none sm:max-w-none sm:p-4"
+		showCloseButton={false}
+		escapeKeydownBehavior={vimOn && focused ? 'ignore' : 'close'}
+	>
+		<Dialog.Title class="sr-only">{label}</Dialog.Title>
+		<Dialog.Description class="sr-only">The prompt, with room to write.</Dialog.Description>
+		{#if preview}
+			<div class="min-h-0 flex-1 overflow-auto rounded-md border bg-card p-4 text-sm">
+				<div class="prose-chat">
+					<!-- eslint-disable-next-line svelte/no-at-html-tags -->
+					{@html rendered}
+				</div>
+			</div>
+		{/if}
+		<div
+			bind:this={bigHost}
+			class="{frameClass} flex min-h-0 flex-1 flex-col {preview ? 'hidden' : ''} {locked
+				? 'opacity-60'
+				: ''}"
+		></div>
+		<form
+			class="flex flex-col gap-1.5"
+			onsubmit={(e) => {
+				e.preventDefault();
+				onsubmit();
 			}}
 		>
-			<HistoryIcon />
-		</Button>
-		<Popover.Root>
-			<Popover.Trigger class="hidden sm:block">
-				{#snippet child({ props })}
-					<Button
-						variant="ghost"
-						size="icon-sm"
-						type="button"
-						title="Keyboard shortcuts"
-						aria-label="Keyboard shortcuts"
-						{...props}
-					>
-						<KeyboardIcon />
-					</Button>
-				{/snippet}
-			</Popover.Trigger>
-			<Popover.Content align="start" class="w-72 p-2">
-				<dl class="grid grid-cols-[auto_1fr] items-baseline gap-x-3 gap-y-1 text-xs">
-					{#each KEYS as [keys, what] (keys)}
-						<dt class="font-mono whitespace-nowrap text-muted-foreground">{keys}</dt>
-						<dd>{what}</dd>
-					{/each}
-				</dl>
-			</Popover.Content>
-		</Popover.Root>
-		{#if prefs.templates.length}
-			<DropdownMenu.Root>
-				<DropdownMenu.Trigger>
-					{#snippet child({ props })}
-						<Button variant="ghost" size="sm" type="button" {...props}>
-							Templates <ChevronDownIcon class="size-3" />
-						</Button>
-					{/snippet}
-				</DropdownMenu.Trigger>
-				<DropdownMenu.Content align="start">
-					{#each prefs.templates as t (t.name)}
-						<DropdownMenu.Item onSelect={() => insert(t.text)}>{t.name}</DropdownMenu.Item>
-					{/each}
-				</DropdownMenu.Content>
-			</DropdownMenu.Root>
-		{/if}
-		<span class="ml-auto flex gap-1.5">{@render actions()}</span>
-	</div>
-</form>
+			{@render toolbar(true)}
+		</form>
+	</Dialog.Content>
+</Dialog.Root>
 
 <Sheet.Root bind:open={historyOpen}>
 	<Sheet.Content

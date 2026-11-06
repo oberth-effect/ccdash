@@ -150,11 +150,23 @@ pub enum StoreMsg {
         project: Option<String>,
     },
     /// A scoped limit read from `/usage`.
-    Limit { ts: i64, limit: ScopedLimit },
+    Limit {
+        ts: i64,
+        limit: ScopedLimit,
+    },
     /// The session's claim changed; None drops it.
     Claim {
         session: String,
         claim: Option<Claim>,
+    },
+    /// A draft the panel writes (see `drafts`); `DraftRemove` drops one.
+    Draft {
+        key: String,
+        text: String,
+        at: i64,
+    },
+    DraftRemove {
+        key: String,
     },
     /// One OpenTelemetry metric point or event Claude Code exported.
     Telemetry {

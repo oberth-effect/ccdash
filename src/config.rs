@@ -41,6 +41,7 @@ pub struct CollectorConfig {
     pub niri: Niri,
     pub procs: Procs,
     pub attach: Attach,
+    pub edit: Edit,
     pub launch: Launch,
     pub telemetry: Telemetry,
     pub usage: Usage,
@@ -348,6 +349,18 @@ pub struct Attach {
     pub command: Vec<String>,
 }
 
+/// The panel's drafts opened in an editor on this machine (the panel's
+/// Ctrl+G, as Claude Code's own opens the prompt in `$EDITOR`).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Edit {
+    /// Opens the draft's file and returns when the editor closes; `{file}`
+    /// is replaced with its path. Exit status 0 takes the file's content,
+    /// anything else (`:cq`) cancels. Empty turns editing from the panel
+    /// off on this machine.
+    pub command: Vec<String>,
+}
+
 /// Sessions the panel starts, continues and stops on this machine.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -551,6 +564,16 @@ impl Default for Attach {
     fn default() -> Self {
         Self {
             command: ["ghostty", "-e", "claude", "attach", "{id}"]
+                .map(String::from)
+                .to_vec(),
+        }
+    }
+}
+
+impl Default for Edit {
+    fn default() -> Self {
+        Self {
+            command: ["ghostty", "-e", "nvim", "{file}"]
                 .map(String::from)
                 .to_vec(),
         }

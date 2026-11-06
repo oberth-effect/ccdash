@@ -99,11 +99,12 @@ async fn link(
         .await
         .context("no hello")?
         .context("closed before hello")??;
-    let terminals = match parse(&hello)? {
+    let (terminals, edit) = match parse(&hello)? {
         Some(ToHub::Hello {
             v,
             host: claimed,
             terminals,
+            edit,
         }) => {
             if v != VERSION {
                 let _ = sink
@@ -116,7 +117,7 @@ async fn link(
             if claimed != host {
                 bail!("token of {host} used by {claimed}");
             }
-            terminals
+            (terminals, edit)
         }
         _ => bail!("first message was not a hello"),
     };
@@ -125,6 +126,7 @@ async fn link(
         host: host.clone(),
         conn,
         terminals,
+        edit,
         tx,
     })
     .await?;
@@ -228,6 +230,18 @@ fn command(host: &str, msg: ToHub) -> Option<Cmd> {
             error,
         },
         ToHub::Interrupted { session, at } => Cmd::Interrupted { host, session, at },
+        ToHub::Edited {
+            id,
+            key,
+            text,
+            error,
+        } => Cmd::Edited {
+            host,
+            id,
+            key,
+            text,
+            error,
+        },
         ToHub::Dirs { dirs } => Cmd::Dirs { host, dirs },
         ToHub::Skills { skills } => Cmd::Skills { host, skills },
         ToHub::Palette { palette } => Cmd::Palette { host, palette },

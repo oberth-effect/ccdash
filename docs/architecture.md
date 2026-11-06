@@ -103,4 +103,5 @@ the hub) and carries its configuration, unit states and conflict
 resolutions over the WebSocket (protocol 8). The collectors' skill reports
 came with protocol 11, the desktop's colours with protocol 12, the
 machine's report, lock and suspend with protocol 13, the `report` note
-kind with protocol 14.
+kind with protocol 14, drafts opened in an editor on a machine with
+protocol 15.

@@ -169,6 +169,9 @@ pub async fn serve(
         .route("/machines/{host}/wake", post(wake_machine))
         .route("/launches", post(launch))
         .route("/launch-targets", get(launch_targets))
+        .route("/drafts/{key}", put(put_draft).delete(delete_draft))
+        .route("/drafts/{key}/edit", post(edit_draft))
+        .route("/drafts/{key}/edit/cancel", post(cancel_edit))
         .route("/skills", get(skills))
         .route("/launches/{id}", get(launch_of))
         .route("/past", get(past))
@@ -841,6 +844,81 @@ async fn past_conversation(
     .map_err(anyhow::Error::from)??
     .map(Json)
     .ok_or(ApiError(StatusCode::NOT_FOUND, "no such session".into()))
+}
+
+// --- drafts -----------------------------------------------------------------
+
+#[derive(Deserialize, TS)]
+#[ts(export_to = "types.ts")]
+#[serde(deny_unknown_fields)]
+pub(crate) struct DraftBody {
+    text: String,
+}
+
+#[derive(Deserialize, TS)]
+#[ts(export_to = "types.ts")]
+#[serde(deny_unknown_fields)]
+pub(crate) struct EditBody {
+    /// The connected machine whose editor opens the draft.
+    host: String,
+    /// The panel's text at that moment, as the editor gets it.
+    text: String,
+}
+
+fn draft_error(e: String) -> ApiError {
+    let code = if e.contains("is not a draft key") || e.contains("at most") {
+        StatusCode::UNPROCESSABLE_ENTITY
+    } else {
+        StatusCode::CONFLICT
+    };
+    ApiError(code, e)
+}
+
+/// Keeps a draft on the hub (an empty text drops it); it reaches every
+/// panel through the stream.
+async fn put_draft(
+    State(app): State<App>,
+    Path(key): Path<String>,
+    Json(body): Json<DraftBody>,
+) -> Result<Json<Value>, ApiError> {
+    let draft = app
+        .hub
+        .draft(&key, &body.text)
+        .await?
+        .map_err(draft_error)?;
+    Ok(Json(json!({ "draft": draft })))
+}
+
+async fn delete_draft(
+    State(app): State<App>,
+    Path(key): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    let draft = app.hub.draft(&key, "").await?.map_err(draft_error)?;
+    Ok(Json(json!({ "draft": draft })))
+}
+
+/// Opens the draft in an editor on `host` (its `[edit] command`); the draft
+/// shows as editing until the editor closes, then carries its text.
+async fn edit_draft(
+    State(app): State<App>,
+    Path(key): Path<String>,
+    Json(body): Json<EditBody>,
+) -> Result<(StatusCode, Json<Value>), ApiError> {
+    let draft = app
+        .hub
+        .edit_draft(&key, &body.host, &body.text)
+        .await?
+        .map_err(draft_error)?;
+    Ok((StatusCode::ACCEPTED, Json(json!({ "draft": draft }))))
+}
+
+/// Closes the editor open on the draft; the text stays as it was.
+async fn cancel_edit(
+    State(app): State<App>,
+    Path(key): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    let draft = app.hub.cancel_edit(&key).await?.map_err(draft_error)?;
+    Ok(Json(json!({ "draft": draft })))
 }
 
 /// Where sessions can start: connected hosts, the workspaces whose

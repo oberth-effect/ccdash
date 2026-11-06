@@ -500,6 +500,38 @@ pub struct HostStatus {
     /// Whether and how the hub can wake the machine.
     #[serde(default)]
     pub wake: Option<Wake>,
+    /// Its collector opens drafts in an editor (`[edit] command`).
+    #[serde(default)]
+    pub edit: bool,
+}
+
+/// A prompt being written in the panel, kept on the hub so it survives a
+/// reload and follows the owner from one device to another. One per key:
+/// `session:<id>` (a session's composer), `start`, `issue:<slug>` and
+/// `resume:<id>` (the start sheet).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export_to = "types.ts")]
+pub struct Draft {
+    pub key: String,
+    pub text: String,
+    pub updated_at: i64,
+    /// Open in an editor on a machine; the text lands when the editor
+    /// closes, and the field waits meanwhile.
+    #[serde(default)]
+    pub editing: Option<Editing>,
+    /// How the last edit ended when not with text: cancelled, failed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub notice: Option<String>,
+}
+
+/// An editor open on a draft.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export_to = "types.ts")]
+pub struct Editing {
+    pub id: String,
+    pub host: String,
+    pub since: i64,
 }
 
 /// The hub's own machine.
@@ -569,6 +601,9 @@ pub struct Snapshot {
     /// The hub's own machine; None from a collector's mirror.
     #[serde(default)]
     pub hub: Option<HubStatus>,
+    /// The prompts being written, every key.
+    #[serde(default)]
+    pub drafts: Vec<Draft>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -598,6 +633,11 @@ pub enum Update {
     /// A session started from the panel moved on.
     Launch {
         launch: Launch,
+    },
+    /// A draft changed: its text, or an editor opened or closed on it. An
+    /// empty text with no editor is a draft that is gone.
+    Draft {
+        draft: Draft,
     },
 }
 
