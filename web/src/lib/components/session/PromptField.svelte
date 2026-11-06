@@ -68,6 +68,7 @@
 		placeholder: string;
 		label?: string;
 		disabled?: boolean;
+		/** Lines the empty field shows; it grows with its text up to 220 px. */
 		rows?: number;
 		onsubmit: () => void;
 		/** Ctrl Shift Enter: the other way to send, if there is one. */
@@ -141,23 +142,16 @@
 	);
 	const rendered = $derived(preview ? (marked.parse(text, { async: false }) as string) : '');
 
-	/** After a send: the text heads the history, the field shrinks back. */
+	/** After a send: the text heads the history. */
 	export function remember(body: string) {
 		cursor = -1;
 		history = history.filter((p) => p.text !== body);
 		history.unshift({ at: live.now, session: session ?? '', text: body });
 		preview = false;
-		requestAnimationFrame(grow);
 	}
 
 	export function focus() {
 		area?.focus();
-	}
-
-	function grow() {
-		if (!area) return;
-		area.style.height = 'auto';
-		area.style.height = `${Math.min(area.scrollHeight, 220)}px`;
 	}
 
 	async function loadHistory() {
@@ -200,7 +194,6 @@
 		requestAnimationFrame(() => {
 			area?.focus();
 			area?.setSelectionRange(text.length, text.length);
-			grow();
 		});
 	}
 
@@ -213,7 +206,6 @@
 			area?.focus();
 			const [a, b] = select ?? [start + snippet.length, start + snippet.length];
 			area?.setSelectionRange(a, b);
-			grow();
 		});
 	}
 
@@ -228,7 +220,6 @@
 		requestAnimationFrame(() => {
 			area?.focus();
 			area?.setSelectionRange(at, at + selected.length);
-			grow();
 		});
 	}
 
@@ -245,10 +236,7 @@
 		const next = Math.min(history.length - 1, Math.max(-1, cursor + direction));
 		cursor = next;
 		text = next === -1 ? stash : history[next].text;
-		requestAnimationFrame(() => {
-			grow();
-			area?.setSelectionRange(text.length, text.length);
-		});
+		requestAnimationFrame(() => area?.setSelectionRange(text.length, text.length));
 	}
 
 	/** Shortcuts with Ctrl or ⌘. NOTE: digits by position: a Czech keyboard
@@ -318,7 +306,6 @@
 			event.stopPropagation();
 			cursor = -1;
 			text = stash;
-			requestAnimationFrame(grow);
 			return;
 		}
 		if ((event.key === 'ArrowUp' || event.key === 'ArrowDown') && area) {
@@ -355,10 +342,7 @@
 		text = p.text;
 		cursor = -1;
 		historyOpen = false;
-		requestAnimationFrame(() => {
-			grow();
-			area?.focus();
-		});
+		requestAnimationFrame(() => area?.focus());
 	}
 </script>
 
@@ -379,13 +363,13 @@
 		onsubmit();
 	}}
 >
+	<!-- NOTE: grows by CSS: collapsing it to measure made Firefox clamp the chat's scroll -->
 	<textarea
 		bind:this={area}
 		bind:value={text}
 		oninput={() => {
 			cursor = -1;
 			dismissed = false;
-			grow();
 		}}
 		{onkeydown}
 		{rows}
@@ -393,7 +377,8 @@
 		{placeholder}
 		aria-label={label}
 		{disabled}
-		class="min-h-9 w-full resize-none rounded-md border bg-background px-3 py-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring/50 {preview
+		style:min-height="calc({rows}lh + 1rem + 2px)"
+		class="field-sizing-content max-h-55 w-full resize-none rounded-md border bg-background px-3 py-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring/50 {preview
 			? 'hidden'
 			: ''}"></textarea>
 	{#if choices.length}

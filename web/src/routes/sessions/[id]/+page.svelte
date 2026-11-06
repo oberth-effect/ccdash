@@ -77,6 +77,17 @@
 		});
 	});
 
+	// The composer growing or the window resizing keeps the end in view too.
+	$effect(() => {
+		const el = scroller;
+		if (!el) return;
+		const observer = new ResizeObserver(() => {
+			if (atEnd && tab !== 'details') scrollToEnd();
+		});
+		observer.observe(el);
+		return () => observer.disconnect();
+	});
+
 	function onscroll() {
 		if (!scroller) return;
 		atEnd = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 80;
