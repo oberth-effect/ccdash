@@ -7,6 +7,7 @@
 	import { Input } from '#lib/components/ui/input/index.js';
 	import { Textarea } from '#lib/components/ui/textarea/index.js';
 	import { editHostFor } from '#lib/drafts.js';
+	import { bridgeWatch } from '#lib/vim.js';
 	import { live } from '#lib/live/store.svelte.js';
 	import { DEFAULT_EDITOR, DEFAULT_QUICK, DEFAULT_VIMRC, prefs } from '#lib/prefs.svelte.js';
 
@@ -18,6 +19,9 @@
 	const editors = $derived(live.hosts.filter((h) => h.edit));
 	/** Where Ctrl G would open the editor from this device right now. */
 	const opensOn = $derived(editHostFor(null));
+	const firefox = /firefox/i.test(navigator.userAgent);
+	let helper = $state(false);
+	$effect(() => bridgeWatch((present) => (helper = present)));
 
 	const selectClass =
 		'h-8 rounded-lg border border-input bg-transparent px-2 text-sm dark:bg-input/30';
@@ -121,13 +125,21 @@
 				if (v === 'clipboard' || v === 'register') prefs.setEditor({ paste: v });
 			}}
 		>
-			<option value="clipboard">the system clipboard (Firefox asks with its Paste button)</option>
+			<option value="clipboard">the system clipboard</option>
 			<option value="register">the register: what was yanked or pasted here (no prompt)</option>
 		</select>
 	</label>
 	<p class="pl-6 text-xs text-muted-foreground">
-		Reading the clipboard is a permission: Chromium asks once, Firefox puts a small Paste button
-		under the cursor whenever the text came from another program, and takes a moment to accept it.
+		Reading the clipboard is a permission: Chromium asks once; Firefox puts a small Paste button
+		under the cursor whenever the text came from another program, unless the
+		<span class="font-medium text-foreground">ccdash clipboard</span> helper extension is installed,
+		which reads it for the page with no prompt (<code class="font-mono">firefox-ext/</code> in the
+		repository, see the panel docs).
+		{#if helper}
+			<span class="text-your-turn">The helper is on this page.</span>
+		{:else if firefox}
+			<span class="text-warning">The helper is not on this page.</span>
+		{/if}
 		Ctrl Shift V and Shift Insert never ask, in either browser.
 	</p>
 	<label class="flex items-center gap-2 text-sm">

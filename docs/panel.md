@@ -115,8 +115,9 @@ the unnamed register (yanks and deletes go to it; the browser's paste
 keys, `Ctrl Shift V` and `Shift Insert`, paste as `p` does with no
 prompt anywhere, and a bare `p` reads the clipboard, which is a
 permission: Chromium asks once, Firefox puts a small Paste button under
-the cursor whenever the text came from another program; Settings can
-make `p` read the register instead), and **hop**: `,` in normal or
+the cursor whenever the text came from another program, unless the
+helper below is installed; Settings can make `p` read the register
+instead), and **hop**: `,` in normal or
 visual mode, then two characters, labels every match in view with the
 keys you set (`asdfghjkl`, nearest match first, two-character labels
 when one does not suffice) while the rest of the text dims and a line
@@ -142,6 +143,21 @@ terminal does. Its keyboard button lists the shortcuts:
 | `Ctrl E`           | Code fence around the selection               |
 | `Ctrl P`           | Preview                                       |
 | `Esc`, then `i`    | Leave the field (vim: normal mode), come back |
+
+**The Firefox helper.** Firefox lets only extensions read the clipboard
+without its Paste button (the `clipboardRead` permission is checked on
+the extension, never on a site), so `firefox-ext/` holds one of a few
+lines: a content script on the panel's origin that answers the page's
+request for the clipboard. With it, `p` reads the clipboard at once, as
+in Neovim; without it the page falls back to the browser's own read and
+its prompt. Settings › Composer says whether it is on the page. To use
+it: set `matches` in `firefox-ext/manifest.json` to your hub's address,
+sign it (release Firefox installs signed extensions only; `web-ext sign
+--channel unlisted` with an AMO API key, from `nix run nixpkgs#web-ext`,
+gives an `.xpi` in a minute), then install the `.xpi` from the file, or
+through Home Manager with `buildFirefoxXpiAddon` from the NUR. The
+extension asks for nothing but reading the clipboard, and answers only
+the page it runs on.
 
 **Drafts live on the hub.** What you type is kept there after a short
 pause (and on the device meanwhile), so a prompt begun on the phone is on

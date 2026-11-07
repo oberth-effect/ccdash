@@ -1,0 +1,20 @@
+{
+  "manifest_version": 2,
+  "name": "ccdash clipboard",
+  "version": "1.0",
+  "description": "Lets the ccdash panel's vim keys read the system clipboard without Firefox's Paste prompt: p pastes as in Neovim.",
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "clipboard@ccdash",
+      "strict_min_version": "127.0"
+    }
+  },
+  "permissions": ["clipboardRead"],
+  "content_scripts": [
+    {
+      "matches": ["https://ccdash.home.tsandrini.sh/*"],
+      "js": ["bridge.js"],
+      "run_at": "document_start"
+    }
+  ]
+}

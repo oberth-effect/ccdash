@@ -85,6 +85,8 @@ type RegisterController = {
 export function setClipboard(on: boolean, readOnPaste = true) {
 	clipboardOn = on;
 	pasteReads = readOnPaste;
+	// NOTE: the helper's hello goes out now, so it has answered before the first `p`
+	if (on) listenToBridge();
 	if (!on || clipboardArmed) return;
 	clipboardArmed = true;
 	const rc = Vim.getRegisterController() as unknown as RegisterController;
@@ -96,11 +98,93 @@ export function setClipboard(on: boolean, readOnPaste = true) {
 	};
 }
 
+// ---- the Firefox helper: an extension that reads the clipboard for the page
+
+const BRIDGE_HERE = 'ccdash:clipboard-bridge';
+const BRIDGE_HELLO = 'ccdash:clipboard-hello';
+const BRIDGE_ASK = 'ccdash:clipboard-read';
+const BRIDGE_ANSWER = 'ccdash:clipboard-text';
+/** The helper answers within this, or the page reads the clipboard itself. */
+const BRIDGE_WAIT_MS = 1000;
+
+let bridgePresent = false;
+let bridgeListening = false;
+const bridgeWatchers = new Set<(present: boolean) => void>();
+let bridgeNext = 1;
+const bridgeWaiting = new Map<number, (text: string | null) => void>();
+
+/** Whether the Firefox helper extension (`firefox-ext/`) is on this page:
+ * it reads the clipboard with no prompt. */
+export function clipboardBridge(): boolean {
+	listenToBridge();
+	return bridgePresent;
+}
+
+/** Tells `cb` now and whenever the helper announces itself (it answers
+ * the page's hello, so a page loaded after it still learns); the
+ * returned function stops that. Settings shows it. */
+export function bridgeWatch(cb: (present: boolean) => void): () => void {
+	listenToBridge();
+	bridgeWatchers.add(cb);
+	cb(bridgePresent);
+	return () => bridgeWatchers.delete(cb);
+}
+
+function listenToBridge() {
+	if (bridgeListening || typeof window === 'undefined') return;
+	bridgeListening = true;
+	window.addEventListener('message', (event) => {
+		if (event.source !== window || event.origin !== location.origin) return;
+		const msg = event.data as { type?: string; id?: number; text?: string | null } | null;
+		if (!msg) return;
+		if (msg.type === BRIDGE_HERE) {
+			bridgePresent = true;
+			for (const cb of bridgeWatchers) cb(true);
+		} else if (msg.type === BRIDGE_ANSWER && typeof msg.id === 'number') {
+			bridgeWaiting.get(msg.id)?.(typeof msg.text === 'string' ? msg.text : null);
+			bridgeWaiting.delete(msg.id);
+		}
+	});
+	window.postMessage({ type: BRIDGE_HELLO }, location.origin);
+}
+
+/** The clipboard through the helper, or null when it is not there or
+ * does not answer in time. */
+function readThroughBridge(): Promise<string | null> {
+	listenToBridge();
+	if (!bridgePresent) return Promise.resolve(null);
+	return new Promise((resolve) => {
+		const id = bridgeNext++;
+		const timer = setTimeout(() => {
+			bridgeWaiting.delete(id);
+			resolve(null);
+		}, BRIDGE_WAIT_MS);
+		bridgeWaiting.set(id, (text) => {
+			clearTimeout(timer);
+			resolve(text);
+		});
+		window.postMessage({ type: BRIDGE_ASK, id }, location.origin);
+	});
+}
+
+/** The clipboard's text: the helper first (no prompt), else the browser's
+ * own read (Chromium asks once, Firefox shows its Paste button); null
+ * when neither gives it. */
+async function readClipboard(): Promise<string | null> {
+	const viaBridge = await readThroughBridge();
+	if (viaBridge !== null) return viaBridge;
+	if (!navigator.clipboard?.readText) return null;
+	try {
+		return await navigator.clipboard.readText();
+	} catch {
+		return null;
+	}
+}
+
 /** `p` or `P` in normal or visual mode with no register named: the
  * clipboard's text becomes the unnamed register, then the key runs as
  * usual (counts stay pending meanwhile). True when taken. A read the
- * browser refuses (Firefox asks with a small Paste button the first time
- * the text came from elsewhere) falls back to the register as it is. */
+ * browser refuses falls back to the register as it is. */
 export function pasteFromClipboard(view: EditorView, event: KeyboardEvent): boolean {
 	if (!clipboardOn || !pasteReads || event.ctrlKey || event.metaKey || event.altKey) return false;
 	if (event.key !== 'p' && event.key !== 'P') return false;
@@ -110,16 +194,14 @@ export function pasteFromClipboard(view: EditorView, event: KeyboardEvent): bool
 		{ insertMode: boolean; inputState: { registerName?: string; keyBuffer: string[] } } | undefined;
 	if (!cm || !state || state.insertMode) return false;
 	if (state.inputState.registerName || state.inputState.keyBuffer.length) return false;
-	if (!navigator.clipboard?.readText) return false;
+	if (!clipboardBridge() && !navigator.clipboard?.readText) return false;
 	const key = event.key;
 	const rc = Vim.getRegisterController() as unknown as RegisterController;
 	reading = true;
-	navigator.clipboard
-		.readText()
+	readClipboard()
 		.then((text) => {
 			if (text) rc.getRegister('"').setText(text, text.endsWith('\n'));
 		})
-		.catch(() => {})
 		.finally(() => {
 			reading = false;
 			Vim.handleKey(cm, key, 'user');
