@@ -13,6 +13,8 @@ pub mod remotes;
 pub mod snapshot;
 pub mod units;
 mod watch;
+#[cfg(windows)]
+mod watch_windows;
 
 use std::{collections::BTreeMap, path::Path};
 

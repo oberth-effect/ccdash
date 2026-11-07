@@ -6,7 +6,6 @@ use std::{
     fs::OpenOptions,
     io::Write,
     path::{Path, PathBuf},
-    process::Stdio,
     time::{Duration, SystemTime},
 };
 
@@ -123,9 +122,9 @@ impl Interactive {
     fn spawn(program: &str, args: &[String]) -> std::io::Result<Self> {
         Command::new(program)
             .args(args)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
             .process_group(0)
             .spawn()
             .map(Self)
@@ -743,15 +742,10 @@ async fn run_within(
         .get_program()
         .to_string_lossy()
         .into_owned();
-    match tokio::time::timeout(
-        limit,
-        command.stdin(Stdio::null()).kill_on_drop(true).output(),
-    )
-    .await
-    {
-        Ok(Ok(output)) => Ok(output),
-        Ok(Err(e)) => Err(format!("running {program}: {e}")),
-        Err(_) => Err(format!("{program} did not finish in time")),
+    match util::output_within(command, limit).await {
+        Some(Ok(output)) => Ok(output),
+        Some(Err(e)) => Err(format!("running {program}: {e}")),
+        None => Err(format!("{program} did not finish in time")),
     }
 }
 

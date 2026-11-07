@@ -37,6 +37,45 @@ pub fn age(ms: i64) -> String {
     }
 }
 
+/// Runs `command` to the end within `limit`, its output collected, stdin
+/// closed; none when the time ran out. It is ended then, on Windows with
+/// everything it started: in a job, since npm's `claude.cmd` is `cmd.exe`
+/// starting `node.exe`, and ending `cmd.exe` alone leaves `node.exe`.
+pub async fn output_within(
+    command: &mut tokio::process::Command,
+    limit: std::time::Duration,
+) -> Option<std::io::Result<std::process::Output>> {
+    use std::process::Stdio;
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    // NOTE: suspended until it is in its job; any creation flags set before are replaced
+    #[cfg(windows)]
+    command.creation_flags(windows_sys::Win32::System::Threading::CREATE_SUSPENDED);
+    let child = match command.spawn() {
+        Ok(child) => child,
+        Err(e) => return Some(Err(e)),
+    };
+    #[cfg(windows)]
+    let job = child.raw_handle().and_then(|handle| {
+        crate::win::Job::adopt(handle)
+            .inspect_err(|e| tracing::debug!("a command outside a job: {e}"))
+            .ok()
+    });
+    let output = tokio::time::timeout(limit, child.wait_with_output())
+        .await
+        .ok();
+    #[cfg(windows)]
+    if output.is_none()
+        && let Some(job) = job
+    {
+        job.terminate();
+    }
+    output
+}
+
 /// `name` as a `Command` can start it: on Windows the full path when PATH
 /// holds it as `.exe`, `.com`, `.cmd` or `.bat`, since `Command` looks for
 /// `.exe` alone (npm installs `claude.cmd`); `name` itself otherwise.
@@ -218,6 +257,34 @@ pub fn parse_rfc3339(s: &str) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn a_timed_out_batch_file_ends_with_what_it_started() {
+        let dir = std::env::temp_dir().join(format!("ccdash-within-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let shim = dir.join("slow.cmd");
+        // NOTE: cmd.exe runs the shim and waits for ping, as for npm's claude.cmd and node
+        std::fs::write(&shim, "@ping -n 33 127.0.0.3 >NUL\r\n").unwrap();
+        let mut command = tokio::process::Command::new(&shim);
+        let out = output_within(&mut command, std::time::Duration::from_millis(500)).await;
+        assert!(out.is_none(), "timed out");
+        let pinging = || {
+            crate::win::processes().into_iter().any(|p| {
+                crate::win::command_line(p.pid).is_some_and(|line| line.contains("127.0.0.3"))
+            })
+        };
+        let mut gone = false;
+        for _ in 0..50 {
+            if !pinging() {
+                gone = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(40)).await;
+        }
+        assert!(gone, "ping outlived the timeout");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn rfc3339_timestamps() {

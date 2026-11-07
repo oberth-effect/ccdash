@@ -58,6 +58,14 @@ use windows_sys::{
             Diagnostics::ToolHelp::Process32NextW,
             Diagnostics::ToolHelp::TH32CS_SNAPPROCESS,
             IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED},
+            JobObjects::AssignProcessToJobObject,
+            JobObjects::CreateJobObjectW,
+            JobObjects::JOBOBJECT_BASIC_AND_IO_ACCOUNTING_INFORMATION,
+            JobObjects::JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+            JobObjects::JobObjectBasicAndIoAccountingInformation,
+            JobObjects::JobObjectExtendedLimitInformation,
+            JobObjects::QueryInformationJobObject,
+            JobObjects::TerminateJobObject,
             Pipes::WaitNamedPipeW,
             Power::GetSystemPowerStatus,
             Power::SYSTEM_POWER_STATUS,
@@ -81,7 +89,8 @@ use windows_sys::{
             },
             Threading::{
                 CREATE_NEW_CONSOLE, CreateEventW, CreateProcessW, GetCurrentProcess,
-                GetExitCodeProcess, GetProcessTimes, GetSystemTimes, INFINITE, OpenProcess,
+                GetCurrentThread, GetExitCodeProcess, GetProcessIoCounters, GetProcessTimes,
+                GetSystemTimes, GetThreadTimes, INFINITE, IO_COUNTERS, OpenProcess,
                 OpenProcessToken, PROCESS_BASIC_INFORMATION, PROCESS_INFORMATION,
                 PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE,
                 PROCESS_VM_READ, QueryFullProcessImageNameW, STARTUPINFOW, TerminateProcess,
@@ -1073,8 +1082,9 @@ pub struct DirWatch {
 // system writes them only for the outstanding read, which `drop` ends
 unsafe impl Send for DirWatch {}
 
-/// Bytes of change records one read can hold.
-const WATCH_BUFFER: usize = 256 << 10;
+/// Bytes of change records one read can hold: a build in a watched tree
+/// writes thousands of files between two reads.
+const WATCH_BUFFER: usize = 1 << 20;
 
 impl DirWatch {
     pub fn open(root: &std::path::Path) -> io::Result<Self> {
@@ -1229,6 +1239,182 @@ impl Drop for DirWatch {
     }
 }
 
+/// CPU time of the calling thread (kernel + user), in ms.
+pub fn thread_cpu_ms() -> u64 {
+    let zero = FILETIME {
+        dwLowDateTime: 0,
+        dwHighDateTime: 0,
+    };
+    let (mut created, mut exited, mut kernel, mut user) = (zero, zero, zero, zero);
+    // SAFETY: the pseudo handle of this thread; four FILETIMEs to fill
+    let ok = unsafe {
+        GetThreadTimes(
+            GetCurrentThread(),
+            &raw mut created,
+            &raw mut exited,
+            &raw mut kernel,
+            &raw mut user,
+        )
+    };
+    if ok == 0 {
+        return 0;
+    }
+    (filetime(kernel) + filetime(user)) / 10_000
+}
+
+/// A job object: a process and everything it starts, ended and counted
+/// together (`git` is `cmd\git.exe` starting `mingw64\bin\git.exe`, npm's
+/// `claude` is `cmd.exe` starting `node.exe`).
+pub struct Job(OwnedHandle);
+
+impl Job {
+    /// Puts `process` (started with `CREATE_SUSPENDED`) in a new job and
+    /// lets it run, also when that fails: started suspended, it has started
+    /// nothing outside the job.
+    pub fn adopt(process: std::os::windows::io::RawHandle) -> io::Result<Self> {
+        let job = Self::new().and_then(|job| {
+            // SAFETY: two live handles
+            if unsafe { AssignProcessToJobObject(job.0.as_raw_handle(), process) } == 0 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(job)
+        });
+        // SAFETY: a live process handle with PROCESS_SUSPEND_RESUME (its creator's)
+        let status = unsafe { NtResumeProcess(process) };
+        let job = job?;
+        if status < 0 {
+            return Err(io::Error::other(format!("resuming: NTSTATUS {status:#x}")));
+        }
+        Ok(job)
+    }
+
+    fn new() -> io::Result<Self> {
+        // SAFETY: no attributes, no name
+        let handle = unsafe { CreateJobObjectW(ptr::null(), ptr::null()) };
+        if handle.is_null() {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: a fresh handle nothing else owns
+        Ok(Self(unsafe { OwnedHandle::from_raw_handle(handle) }))
+    }
+
+    /// Ends every process in the job at once.
+    pub fn terminate(&self) {
+        // SAFETY: a live job handle
+        unsafe { TerminateJobObject(self.0.as_raw_handle(), 1) };
+    }
+
+    /// What every process that ran in the job used, the ended ones too;
+    /// the peak is the largest commit of any one process.
+    pub fn usage(&self) -> Used {
+        // SAFETY: all-zero is a valid value of both structs
+        let mut accounting: JOBOBJECT_BASIC_AND_IO_ACCOUNTING_INFORMATION =
+            unsafe { std::mem::zeroed() };
+        // SAFETY: as above
+        let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { std::mem::zeroed() };
+        // SAFETY: a live job handle; each struct with its own size
+        let (counted, measured) = unsafe {
+            (
+                QueryInformationJobObject(
+                    self.0.as_raw_handle(),
+                    JobObjectBasicAndIoAccountingInformation,
+                    (&raw mut accounting).cast(),
+                    size_of::<JOBOBJECT_BASIC_AND_IO_ACCOUNTING_INFORMATION>() as u32,
+                    ptr::null_mut(),
+                ) != 0,
+                QueryInformationJobObject(
+                    self.0.as_raw_handle(),
+                    JobObjectExtendedLimitInformation,
+                    (&raw mut limits).cast(),
+                    size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+                    ptr::null_mut(),
+                ) != 0,
+            )
+        };
+        let basic = &accounting.BasicInfo;
+        let cpu_100ns = basic.TotalUserTime.max(0) + basic.TotalKernelTime.max(0);
+        Used {
+            cpu_ms: if counted {
+                cpu_100ns as u64 / 10_000
+            } else {
+                0
+            },
+            read_bytes: if counted {
+                accounting.IoInfo.ReadTransferCount
+            } else {
+                0
+            },
+            write_bytes: if counted {
+                accounting.IoInfo.WriteTransferCount
+            } else {
+                0
+            },
+            peak_kb: if measured {
+                limits.PeakProcessMemoryUsed as u64 / 1024
+            } else {
+                0
+            },
+        }
+    }
+}
+
+#[link(name = "ntdll")]
+unsafe extern "system" {
+    /// Resumes every thread of a process: the one of a process started
+    /// suspended, without looking for it.
+    fn NtResumeProcess(process: HANDLE) -> i32;
+}
+
+/// What a process used, read from its handle; it may have ended.
+pub struct Used {
+    pub cpu_ms: u64,
+    pub read_bytes: u64,
+    pub write_bytes: u64,
+    pub peak_kb: u64,
+}
+
+pub fn usage_of(process: &impl AsRawHandle) -> Used {
+    let handle = process.as_raw_handle();
+    let zero = FILETIME {
+        dwLowDateTime: 0,
+        dwHighDateTime: 0,
+    };
+    let (mut created, mut exited, mut kernel, mut user) = (zero, zero, zero, zero);
+    // SAFETY: a live process handle; four FILETIMEs to fill
+    let timed = unsafe {
+        GetProcessTimes(
+            handle,
+            &raw mut created,
+            &raw mut exited,
+            &raw mut kernel,
+            &raw mut user,
+        )
+    } != 0;
+    // SAFETY: all-zero is a valid IO_COUNTERS
+    let mut io: IO_COUNTERS = unsafe { std::mem::zeroed() };
+    // SAFETY: a live process handle; one struct to fill
+    let counted = unsafe { GetProcessIoCounters(handle, &raw mut io) } != 0;
+    // SAFETY: all-zero is a valid PROCESS_MEMORY_COUNTERS
+    let mut memory: PROCESS_MEMORY_COUNTERS = unsafe { std::mem::zeroed() };
+    let size = size_of::<PROCESS_MEMORY_COUNTERS>() as u32;
+    // SAFETY: `memory` has `size` bytes, a live process handle
+    let measured = unsafe { K32GetProcessMemoryInfo(handle, &raw mut memory, size) } != 0;
+    Used {
+        cpu_ms: if timed {
+            (filetime(kernel) + filetime(user)) / 10_000
+        } else {
+            0
+        },
+        read_bytes: if counted { io.ReadTransferCount } else { 0 },
+        write_bytes: if counted { io.WriteTransferCount } else { 0 },
+        peak_kb: if measured {
+            memory.PeakWorkingSetSize as u64 / 1024
+        } else {
+            0
+        },
+    }
+}
+
 /// The current process's `TOKEN_USER`, at the start of the buffer.
 fn token_user() -> io::Result<Vec<u64>> {
     let mut token: HANDLE = ptr::null_mut();
@@ -1365,6 +1551,36 @@ mod tests {
         // NOTE: a failed first read once left drop waiting for it forever
         let e = DirWatch::open(&unc).err().unwrap();
         assert_eq!(e.kind(), io::ErrorKind::Unsupported, "{e}");
+    }
+
+    #[test]
+    fn a_job_ends_and_counts_what_its_process_started() {
+        use std::os::windows::process::CommandExt;
+        use windows_sys::Win32::System::Threading::{CREATE_NO_WINDOW, CREATE_SUSPENDED};
+        // NOTE: cmd starts ping and waits: a wrapper with a child, as git's is
+        let mut child = std::process::Command::new("cmd")
+            .args(["/c", "ping -n 30 127.0.0.1 >NUL"])
+            .creation_flags(CREATE_NO_WINDOW | CREATE_SUSPENDED)
+            .spawn()
+            .unwrap();
+        let job = Job::adopt(child.as_raw_handle()).unwrap();
+        let ping = (0..100)
+            .find_map(|_| {
+                std::thread::sleep(Duration::from_millis(20));
+                processes()
+                    .into_iter()
+                    .find(|p| p.ppid == child.id() && p.exe.eq_ignore_ascii_case("ping.exe"))
+            })
+            .expect("ping under cmd");
+        job.terminate();
+        assert!(!child.wait().unwrap().success());
+        let gone = (0..100).any(|_| {
+            std::thread::sleep(Duration::from_millis(20));
+            !pid_alive(ping.pid)
+        });
+        assert!(gone, "ping outlived the job");
+        let used = job.usage();
+        assert!(used.peak_kb > 0, "counted the processes of the job");
     }
 
     #[test]

@@ -1792,6 +1792,13 @@ fn worker(shared: &Shared, rx: &Arc<Mutex<Receiver<Job>>>, tx: &Sender<Msg>) {
 }
 
 /// CPU time of the calling thread (user + system), in ms.
+#[cfg(windows)]
+fn thread_cpu_ms() -> u64 {
+    crate::win::thread_cpu_ms()
+}
+
+/// CPU time of the calling thread (user + system), in ms.
+#[cfg(unix)]
 fn thread_cpu_ms() -> u64 {
     // SAFETY: a zeroed rusage is a valid value; getrusage fills it in.
     let mut usage: libc::rusage = unsafe { std::mem::zeroed() };
@@ -1803,7 +1810,14 @@ fn thread_cpu_ms() -> u64 {
     tv(usage.ru_utime) + tv(usage.ru_stime)
 }
 
+/// The process's working set, in kB.
+#[cfg(windows)]
+fn rss_kb() -> u64 {
+    crate::win::process_memory(std::process::id()).map_or(0, |bytes| bytes / 1024)
+}
+
 /// The process's resident set, in kB (`/proc/self/statm`).
+#[cfg(unix)]
 fn rss_kb() -> u64 {
     fs::read_to_string("/proc/self/statm")
         .ok()
@@ -1858,7 +1872,7 @@ fn no_repo(e: &anyhow::Error) -> bool {
 }
 
 /// Processes holding files open, for the quiescent rule; read once per
-/// pass when needed.
+/// pass when needed. None on Windows (no `/proc`).
 struct OpenFiles(Vec<(PathBuf, String)>);
 
 impl OpenFiles {
