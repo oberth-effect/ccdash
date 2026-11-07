@@ -19,6 +19,7 @@ mod fsx;
 mod git;
 mod history;
 mod hub;
+mod ipc;
 mod knowledge;
 mod machine;
 mod markdown;

@@ -13,7 +13,6 @@ mod skills;
 
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
-    os::unix::net::UnixStream as StdUnixStream,
     path::{Path, PathBuf},
     sync::Arc,
     time::Duration,
@@ -22,7 +21,7 @@ use std::{
 use anyhow::{Context, Result, bail};
 use serde_json::Value;
 use tokio::{
-    net::{TcpListener, UnixDatagram, UnixListener},
+    net::TcpListener,
     signal::unix::{SignalKind, signal},
     sync::{Notify, broadcast, mpsc, oneshot},
 };
@@ -33,7 +32,7 @@ use crate::{
     agents,
     channel::ToChannel,
     config::{CollectorConfig, Launch, Power},
-    fsx, git,
+    fsx, git, ipc,
     knowledge::{self, Note, Query},
     machine::{MachineReport, PowerAction, Sampler, display_session},
     model::{
@@ -257,7 +256,7 @@ async fn serve(cfg: Arc<CollectorConfig>) -> Result<()> {
     std::fs::create_dir_all(&state_dir)?;
     fsx::set_mode(&state_dir, 0o700)?;
     let (ingest_path, api_path) = (paths::ingest_socket(), paths::api_socket());
-    if StdUnixStream::connect(&api_path).is_ok() {
+    if ipc::Stream::connect(&api_path).is_ok() {
         bail!(
             "another ccdash collector is listening on {}",
             api_path.display()
@@ -310,9 +309,9 @@ async fn serve(cfg: Arc<CollectorConfig>) -> Result<()> {
         report_now,
     ));
 
-    let ingest = UnixDatagram::bind(replace(&ingest_path)?)
+    let ingest = ipc::Ingest::bind(replace(&ingest_path)?)
         .with_context(|| format!("binding {}", ingest_path.display()))?;
-    let api = UnixListener::bind(replace(&api_path)?)
+    let api = ipc::Listener::bind(replace(&api_path)?)
         .with_context(|| format!("binding {}", api_path.display()))?;
     for addr in &cfg.telemetry.listen {
         if !addr.ip().is_loopback() {
@@ -365,8 +364,9 @@ async fn serve(cfg: Arc<CollectorConfig>) -> Result<()> {
         ));
     }
     info!(
-        "ccdash collector up on {host}, sockets in {}, hub {}",
-        dir.display(),
+        "ccdash collector up on {host}, sockets {} and {}, hub {}",
+        ipc::address(&api_path),
+        ipc::address(&ingest_path),
         cfg.hub.url
     );
 
@@ -536,7 +536,7 @@ fn replace(path: &Path) -> Result<&Path> {
     }
 }
 
-async fn ingest_loop(socket: UnixDatagram, tx: mpsc::Sender<LocalCmd>) {
+async fn ingest_loop(mut socket: ipc::Ingest, tx: mpsc::Sender<LocalCmd>) {
     let mut buf = vec![0u8; wire::MAX_DATAGRAM + 1024];
     loop {
         let len = match socket.recv(&mut buf).await {
