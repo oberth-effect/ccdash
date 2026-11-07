@@ -37,7 +37,21 @@ pub fn age(ms: i64) -> String {
     }
 }
 
+/// `name` as a `Command` can start it: on Windows the full path when PATH
+/// holds it as `.exe`, `.com`, `.cmd` or `.bat`, since `Command` looks for
+/// `.exe` alone (npm installs `claude.cmd`); `name` itself otherwise.
+pub fn program(name: &str) -> std::ffi::OsString {
+    #[cfg(windows)]
+    if let Some(path) = crate::win::find_program(name) {
+        return path.into();
+    }
+    name.into()
+}
+
 pub fn pid_alive(pid: Option<u32>) -> bool {
+    #[cfg(windows)]
+    return pid.is_some_and(crate::win::pid_alive);
+    #[cfg(not(windows))]
     pid.is_some_and(|pid| std::path::Path::new(&format!("/proc/{pid}")).exists())
 }
 

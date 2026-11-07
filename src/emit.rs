@@ -46,7 +46,7 @@ pub fn run(source: Source, command: &[String]) -> i32 {
     let Some((program, args)) = command.split_first() else {
         return 0;
     };
-    let Ok(mut child) = Command::new(program)
+    let Ok(mut child) = Command::new(crate::util::program(program))
         .args(args)
         .stdin(Stdio::piped())
         .spawn()
@@ -196,7 +196,7 @@ pub fn envelope(source: Source, payload: Value, applied_title: Option<String>) -
         pid: std::env::var("CLAUDE_PID")
             .ok()
             .and_then(|p| p.parse().ok())
-            .or_else(|| Some(std::os::unix::process::parent_id())),
+            .or_else(crate::procs::parent_id),
         remote_id: std::env::var("CLAUDE_CODE_BRIDGE_SESSION_ID")
             .ok()
             .filter(|id| !id.is_empty()),

@@ -44,7 +44,8 @@ pub fn run() -> Result<()> {
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?
-        .block_on(serve(std::os::unix::process::parent_id()))
+        // NOTE: 0 matches no session: the tools answer, unattributed
+        .block_on(serve(crate::procs::parent_id().unwrap_or(0)))
 }
 
 /// Answers Claude Code on stdio until it closes stdin; the daemon link runs

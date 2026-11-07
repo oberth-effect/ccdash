@@ -54,7 +54,7 @@ async fn poll(command: &[String]) -> Result<Vec<ScopedLimit>> {
     let (program, args) = command.split_first().context("empty usage command")?;
     let output = tokio::time::timeout(
         Duration::from_secs(60),
-        Command::new(program)
+        Command::new(crate::util::program(program))
             .args(args)
             .args(ARGS)
             .current_dir(std::env::temp_dir())

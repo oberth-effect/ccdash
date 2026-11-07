@@ -36,7 +36,10 @@ async fn poll(command: &[String]) -> Result<Vec<AgentEntry>> {
     let (program, args) = command.split_first().context("empty agents command")?;
     let output = tokio::time::timeout(
         Duration::from_secs(15),
-        Command::new(program).args(args).kill_on_drop(true).output(),
+        Command::new(crate::util::program(program))
+            .args(args)
+            .kill_on_drop(true)
+            .output(),
     )
     .await
     .context("timed out")??;
