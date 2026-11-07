@@ -24,7 +24,14 @@
 	import { tags } from '@lezer/highlight';
 	import { getCM } from '@replit/codemirror-vim';
 	import { onMount } from 'svelte';
-	import { applyVimrc, setVimHooks, vimExtension } from '#lib/vim.js';
+	import { cancelHop, hopActive, hopExtension, hopKey, startHop } from '#lib/hop.js';
+	import {
+		applyVimrc,
+		pasteFromClipboard,
+		setClipboard,
+		setVimHooks,
+		vimExtension
+	} from '#lib/vim.js';
 
 	let {
 		value = $bindable(''),
@@ -36,6 +43,9 @@
 		numbers = 'off',
 		highlight = true,
 		wrap = true,
+		hop = true,
+		hopKeys = 'asdfghjkl',
+		clipboard = true,
 		fill = false,
 		rows = 1,
 		maxHeight = 220,
@@ -59,6 +69,11 @@
 		highlight?: boolean;
 		/** Long lines wrap; off, they scroll sideways. */
 		wrap?: boolean;
+		/** With vim: `,` then two characters jumps to a match in view. */
+		hop?: boolean;
+		hopKeys?: string;
+		/** With vim: yanks go to the system clipboard, `p` reads it. */
+		clipboard?: boolean;
 		/** Fill the parent's height instead of growing to `maxHeight`. */
 		fill?: boolean;
 		/** Lines the empty editor shows. */
@@ -196,12 +211,13 @@
 				vimComp.of(vim ? vimExtension() : []),
 				Prec.highest(
 					EditorView.domEventHandlers({
-						keydown: (event) => (onkey ? onkey(event) : false)
+						keydown: (event, v) => keydown(event, v)
 					})
 				),
 				editable.of([EditorView.editable.of(!disabled), EditorState.readOnly.of(disabled)]),
 				hint.of(placeholderExt(placeholder)),
 				numbersComp.of(numbersExt(numbers)),
+				hopExtension(),
 				history(),
 				drawSelection(),
 				wrapComp.of(wrapExt(wrap)),
@@ -216,12 +232,64 @@
 						const text = u.state.doc.toString();
 						if (text !== value) value = text;
 					}
-					if (u.focusChanged) onfocus?.(u.view.hasFocus);
+					if (u.focusChanged) {
+						if (!u.view.hasFocus) cancelHop(u.view);
+						onfocus?.(u.view.hasFocus);
+					}
 				})
 			]
 		});
 		view = new EditorView({ state, parent });
 		if (vim) armVim();
+	}
+
+	/** What the vim engine keeps per editor, as far as the keys here need. */
+	type VimState = {
+		insertMode: boolean;
+		visualMode: boolean;
+		inputState: {
+			keyBuffer: string[];
+			registerName?: string;
+			operator: string | null;
+			prefixRepeat: string[];
+		};
+	};
+
+	/** The vim engine's state of this editor, when vim is on. */
+	function vimState(v: EditorView): VimState | undefined {
+		return getCM(v)?.state.vim as VimState | undefined;
+	}
+
+	/** The parent's shortcuts first, then a hop in progress, then `,`
+	 * starting one, then a `p` reading the clipboard; the rest is vim's
+	 * and the bindings'. */
+	function keydown(event: KeyboardEvent, v: EditorView): boolean {
+		if (onkey?.(event)) return true;
+		if (!vim) return false;
+		if (hopActive(v)) {
+			if (hopKey(v, event, hopKeys)) {
+				event.preventDefault();
+				return true;
+			}
+			return false;
+		}
+		const state = vimState(v);
+		if (!state || state.insertMode) return false;
+		const idle =
+			!state.inputState.keyBuffer.length &&
+			!state.inputState.operator &&
+			!state.inputState.registerName &&
+			!state.inputState.prefixRepeat.length;
+		if (hop && idle && event.key === ',' && !event.ctrlKey && !event.metaKey && !event.altKey) {
+			startHop(v, state.visualMode);
+			event.preventDefault();
+			return true;
+		}
+		if (clipboard && pasteFromClipboard(v, event)) {
+			event.preventDefault();
+			return true;
+		}
+		return false;
 	}
 
 	/** After vim turned on: the mode events and the vimrc. */
@@ -297,6 +365,14 @@
 		const on = wrap;
 		if (!view) return;
 		view.dispatch({ effects: wrapComp.reconfigure(wrapExt(on)) });
+	});
+
+	$effect(() => {
+		setClipboard(vim && clipboard);
+	});
+
+	$effect(() => {
+		if (!hop && view) cancelHop(view);
 	});
 
 	$effect(() => {

@@ -57,6 +57,67 @@ export function vimExtension() {
 	return vim();
 }
 
+// ---- the system clipboard as the unnamed register (`clipboard=unnamedplus`)
+
+let clipboardOn = false;
+let clipboardArmed = false;
+
+type RegisterController = {
+	pushText: (
+		name: string | null | undefined,
+		operator: string,
+		text: string,
+		linewise?: boolean,
+		blockwise?: boolean
+	) => void;
+	getRegister: (name?: string) => { setText: (text: string, linewise?: boolean) => void };
+};
+
+/** Whether yanks and deletes go to the system clipboard and `p` reads it.
+ * The engine's own `+` register already does both; this routes the
+ * unnamed register there: every push to it is written out, and a `p`
+ * without a register reads the clipboard first (`pasteFromClipboard`). */
+export function setClipboard(on: boolean) {
+	clipboardOn = on;
+	if (!on || clipboardArmed) return;
+	clipboardArmed = true;
+	const rc = Vim.getRegisterController() as unknown as RegisterController;
+	const push = rc.pushText;
+	rc.pushText = function (name, operator, text, linewise, blockwise) {
+		push.call(this, name, operator, text, linewise, blockwise);
+		if (clipboardOn && (!name || name === '"') && text)
+			navigator.clipboard?.writeText(text).catch(() => {});
+	};
+}
+
+/** `p` or `P` in normal or visual mode with no register named: the
+ * clipboard's text becomes the unnamed register, then the key runs as
+ * usual (counts stay pending meanwhile). True when taken. A read the
+ * browser refuses (Firefox asks with a small Paste button the first time
+ * the text came from elsewhere) falls back to the register as it is. */
+export function pasteFromClipboard(view: EditorView, event: KeyboardEvent): boolean {
+	if (!clipboardOn || event.ctrlKey || event.metaKey || event.altKey) return false;
+	if (event.key !== 'p' && event.key !== 'P') return false;
+	const cm = getCM(view) as Parameters<typeof Vim.handleEx>[0] | null;
+	const state = cm?.state.vim as
+		{ insertMode: boolean; inputState: { registerName?: string; keyBuffer: string[] } } | undefined;
+	if (!cm || !state || state.insertMode) return false;
+	if (state.inputState.registerName || state.inputState.keyBuffer.length) return false;
+	if (!navigator.clipboard?.readText) return false;
+	const key = event.key;
+	const rc = Vim.getRegisterController() as unknown as RegisterController;
+	navigator.clipboard
+		.readText()
+		.then((text) => {
+			if (text) rc.getRegister('"').setText(text, text.endsWith('\n'));
+		})
+		.catch(() => {})
+		.finally(() => {
+			Vim.handleKey(cm, key, 'user');
+		});
+	return true;
+}
+
 /** Runs the vimrc's lines on `view`'s vim; the lines it did not take, with
  * why. Comments (`"`) and blank lines are skipped. */
 export function applyVimrc(view: EditorView, text: string): string[] {

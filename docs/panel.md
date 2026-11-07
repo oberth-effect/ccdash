@@ -110,6 +110,15 @@ Composer turns them on or off, and holds a vimrc of maps it starts with:
 cursor's line with the current one absolute, as Neovim's `number` +
 `relativenumber`; Auto is relative with vim keys), the markdown
 highlighting and the wrapping are switches there too, kept per device.
+Two more go with vim keys, each a switch: the **system clipboard** is
+the unnamed register (yanks and deletes go to it, `p` reads it; Firefox
+asks with a small Paste button the first time the text came from another
+program, Chromium asks once for the permission), and **hop**: `,` in
+normal or visual mode, then two characters, labels every match in view
+with the keys you set (`asdfghjkl`, nearest match first, two-character
+labels when one does not suffice); the label puts the cursor there, or
+in visual mode extends the selection to it; Escape or any other key
+cancels.
 The composer walks the prompt history, inserts `[[note]]` links,
 and when a message starts with `/` offers the skills Claude Code loads for
 that session (the machine's, the plugins', the workspace's), as the

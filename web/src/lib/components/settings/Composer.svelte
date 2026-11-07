@@ -8,7 +8,7 @@
 	import { Textarea } from '#lib/components/ui/textarea/index.js';
 	import { editHostFor } from '#lib/drafts.js';
 	import { live } from '#lib/live/store.svelte.js';
-	import { DEFAULT_QUICK, DEFAULT_VIMRC, prefs } from '#lib/prefs.svelte.js';
+	import { DEFAULT_EDITOR, DEFAULT_QUICK, DEFAULT_VIMRC, prefs } from '#lib/prefs.svelte.js';
 
 	let quickText = $state(prefs.quick.join('\n'));
 	let templates = $state(prefs.templates.map((t) => ({ ...t })));
@@ -97,6 +97,47 @@
 			Wrap long lines (off, they scroll sideways)
 		</label>
 	</div>
+</section>
+
+<section class="flex flex-col gap-2">
+	<h2 class="text-base font-semibold">With vim keys</h2>
+	<label class="flex items-center gap-2 text-sm">
+		<input
+			type="checkbox"
+			class="size-4 accent-primary"
+			checked={prefs.editor.clipboard}
+			onchange={(e) => prefs.setEditor({ clipboard: e.currentTarget.checked })}
+		/>
+		The system clipboard is the unnamed register: yanks and deletes go to it,
+		<code class="font-mono">p</code> pastes from it
+	</label>
+	<p class="pl-6 text-xs text-muted-foreground">
+		Firefox asks with a small Paste button the first time the text came from another program;
+		Chromium asks once for the permission.
+	</p>
+	<label class="flex items-center gap-2 text-sm">
+		<input
+			type="checkbox"
+			class="size-4 accent-primary"
+			checked={prefs.editor.hop}
+			onchange={(e) => prefs.setEditor({ hop: e.currentTarget.checked })}
+		/>
+		Hop: <code class="font-mono">,</code> then two characters labels every match in view, a label jumps
+		there (in visual mode, extends to it)
+	</label>
+	<label class="flex items-center gap-2 pl-6 text-sm">
+		<span class="text-muted-foreground">Label keys</span>
+		<Input
+			value={prefs.editor.hopKeys}
+			class="h-7 max-w-48 font-mono"
+			spellcheck={false}
+			aria-label="Hop label keys"
+			onchange={(e) => {
+				const keys = [...new Set(e.currentTarget.value.replace(/\s/g, ''))].join('');
+				prefs.setEditor({ hopKeys: keys.length >= 2 ? keys : DEFAULT_EDITOR.hopKeys });
+			}}
+		/>
+	</label>
 </section>
 
 <section class="flex flex-col gap-2">

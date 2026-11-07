@@ -594,6 +594,9 @@
 			vim={vimOn}
 			vimrc={prefs.vimrc}
 			numbers={prefs.numbers}
+			hop={prefs.editor.hop}
+			hopKeys={prefs.editor.hopKeys}
+			clipboard={prefs.editor.clipboard}
 			highlight={prefs.editor.markdown}
 			wrap={prefs.editor.wrap}
 			fill={fill || expanded}

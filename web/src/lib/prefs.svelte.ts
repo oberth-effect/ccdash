@@ -49,8 +49,21 @@ export type EditorLook = {
 	markdown: boolean;
 	/** Long lines wrap (off: they scroll sideways, as `nowrap`). */
 	wrap: boolean;
+	/** With vim keys: `,` then two characters jumps to a match (hop.nvim). */
+	hop: boolean;
+	/** The label keys of the jump, nearest match first. */
+	hopKeys: string;
+	/** Yanks and deletes go to the system clipboard, `p` reads it. */
+	clipboard: boolean;
 };
-export const DEFAULT_EDITOR: EditorLook = { numbers: 'auto', markdown: true, wrap: true };
+export const DEFAULT_EDITOR: EditorLook = {
+	numbers: 'auto',
+	markdown: true,
+	wrap: true,
+	hop: true,
+	hopKeys: 'asdfghjkl',
+	clipboard: true
+};
 export const isVimMode = (x: unknown): x is VimMode => x === 'auto' || x === 'on' || x === 'off';
 
 /** What the composer's vim starts with: the owner's Neovim habits, as far
