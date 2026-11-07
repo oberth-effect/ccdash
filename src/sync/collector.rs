@@ -40,6 +40,7 @@ use super::{
     line_digest, session_of, valid_path, watch,
 };
 use crate::{
+    paths,
     protocol::ToHub,
     util::{now_ms, pid_alive},
 };
@@ -1955,9 +1956,7 @@ pub fn base_url(collect_url: &str) -> String {
 pub fn default_root() -> PathBuf {
     std::env::var_os("CLAUDE_CONFIG_DIR")
         .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".claude")
-        })
+        .unwrap_or_else(|| paths::home().unwrap_or_default().join(".claude"))
 }
 
 #[cfg(test)]

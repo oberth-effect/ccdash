@@ -302,7 +302,7 @@ async fn serve(cfg: Arc<CollectorConfig>) -> Result<()> {
         local.sender(),
     ));
     let mut disks = vec![PathBuf::from("/")];
-    disks.extend(std::env::var_os("HOME").map(PathBuf::from));
+    disks.extend(paths::home());
     tokio::spawn(machine_loop(
         Sampler::new(disks).collector(cfg.power.suspend, cfg.power.lock),
         local.sender(),

@@ -16,10 +16,13 @@ pub fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
+/// The kernel's host name; on Windows the DNS host name, lowercased.
 pub fn hostname() -> String {
-    std::fs::read_to_string("/proc/sys/kernel/hostname")
-        .map(|h| h.trim().to_owned())
-        .ok()
+    #[cfg(windows)]
+    let name = crate::win::hostname().map(|h| h.to_ascii_lowercase());
+    #[cfg(not(windows))]
+    let name = std::fs::read_to_string("/proc/sys/kernel/hostname").ok();
+    name.map(|h| h.trim().to_owned())
         .filter(|h| !h.is_empty())
         .unwrap_or_else(|| "localhost".to_owned())
 }

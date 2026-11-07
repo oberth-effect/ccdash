@@ -698,7 +698,9 @@ impl CollectorConfig {
     pub fn workspace_root(&self) -> Option<PathBuf> {
         let raw = self.workspace.root.as_ref()?.to_string_lossy().into_owned();
         let expanded = crate::util::expand_env(&raw);
-        let home = std::env::var("HOME").unwrap_or_default();
+        let home = paths::home()
+            .map(|h| h.to_string_lossy().into_owned())
+            .unwrap_or_default();
         Some(PathBuf::from(match expanded.strip_prefix("~/") {
             Some(rest) => format!("{}/{rest}", home.trim_end_matches('/')),
             None if expanded == "~" => home,
