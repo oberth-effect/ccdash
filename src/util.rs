@@ -158,11 +158,14 @@ fn expand_with(s: &str, lookup: impl Fn(&str) -> Option<String>) -> String {
     out
 }
 
-/// `bytes` random bytes from the kernel, hex-encoded.
+/// `bytes` random bytes from the OS (`getrandom`; `BCryptGenRandom` on
+/// Windows), hex-encoded.
 pub fn random_hex(bytes: usize) -> std::io::Result<String> {
-    use std::io::Read;
+    use ring::rand::{SecureRandom, SystemRandom};
     let mut buf = vec![0u8; bytes];
-    std::fs::File::open("/dev/urandom")?.read_exact(&mut buf)?;
+    SystemRandom::new()
+        .fill(&mut buf)
+        .map_err(|_| std::io::Error::other("the system's random source failed"))?;
     Ok(buf.iter().map(|b| format!("{b:02x}")).collect())
 }
 

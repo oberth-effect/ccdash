@@ -11,12 +11,7 @@
 //! `crate::sync::hub`).
 
 use std::{
-    convert::Infallible,
-    fs::OpenOptions,
-    io::{Read, Write},
-    path::PathBuf,
-    sync::Arc,
-    time::Duration,
+    convert::Infallible, fs::OpenOptions, io::Write, path::PathBuf, sync::Arc, time::Duration,
 };
 
 use anyhow::{Context, Result, bail};
@@ -313,9 +308,7 @@ pub fn load_token(cfg: &HubConfig) -> Result<String> {
     {
         return Ok(token.trim().to_owned());
     }
-    let mut bytes = [0u8; 24];
-    std::fs::File::open("/dev/urandom")?.read_exact(&mut bytes)?;
-    let token: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+    let token = util::random_hex(24)?;
     std::fs::create_dir_all(paths::state_dir())?;
     OpenOptions::new()
         .write(true)
