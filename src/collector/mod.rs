@@ -34,7 +34,7 @@ use crate::{
     config::{CollectorConfig, Launch, Power},
     fsx, git, ipc,
     knowledge::{self, Note, Query},
-    machine::{MachineReport, PowerAction, Sampler, display_session},
+    machine::{self, MachineReport, PowerAction, Sampler, display_session},
     model::{
         HostFeatures, HostStatus, Palette, RateLimits, ScopedLimit, Session, Skill, Snapshot,
         Update,
@@ -300,7 +300,7 @@ async fn serve(cfg: Arc<CollectorConfig>) -> Result<()> {
         hub_rx,
         local.sender(),
     ));
-    let mut disks = vec![PathBuf::from("/")];
+    let mut disks = vec![machine::root_disk()];
     disks.extend(paths::home());
     tokio::spawn(machine_loop(
         Sampler::new(disks).collector(cfg.power.suspend, cfg.power.lock),

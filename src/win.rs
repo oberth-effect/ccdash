@@ -17,10 +17,21 @@ use windows_sys::{
     Wdk::System::Threading::ProcessBasicInformation,
     Win32::{
         Foundation::{
-            ERROR_ACCESS_DENIED, ERROR_IO_PENDING, ERROR_OPERATION_ABORTED, ERROR_SUCCESS,
-            FILETIME, HANDLE, INVALID_HANDLE_VALUE, LocalFree, UNICODE_STRING, WAIT_FAILED,
-            WAIT_OBJECT_0, WAIT_TIMEOUT,
+            ERROR_ACCESS_DENIED, ERROR_BUFFER_OVERFLOW, ERROR_IO_PENDING, ERROR_OPERATION_ABORTED,
+            ERROR_SUCCESS, FILETIME, HANDLE, INVALID_HANDLE_VALUE, LocalFree, UNICODE_STRING,
+            WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT,
         },
+        NetworkManagement::IpHelper::GAA_FLAG_SKIP_ANYCAST,
+        NetworkManagement::IpHelper::GAA_FLAG_SKIP_DNS_SERVER,
+        NetworkManagement::IpHelper::GAA_FLAG_SKIP_MULTICAST,
+        NetworkManagement::IpHelper::GetAdaptersAddresses,
+        NetworkManagement::IpHelper::GetIfEntry2,
+        NetworkManagement::IpHelper::IF_TYPE_ETHERNET_CSMACD,
+        NetworkManagement::IpHelper::IP_ADAPTER_ADDRESSES_LH,
+        NetworkManagement::IpHelper::MIB_IF_ROW2,
+        NetworkManagement::Ndis::NET_LUID_LH,
+        Networking::WinSock::AF_INET,
+        Networking::WinSock::SOCKADDR_IN,
         Security::{
             Authorization::{
                 ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW,
@@ -29,7 +40,7 @@ use windows_sys::{
             EqualSid, GetTokenInformation, OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID,
             SECURITY_ATTRIBUTES, TOKEN_QUERY, TOKEN_USER, TokenUser,
         },
-        Storage::FileSystem::{ReadFile, WriteFile},
+        Storage::FileSystem::{GetDiskFreeSpaceExW, GetVolumePathNameW, ReadFile, WriteFile},
         System::{
             Diagnostics::ToolHelp::CreateToolhelp32Snapshot,
             Diagnostics::ToolHelp::PROCESSENTRY32W,
@@ -38,16 +49,35 @@ use windows_sys::{
             Diagnostics::ToolHelp::TH32CS_SNAPPROCESS,
             IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED},
             Pipes::WaitNamedPipeW,
+            Power::GetSystemPowerStatus,
+            Power::SYSTEM_POWER_STATUS,
             ProcessStatus::K32GetProcessMemoryInfo,
             ProcessStatus::PROCESS_MEMORY_COUNTERS,
-            SystemInformation::{ComputerNameDnsHostname, GetComputerNameExW},
+            Registry::HKEY_LOCAL_MACHINE,
+            Registry::RRF_RT_REG_DWORD,
+            Registry::RRF_RT_REG_SZ,
+            Registry::RegGetValueW,
+            RemoteDesktop::WTS_CURRENT_SERVER_HANDLE,
+            RemoteDesktop::WTS_CURRENT_SESSION,
+            RemoteDesktop::WTS_SESSIONSTATE_LOCK,
+            RemoteDesktop::WTS_SESSIONSTATE_UNLOCK,
+            RemoteDesktop::WTSFreeMemory,
+            RemoteDesktop::WTSINFOEXW,
+            RemoteDesktop::WTSQuerySessionInformationW,
+            RemoteDesktop::WTSSessionInfoEx,
+            SystemInformation::{
+                ComputerNameDnsHostname, GetComputerNameExW, GetTickCount64, GlobalMemoryStatusEx,
+                MEMORYSTATUSEX,
+            },
             Threading::{
                 CREATE_NEW_CONSOLE, CreateEventW, CreateProcessW, GetCurrentProcess,
-                GetExitCodeProcess, GetProcessTimes, INFINITE, OpenProcess, OpenProcessToken,
-                PROCESS_BASIC_INFORMATION, PROCESS_INFORMATION, PROCESS_QUERY_LIMITED_INFORMATION,
-                PROCESS_SYNCHRONIZE, PROCESS_TERMINATE, PROCESS_VM_READ,
-                QueryFullProcessImageNameW, STARTUPINFOW, TerminateProcess, WaitForSingleObject,
+                GetExitCodeProcess, GetProcessTimes, GetSystemTimes, INFINITE, OpenProcess,
+                OpenProcessToken, PROCESS_BASIC_INFORMATION, PROCESS_INFORMATION,
+                PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE,
+                PROCESS_VM_READ, QueryFullProcessImageNameW, STARTUPINFOW, TerminateProcess,
+                WaitForSingleObject,
             },
+            WindowsProgramming::QueryUnbiasedInterruptTime,
         },
         UI::Shell::CommandLineToArgvW,
     },
@@ -692,6 +722,308 @@ pub fn terminate(pid: u32) -> io::Result<()> {
     Ok(())
 }
 
+/// Milliseconds since boot, sleep included.
+pub fn uptime_ms() -> i64 {
+    // SAFETY: plain call
+    i64::try_from(unsafe { GetTickCount64() }).unwrap_or(i64::MAX)
+}
+
+/// Milliseconds asleep since boot: the tick count goes on in sleep, the
+/// unbiased interrupt time stops.
+pub fn slept_ms() -> i64 {
+    let mut unbiased = 0u64;
+    // SAFETY: writes one u64
+    unsafe { QueryUnbiasedInterruptTime(&raw mut unbiased) };
+    (uptime_ms() - i64::try_from(unbiased / 10_000).unwrap_or(0)).max(0)
+}
+
+/// Busy and total CPU time of all cores, in 100 ns units.
+pub fn cpu_times() -> Option<(u64, u64)> {
+    let zero = FILETIME {
+        dwLowDateTime: 0,
+        dwHighDateTime: 0,
+    };
+    let (mut idle, mut kernel, mut user) = (zero, zero, zero);
+    // SAFETY: three FILETIMEs to fill
+    if unsafe { GetSystemTimes(&raw mut idle, &raw mut kernel, &raw mut user) } == 0 {
+        return None;
+    }
+    // NOTE: kernel time includes idle time
+    let total = filetime(kernel) + filetime(user);
+    Some((total.saturating_sub(filetime(idle)), total))
+}
+
+/// Physical memory and the commit limit (memory plus page files), bytes.
+pub struct MemoryStatus {
+    pub total: u64,
+    pub avail: u64,
+    pub commit_limit: u64,
+    pub commit_avail: u64,
+}
+
+pub fn memory_status() -> Option<MemoryStatus> {
+    // SAFETY: all-zero is a valid MEMORYSTATUSEX
+    let mut status: MEMORYSTATUSEX = unsafe { std::mem::zeroed() };
+    status.dwLength = size_of::<MEMORYSTATUSEX>() as u32;
+    // SAFETY: dwLength set
+    (unsafe { GlobalMemoryStatusEx(&raw mut status) } != 0).then_some(MemoryStatus {
+        total: status.ullTotalPhys,
+        avail: status.ullAvailPhys,
+        commit_limit: status.ullTotalPageFile,
+        commit_avail: status.ullAvailPageFile,
+    })
+}
+
+/// A volume's size, bytes.
+pub struct Space {
+    pub total: u64,
+    pub free: u64,
+    /// What this user may still write (quotas).
+    pub avail: u64,
+}
+
+pub fn disk_space(path: &std::path::Path) -> Option<Space> {
+    let path = wide(&path.to_string_lossy());
+    let (mut avail, mut total, mut free) = (0u64, 0u64, 0u64);
+    // SAFETY: NUL-terminated path, three u64s to fill
+    let ok = unsafe {
+        GetDiskFreeSpaceExW(path.as_ptr(), &raw mut avail, &raw mut total, &raw mut free)
+    };
+    (ok != 0).then_some(Space { total, free, avail })
+}
+
+/// The root of the volume `path` lies on (`C:\`, a mount folder).
+pub fn volume_of(path: &std::path::Path) -> Option<String> {
+    let path = wide(&path.to_string_lossy());
+    let mut buf = [0u16; 1024];
+    // SAFETY: NUL-terminated path; the buffer's length in units
+    let ok = unsafe { GetVolumePathNameW(path.as_ptr(), buf.as_mut_ptr(), buf.len() as u32) };
+    let len = buf.iter().position(|c| *c == 0).unwrap_or(buf.len());
+    (ok != 0).then(|| String::from_utf16_lossy(&buf[..len]))
+}
+
+/// The battery and the mains, as `GetSystemPowerStatus` sees them.
+pub struct PowerStatus {
+    pub ac: Option<bool>,
+    /// None without a system battery.
+    pub battery_pct: Option<u8>,
+    pub charging: bool,
+}
+
+pub fn power_status() -> Option<PowerStatus> {
+    // SAFETY: all-zero is a valid SYSTEM_POWER_STATUS
+    let mut status: SYSTEM_POWER_STATUS = unsafe { std::mem::zeroed() };
+    // SAFETY: one struct to fill
+    if unsafe { GetSystemPowerStatus(&raw mut status) } == 0 {
+        return None;
+    }
+    // NOTE: flag 128 is "no system battery", 255 "unknown"
+    let battery = status.BatteryFlag & 128 == 0
+        && status.BatteryFlag != 255
+        && status.BatteryLifePercent <= 100;
+    Some(PowerStatus {
+        ac: match status.ACLineStatus {
+            0 => Some(false),
+            1 => Some(true),
+            _ => None,
+        },
+        battery_pct: battery.then_some(status.BatteryLifePercent),
+        charging: status.BatteryFlag & 8 != 0,
+    })
+}
+
+/// A network adapter with its IPv4 addresses.
+pub struct Adapter {
+    /// The name Windows shows (`Ethernet`).
+    pub name: String,
+    /// The device's name (`Intel(R) Ethernet Controller I225-V`).
+    pub description: String,
+    pub mac: Option<[u8; 6]>,
+    /// A physical Ethernet card with a connector, not a virtual switch.
+    pub wired: bool,
+    pub ipv4: Vec<(std::net::Ipv4Addr, u8)>,
+}
+
+pub fn adapters() -> io::Result<Vec<Adapter>> {
+    let flags = GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST | GAA_FLAG_SKIP_DNS_SERVER;
+    let mut size = 16 * 1024u32;
+    let mut buf: Vec<u64>;
+    loop {
+        // NOTE: u64s, so the IP_ADAPTER_ADDRESSES_LH read from it are aligned
+        buf = vec![0u64; (size as usize).div_ceil(8)];
+        // SAFETY: `buf` holds `size` bytes
+        let rc = unsafe {
+            GetAdaptersAddresses(
+                u32::from(AF_INET),
+                flags,
+                ptr::null(),
+                buf.as_mut_ptr().cast(),
+                &raw mut size,
+            )
+        };
+        match rc {
+            0 => break,
+            ERROR_BUFFER_OVERFLOW => {}
+            rc => return Err(io::Error::from_raw_os_error(rc as i32)),
+        }
+    }
+    let mut out = Vec::new();
+    let mut cur = buf.as_ptr().cast::<IP_ADAPTER_ADDRESSES_LH>();
+    while !cur.is_null() {
+        // SAFETY: a node of the list GetAdaptersAddresses wrote into `buf`, alive here
+        let a = unsafe { &*cur };
+        cur = a.Next;
+        let mac = (a.PhysicalAddressLength == 6).then(|| {
+            let mut mac = [0u8; 6];
+            mac.copy_from_slice(&a.PhysicalAddress[..6]);
+            mac
+        });
+        let mut ipv4 = Vec::new();
+        let mut unicast = a.FirstUnicastAddress;
+        while !unicast.is_null() {
+            // SAFETY: a node of the adapter's address list, in `buf`
+            let u = unsafe { &*unicast };
+            unicast = u.Next;
+            let sockaddr = u.Address.lpSockaddr;
+            // SAFETY: an AF_INET sockaddr is a SOCKADDR_IN
+            if !sockaddr.is_null() && unsafe { (*sockaddr).sa_family } == AF_INET {
+                let sin = unsafe { &*sockaddr.cast::<SOCKADDR_IN>() };
+                // SAFETY: S_addr is the union's u32 view, network order
+                let raw = unsafe { sin.sin_addr.S_un.S_addr };
+                ipv4.push((
+                    std::net::Ipv4Addr::from(u32::from_be(raw)),
+                    u.OnLinkPrefixLength,
+                ));
+            }
+        }
+        out.push(Adapter {
+            // SAFETY: NUL-terminated strings in `buf`
+            name: unsafe { from_wide(a.FriendlyName) },
+            description: unsafe { from_wide(a.Description) },
+            mac,
+            wired: a.IfType == IF_TYPE_ETHERNET_CSMACD && hardware_with_connector(a.Luid),
+            ipv4,
+        });
+    }
+    Ok(out)
+}
+
+/// Whether the interface is hardware with a connector (bits 0 and 2 of
+/// `InterfaceAndOperStatusFlags`): virtual switches and VPNs are not.
+fn hardware_with_connector(luid: NET_LUID_LH) -> bool {
+    // SAFETY: all-zero is a valid MIB_IF_ROW2
+    let mut row: MIB_IF_ROW2 = unsafe { std::mem::zeroed() };
+    row.InterfaceLuid = luid;
+    // SAFETY: the row names its interface by LUID
+    if unsafe { GetIfEntry2(&raw mut row) } != 0 {
+        return false;
+    }
+    let bits = row.InterfaceAndOperStatusFlags._bitfield;
+    bits & 0b001 != 0 && bits & 0b100 != 0
+}
+
+/// This process's Remote Desktop session (the console's, usually) and
+/// whether it is locked.
+pub fn session() -> Option<(u32, Option<bool>)> {
+    let mut info: PWSTR = ptr::null_mut();
+    let mut bytes = 0u32;
+    // SAFETY: `info` receives a buffer freed with WTSFreeMemory below
+    let ok = unsafe {
+        WTSQuerySessionInformationW(
+            WTS_CURRENT_SERVER_HANDLE,
+            WTS_CURRENT_SESSION,
+            WTSSessionInfoEx,
+            &raw mut info,
+            &raw mut bytes,
+        )
+    };
+    if ok == 0 || info.is_null() {
+        return None;
+    }
+    // SAFETY: WTSSessionInfoEx answers a WTSINFOEXW
+    let ex = unsafe { &*info.cast::<WTSINFOEXW>() };
+    let out = (ex.Level == 1).then(|| {
+        // SAFETY: level 1 is the union's only member
+        let level1 = unsafe { &ex.Data.WTSInfoExLevel1 };
+        let locked = match u32::try_from(level1.SessionFlags) {
+            Ok(WTS_SESSIONSTATE_LOCK) => Some(true),
+            Ok(WTS_SESSIONSTATE_UNLOCK) => Some(false),
+            _ => None,
+        };
+        (level1.SessionId, locked)
+    });
+    // SAFETY: allocated by WTSQuerySessionInformationW
+    unsafe { WTSFreeMemory(info.cast()) };
+    out
+}
+
+fn registry_string(key: &str, value: &str) -> Option<String> {
+    let (key, value) = (wide(key), wide(value));
+    let mut buf = [0u16; 256];
+    let mut len = (buf.len() * 2) as u32;
+    // SAFETY: NUL-terminated names; `len` is the buffer's size in bytes
+    let rc = unsafe {
+        RegGetValueW(
+            HKEY_LOCAL_MACHINE,
+            key.as_ptr(),
+            value.as_ptr(),
+            RRF_RT_REG_SZ,
+            ptr::null_mut(),
+            buf.as_mut_ptr().cast(),
+            &raw mut len,
+        )
+    };
+    let units = (len as usize / 2).min(buf.len());
+    let text = &buf[..units];
+    let end = text.iter().position(|c| *c == 0).unwrap_or(units);
+    (rc == 0).then(|| String::from_utf16_lossy(&text[..end]))
+}
+
+fn registry_dword(key: &str, value: &str) -> Option<u32> {
+    let (key, value) = (wide(key), wide(value));
+    let mut data = 0u32;
+    let mut len = 4u32;
+    // SAFETY: NUL-terminated names; four bytes to fill
+    let rc = unsafe {
+        RegGetValueW(
+            HKEY_LOCAL_MACHINE,
+            key.as_ptr(),
+            value.as_ptr(),
+            RRF_RT_REG_DWORD,
+            ptr::null_mut(),
+            (&raw mut data).cast(),
+            &raw mut len,
+        )
+    };
+    (rc == 0).then_some(data)
+}
+
+const CURRENT_VERSION: &str = r"SOFTWARE\Microsoft\Windows NT\CurrentVersion";
+
+/// `Windows 11 Pro 25H2` and `10.0.26200.7171`, from the registry.
+pub fn os_version() -> (Option<String>, String) {
+    let build = registry_string(CURRENT_VERSION, "CurrentBuild").unwrap_or_default();
+    let ubr = registry_dword(CURRENT_VERSION, "UBR");
+    let kernel = match ubr {
+        Some(ubr) => format!("10.0.{build}.{ubr}"),
+        None => format!("10.0.{build}"),
+    };
+    // NOTE: ProductName still says "Windows 10" on Windows 11 (builds from 22000)
+    let eleven = build.parse::<u32>().is_ok_and(|b| b >= 22_000);
+    let pretty = registry_string(CURRENT_VERSION, "ProductName").map(|name| {
+        let name = if eleven {
+            name.replacen("Windows 10", "Windows 11", 1)
+        } else {
+            name
+        };
+        match registry_string(CURRENT_VERSION, "DisplayVersion") {
+            Some(version) => format!("{name} {version}"),
+            None => name,
+        }
+    });
+    (pretty, kernel)
+}
+
 /// The current process's `TOKEN_USER`, at the start of the buffer.
 fn token_user() -> io::Result<Vec<u64>> {
     let mut token: HANDLE = ptr::null_mut();
@@ -839,6 +1171,24 @@ mod tests {
         let exe = std::env::current_exe().unwrap();
         let name = exe.file_stem().unwrap().to_string_lossy();
         assert!(args[0].contains(name.as_ref()), "{args:?}");
+    }
+
+    #[test]
+    fn this_machine_reports() {
+        assert!(uptime_ms() > 0);
+        assert!(slept_ms() >= 0);
+        let (busy, total) = cpu_times().unwrap();
+        assert!(busy <= total && total > 0);
+        let memory = memory_status().unwrap();
+        assert!(memory.avail <= memory.total && memory.total <= memory.commit_limit);
+        let system = std::env::var("SystemDrive").unwrap() + "\\";
+        assert!(disk_space(std::path::Path::new(&system)).unwrap().total > 0);
+        let windows = std::path::Path::new(&system).join("Windows");
+        assert_eq!(volume_of(&windows).as_deref(), Some(system.as_str()));
+        assert!(adapters().is_ok());
+        assert!(power_status().is_some());
+        let (_, kernel) = os_version();
+        assert!(kernel.starts_with("10.0."), "{kernel}");
     }
 
     #[test]
