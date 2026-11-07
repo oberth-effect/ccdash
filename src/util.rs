@@ -27,6 +27,35 @@ pub fn hostname() -> String {
         .unwrap_or_else(|| "localhost".to_owned())
 }
 
+/// Resolves when the process is asked to end: SIGTERM or Ctrl-C; on
+/// Windows Ctrl-C, Ctrl-Break or its console closing.
+///
+/// # Errors
+///
+/// A signal handler cannot be installed.
+pub async fn shutdown() -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{SignalKind, signal};
+        let mut term = signal(SignalKind::terminate())?;
+        tokio::select! {
+            _ = term.recv() => {}
+            _ = tokio::signal::ctrl_c() => {}
+        }
+    }
+    #[cfg(windows)]
+    {
+        use tokio::signal::windows::{ctrl_break, ctrl_close};
+        let (mut brk, mut close) = (ctrl_break()?, ctrl_close()?);
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {}
+            _ = brk.recv() => {}
+            _ = close.recv() => {}
+        }
+    }
+    Ok(())
+}
+
 /// A duration as `42s`, `7m` or `3h05m`.
 pub fn age(ms: i64) -> String {
     let secs = ms.max(0) / 1000;

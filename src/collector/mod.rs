@@ -22,7 +22,6 @@ use anyhow::{Context, Result, bail};
 use serde_json::Value;
 use tokio::{
     net::TcpListener,
-    signal::unix::{SignalKind, signal},
     sync::{Notify, broadcast, mpsc, oneshot},
 };
 use tracing::{debug, info, warn};
@@ -56,6 +55,7 @@ use crate::{
 pub enum LocalCmd {
     Envelope(Envelope),
     Agents(Vec<AgentEntry>, i64),
+    #[cfg_attr(not(unix), allow(dead_code))]
     Niri(NiriEvent),
     Procs(Vec<ProcPoll>, i64),
     Usage(Vec<ScopedLimit>, i64),
@@ -370,11 +370,7 @@ async fn serve(cfg: Arc<CollectorConfig>) -> Result<()> {
         cfg.hub.url
     );
 
-    let mut term = signal(SignalKind::terminate())?;
-    tokio::select! {
-        _ = term.recv() => {}
-        _ = tokio::signal::ctrl_c() => {}
-    }
+    util::shutdown().await?;
     info!("shutting down");
     let _ = std::fs::remove_file(&ingest_path);
     let _ = std::fs::remove_file(&api_path);
