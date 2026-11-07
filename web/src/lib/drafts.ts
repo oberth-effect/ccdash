@@ -16,12 +16,14 @@ export const DRAFT_DEBOUNCE_MS = 800;
 export const sessionDraft = (id: string) => `session:${id}`;
 
 /** The machine "Edit in nvim" opens the editor on: the one Settings names,
- * else `preferred` (the session's host, the start sheet's), else the first
- * connected one whose collector opens an editor; null when none can. */
+ * else the machine this device sits on (`live.here`), else `preferred`
+ * (the session's host, the start sheet's), else the first connected one
+ * whose collector opens an editor; null when none can. */
 export function editHostFor(preferred?: string | null): string | null {
 	const can = (name: string | null | undefined) =>
 		Boolean(name) && live.hosts.some((h) => h.name === name && h.connected && h.edit);
 	if (can(prefs.editHost)) return prefs.editHost;
+	if (can(live.here)) return live.here;
 	if (can(preferred)) return preferred ?? null;
 	return live.hosts.find((h) => h.connected && h.edit)?.name ?? null;
 }

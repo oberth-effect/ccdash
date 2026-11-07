@@ -593,6 +593,9 @@
 			disabled={locked}
 			vim={vimOn}
 			vimrc={prefs.vimrc}
+			numbers={prefs.numbers}
+			highlight={prefs.editor.markdown}
+			wrap={prefs.editor.wrap}
 			fill={fill || expanded}
 			{rows}
 			{onkey}

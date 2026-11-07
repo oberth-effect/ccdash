@@ -2,18 +2,22 @@
 	// The text editor under the composer and the start sheet: CodeMirror 6
 	// with markdown, soft wrap, an undo history that survives what the
 	// toolbar inserts, and the owner's vim keys when they want them
-	// (`prefs.vim`, `prefs.vimrc`). Grows with its text to `maxHeight`, or
-	// fills its parent (`fill`). The parent gets the raw keys first
-	// (`onkey`) for its shortcuts; what it does not take goes to vim and
-	// the default bindings.
+	// (`prefs.vim`, `prefs.vimrc`). Line numbers (absolute, or relative to
+	// the cursor's line as Neovim's number + relativenumber), the markdown
+	// highlighting and the wrapping are each a switch (`prefs.editor`).
+	// Grows with its text to `maxHeight`, or fills its parent (`fill`). The
+	// parent gets the raw keys first (`onkey`) for its shortcuts; what it
+	// does not take goes to vim and the default bindings.
 	import { defaultKeymap, history, historyKeymap } from '@codemirror/commands';
 	import { markdown, markdownKeymap } from '@codemirror/lang-markdown';
 	import { HighlightStyle, syntaxHighlighting } from '@codemirror/language';
 	import { highlightSelectionMatches, searchKeymap } from '@codemirror/search';
-	import { Compartment, EditorState, Prec } from '@codemirror/state';
+	import { Compartment, EditorState, Prec, type Extension } from '@codemirror/state';
 	import {
 		EditorView,
+		GutterMarker,
 		drawSelection,
+		gutter,
 		keymap,
 		placeholder as placeholderExt
 	} from '@codemirror/view';
@@ -29,6 +33,9 @@
 		disabled = false,
 		vim = false,
 		vimrc = '',
+		numbers = 'off',
+		highlight = true,
+		wrap = true,
 		fill = false,
 		rows = 1,
 		maxHeight = 220,
@@ -46,6 +53,12 @@
 		/** Vim keys on; `vimrc` is applied when it turns on or changes. */
 		vim?: boolean;
 		vimrc?: string;
+		/** Line numbers: none, absolute, or relative to the cursor's line. */
+		numbers?: 'off' | 'absolute' | 'relative';
+		/** Markdown set apart as it is typed. */
+		highlight?: boolean;
+		/** Long lines wrap; off, they scroll sideways. */
+		wrap?: boolean;
 		/** Fill the parent's height instead of growing to `maxHeight`. */
 		fill?: boolean;
 		/** Lines the empty editor shows. */
@@ -71,6 +84,9 @@
 	const vimComp = new Compartment();
 	const editable = new Compartment();
 	const hint = new Compartment();
+	const numbersComp = new Compartment();
+	const highlightComp = new Compartment();
+	const wrapComp = new Compartment();
 
 	const theme = EditorView.theme({
 		'&': { fontSize: '0.875rem', backgroundColor: 'transparent', color: 'var(--foreground)' },
@@ -98,6 +114,19 @@
 		'.cm-selectionMatch': {
 			backgroundColor: 'color-mix(in oklab, var(--primary) 12%, transparent)'
 		},
+		'.cm-gutters': {
+			backgroundColor: 'transparent',
+			borderRight: '1px solid var(--border)',
+			color: 'var(--muted-foreground)',
+			fontFamily: 'var(--font-mono)',
+			fontSize: '0.75rem'
+		},
+		'.cm-gutter.cm-lineNumbers .cm-gutterElement': {
+			minWidth: '2.6em',
+			padding: '0 0.5rem',
+			textAlign: 'right'
+		},
+		'.cm-gutterElement.cm-numberCurrent': { color: 'var(--foreground)' },
 		'.cm-vim-panel': {
 			fontFamily: 'var(--font-mono)',
 			fontSize: '0.75rem',
@@ -107,7 +136,7 @@
 		'.cm-vim-panel input': { color: 'var(--foreground)' }
 	});
 	// markdown as it reads, not a code theme: the marks step back
-	const highlight = HighlightStyle.define([
+	const style = HighlightStyle.define([
 		{ tag: tags.heading, fontWeight: '600' },
 		{ tag: tags.strong, fontWeight: '600' },
 		{ tag: tags.emphasis, fontStyle: 'italic' },
@@ -122,6 +151,43 @@
 		}
 	]);
 
+	class Num extends GutterMarker {
+		text: string;
+		current: boolean;
+		constructor(text: string, current: boolean) {
+			super();
+			this.text = text;
+			this.current = current;
+			this.elementClass = current ? 'cm-numberCurrent' : '';
+		}
+		eq(other: Num) {
+			return other.text === this.text && other.current === this.current;
+		}
+		toDOM() {
+			return document.createTextNode(this.text);
+		}
+	}
+
+	/** A gutter of line numbers; relative ones count from the cursor's
+	 * line, which shows its own number (Neovim's hybrid). */
+	function numbersExt(mode: 'off' | 'absolute' | 'relative'): Extension {
+		if (mode === 'off') return [];
+		return gutter({
+			class: 'cm-lineNumbers',
+			lineMarker(v, line) {
+				const n = v.state.doc.lineAt(line.from).number;
+				const cur = v.state.doc.lineAt(v.state.selection.main.head).number;
+				const shown = mode === 'relative' && n !== cur ? Math.abs(n - cur) : n;
+				return new Num(String(shown), n === cur);
+			},
+			lineMarkerChange: (u) => u.selectionSet || u.docChanged || u.viewportChanged,
+			initialSpacer: (v) => new Num(String(Math.max(99, v.state.doc.lines)), false)
+		});
+	}
+
+	const highlightExt = (on: boolean): Extension => (on ? syntaxHighlighting(style) : []);
+	const wrapExt = (on: boolean): Extension => (on ? EditorView.lineWrapping : []);
+
 	function create(parent: HTMLElement) {
 		const state = EditorState.create({
 			doc: value,
@@ -135,11 +201,12 @@
 				),
 				editable.of([EditorView.editable.of(!disabled), EditorState.readOnly.of(disabled)]),
 				hint.of(placeholderExt(placeholder)),
+				numbersComp.of(numbersExt(numbers)),
 				history(),
 				drawSelection(),
-				EditorView.lineWrapping,
+				wrapComp.of(wrapExt(wrap)),
 				markdown(),
-				syntaxHighlighting(highlight),
+				highlightComp.of(highlightExt(highlight)),
 				highlightSelectionMatches(),
 				keymap.of([...markdownKeymap, ...historyKeymap, ...searchKeymap, ...defaultKeymap]),
 				theme,
@@ -212,6 +279,24 @@
 		const text = placeholder;
 		if (!view) return;
 		view.dispatch({ effects: hint.reconfigure(placeholderExt(text)) });
+	});
+
+	$effect(() => {
+		const mode = numbers;
+		if (!view) return;
+		view.dispatch({ effects: numbersComp.reconfigure(numbersExt(mode)) });
+	});
+
+	$effect(() => {
+		const on = highlight;
+		if (!view) return;
+		view.dispatch({ effects: highlightComp.reconfigure(highlightExt(on)) });
+	});
+
+	$effect(() => {
+		const on = wrap;
+		if (!view) return;
+		view.dispatch({ effects: wrapComp.reconfigure(wrapExt(on)) });
 	});
 
 	$effect(() => {

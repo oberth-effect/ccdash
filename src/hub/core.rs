@@ -4,6 +4,7 @@
 
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
+    net::IpAddr,
     sync::Arc,
 };
 
@@ -147,6 +148,8 @@ pub enum Cmd {
         terminals: Vec<String>,
         /// The machine opens drafts in an editor.
         edit: bool,
+        /// Where it connects from.
+        addr: Option<IpAddr>,
         tx: mpsc::Sender<ToCollector>,
     },
     CollectorClosed {
@@ -202,6 +205,12 @@ pub enum Cmd {
     },
     /// The launch with this id, while the hub keeps it.
     LaunchOf(String, oneshot::Sender<Option<Launch>>),
+    /// The connected host whose collector links from `addr`: the machine
+    /// a panel at that address sits on.
+    Here {
+        addr: IpAddr,
+        reply: oneshot::Sender<Option<String>>,
+    },
     /// The panel wrote draft `key`; an empty text drops it.
     Draft {
         key: String,
@@ -564,6 +573,8 @@ struct Pending {
 
 struct Link {
     conn: u64,
+    /// Where the collector connects from, for `here`.
+    addr: Option<IpAddr>,
     tx: mpsc::Sender<ToCollector>,
 }
 
@@ -849,6 +860,13 @@ impl Hub {
     pub async fn launch_of(&self, id: &str) -> Result<Option<Launch>> {
         let (tx, rx) = oneshot::channel();
         self.send(Cmd::LaunchOf(id.to_owned(), tx)).await?;
+        rx.await.context("hub stopped")
+    }
+
+    /// The connected host whose collector links from `addr`.
+    pub async fn here(&self, addr: IpAddr) -> Result<Option<String>> {
+        let (reply, rx) = oneshot::channel();
+        self.send(Cmd::Here { addr, reply }).await?;
         rx.await.context("hub stopped")
     }
 
@@ -1177,8 +1195,17 @@ async fn run(mut core: Core, mut rx: mpsc::Receiver<Cmd>) {
                 conn,
                 terminals,
                 edit,
+                addr,
                 tx,
-            } => core.collector_open(host, conn, terminals, edit, tx),
+            } => core.collector_open(host, conn, terminals, edit, addr, tx),
+            Cmd::Here { addr, reply } => {
+                let _ = reply.send(
+                    core.links
+                        .iter()
+                        .find(|(_, l)| l.addr == Some(addr))
+                        .map(|(host, _)| host.clone()),
+                );
+            }
             Cmd::CollectorClosed { host, conn } => core.collector_closed(&host, conn),
             Cmd::ChannelOpen { host, pid } => core.channel(&host, pid, true),
             Cmd::ChannelClosed { host, pid } => core.channel(&host, pid, false),
@@ -1687,6 +1714,7 @@ impl Core {
         conn: u64,
         terminals: Vec<String>,
         edit: bool,
+        addr: Option<IpAddr>,
         tx: mpsc::Sender<ToCollector>,
     ) {
         let now = now_ms();
@@ -1711,6 +1739,7 @@ impl Core {
             host.clone(),
             Link {
                 conn,
+                addr,
                 tx: tx.clone(),
             },
         );
@@ -4478,6 +4507,7 @@ mod tests {
                 conn: conn as u64,
                 terminals: Vec::new(),
                 edit: false,
+                addr: None,
                 tx,
             })
             .await
@@ -4592,6 +4622,7 @@ mod tests {
             conn: 1,
             terminals: Vec::new(),
             edit: false,
+            addr: None,
             tx,
         })
         .await
@@ -4735,6 +4766,7 @@ mod tests {
             conn: 2,
             terminals: Vec::new(),
             edit: false,
+            addr: None,
             tx,
         })
         .await
@@ -4865,6 +4897,7 @@ mod tests {
             conn: 1,
             terminals: Vec::new(),
             edit: false,
+            addr: None,
             tx,
         })
         .await
@@ -4941,6 +4974,7 @@ mod tests {
             conn: 1,
             terminals: Vec::new(),
             edit: false,
+            addr: None,
             tx,
         })
         .await
@@ -5193,6 +5227,7 @@ mod tests {
             conn: 1,
             terminals: Vec::new(),
             edit: false,
+            addr: None,
             tx,
         })
         .await
@@ -5265,6 +5300,7 @@ mod tests {
             conn: 1,
             terminals: Vec::new(),
             edit: false,
+            addr: None,
             tx,
         })
         .await
@@ -5428,6 +5464,7 @@ mod tests {
             conn: 1,
             terminals: Vec::new(),
             edit: false,
+            addr: None,
             tx,
         })
         .await
@@ -5634,6 +5671,7 @@ mod tests {
             conn: 2,
             terminals: Vec::new(),
             edit: true,
+            addr: None,
             tx,
         })
         .await

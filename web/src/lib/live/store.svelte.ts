@@ -29,6 +29,10 @@ class Live {
 	launches = new SvelteMap<string, Launch>();
 	/** The prompts being written, on every device, by draft key. */
 	drafts = new SvelteMap<string, Draft>();
+	/** The machine this device sits on, as the hub tells it from the
+	 * address (a collector links from the same one); null when none does. */
+	here = $state<string | null>(null);
+	#hereAt = 0;
 	rateLimits = $state<RateLimits | null>(null);
 	workspaces = $state<string[]>([]);
 	hosts = $state<HostStatus[]>([]);
@@ -180,6 +184,18 @@ class Live {
 		for (const key of [...this.drafts.keys()]) if (!keys.has(key)) this.drafts.delete(key);
 		for (const d of snapshot.drafts ?? []) this.drafts.set(d.key, d);
 		this.ready = true;
+		this.locate();
+	}
+
+	/** Asks the hub which machine this device sits on, at most once a
+	 * minute (a snapshot comes with every reconnect). */
+	locate() {
+		const now = Date.now();
+		if (now - this.#hereAt < 60_000) return;
+		this.#hereAt = now;
+		getJson<{ host: string | null }>('here')
+			.then(({ host }) => (this.here = host))
+			.catch(() => {});
 	}
 
 	applyUpdate(update: Update) {

@@ -103,10 +103,14 @@ interrupts the turn, so what you type next is what Claude reads
 long prompts: Enter is always a new line and only `Ctrl Enter` sends, on
 every device; it wraps, highlights markdown lightly, keeps an undo history
 that survives what the toolbar inserts, and **Expand** (`Ctrl Shift F`)
-gives it most of the screen. With a mouse it has vim keys (Settings turns
-them on or off, and holds a vimrc of maps it starts with: `jk` leaves
-insert mode, `Space w` is `:w`); `:w` keeps the draft now, `:x` is done
-editing. The composer walks the prompt history, inserts `[[note]]` links,
+gives it most of the screen. With a mouse it has vim keys (Settings ›
+Composer turns them on or off, and holds a vimrc of maps it starts with:
+`jk` leaves insert mode, `Space w` is `:w`); `:w` keeps the draft now,
+`:x` is done editing. Line numbers (none, absolute, or relative to the
+cursor's line with the current one absolute, as Neovim's `number` +
+`relativenumber`; Auto is relative with vim keys), the markdown
+highlighting and the wrapping are switches there too, kept per device.
+The composer walks the prompt history, inserts `[[note]]` links,
 and when a message starts with `/` offers the skills Claude Code loads for
 that session (the machine's, the plugins', the workspace's), as the
 terminal does. Its keyboard button lists the shortcuts:
@@ -139,11 +143,13 @@ editor on a machine, as Claude Code's own `Ctrl G` opens the prompt in
 [configuration](configuration.md#4-collector-keys)); the field waits,
 with Cancel, until the editor closes, then takes the file's content. Exit
 without saving (`:cq`) and the text stays as it was. Which machine:
-Settings › Composer names one, else the session's own machine, else the
-first connected one whose collector has the command. A machine without
-the command cannot be picked; one that disconnects while the editor is
-open frees the draft, and the text saved later still lands when its
-collector comes back.
+Settings › Composer names one; else the machine this device sits on,
+which the hub tells from the address (a connected collector linking from
+the same one; behind the module's nginx the client address is passed
+on); else the session's own machine; else the first connected one whose
+collector has the command. A machine without the command cannot be
+picked; one that disconnects while the editor is open frees the draft,
+and the text saved later still lands when its collector comes back.
 
 The title
 renames in

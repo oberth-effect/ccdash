@@ -20,6 +20,7 @@ const TEMPLATES_KEY = 'ccdash.templates';
 const DRAFT_KEY = 'ccdash.draft.';
 const VIM_KEY = 'ccdash.vim';
 const VIMRC_KEY = 'ccdash.vimrc';
+const EDITOR_KEY = 'ccdash.editor';
 const EDIT_HOST_KEY = 'ccdash.edithost';
 const START_KEY = 'ccdash.start';
 const GRAPH_KEY = 'ccdash.graph';
@@ -37,6 +38,19 @@ export type Template = { name: string; text: string };
 
 /** Vim keys in the composer: `auto` is on with a mouse or trackpad, off on touch. */
 export type VimMode = 'auto' | 'on' | 'off';
+
+/** Line numbers in the composer: `auto` is relative (the current line
+ * absolute, as Neovim's number + relativenumber) when vim is on, else none. */
+export type Numbers = 'auto' | 'off' | 'absolute' | 'relative';
+/** How the composer's editor looks and behaves, beyond vim. */
+export type EditorLook = {
+	numbers: Numbers;
+	/** Headings, emphasis, code and links set apart as you type. */
+	markdown: boolean;
+	/** Long lines wrap (off: they scroll sideways, as `nowrap`). */
+	wrap: boolean;
+};
+export const DEFAULT_EDITOR: EditorLook = { numbers: 'auto', markdown: true, wrap: true };
 export const isVimMode = (x: unknown): x is VimMode => x === 'auto' || x === 'on' || x === 'off';
 
 /** What the composer's vim starts with: the owner's Neovim habits, as far
@@ -120,6 +134,7 @@ class Prefs {
 	vimrc = $state<string>(
 		browser ? (localStorage.getItem(VIMRC_KEY) ?? DEFAULT_VIMRC) : DEFAULT_VIMRC
 	);
+	editor = $state<EditorLook>({ ...DEFAULT_EDITOR, ...load<Partial<EditorLook>>(EDITOR_KEY, {}) });
 	/** The machine whose editor "Edit in nvim" opens; empty picks the
 	 * session's host, else the first connected one that can. */
 	editHost = $state<string>(browser ? (localStorage.getItem(EDIT_HOST_KEY) ?? '') : '');
@@ -218,6 +233,17 @@ class Prefs {
 	setVimrc(text: string) {
 		this.vimrc = text;
 		localStorage.setItem(VIMRC_KEY, text);
+	}
+
+	setEditor(changes: Partial<EditorLook>) {
+		this.editor = { ...this.editor, ...changes };
+		localStorage.setItem(EDITOR_KEY, JSON.stringify(this.editor));
+	}
+
+	/** The line numbers the composer shows on this device. */
+	get numbers(): Exclude<Numbers, 'auto'> {
+		if (this.editor.numbers !== 'auto') return this.editor.numbers;
+		return this.vimOn ? 'relative' : 'off';
 	}
 
 	setEditHost(host: string) {

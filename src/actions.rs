@@ -741,7 +741,13 @@ mod tests {
         )
         .unwrap();
         std::fs::set_permissions(&script, Permissions::from_mode(0o755)).unwrap();
-        let cmd = vec![script.to_string_lossy().into_owned(), "{file}".to_owned()];
+        // NOTE: through `sh`: a parallel test forking between the write and an
+        // exec of the script holds it open ("text file busy")
+        let cmd = vec![
+            "sh".to_owned(),
+            script.to_string_lossy().into_owned(),
+            "{file}".to_owned(),
+        ];
         let files = dir.join("drafts");
         let mut pid = None;
         let text = edit_in(&files, &cmd, "ab12", "hello\n", |p| pid = Some(p))

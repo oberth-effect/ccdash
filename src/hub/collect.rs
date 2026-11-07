@@ -4,6 +4,7 @@
 
 use std::{
     collections::BTreeMap,
+    net::{IpAddr, SocketAddr},
     path::PathBuf,
     sync::atomic::{AtomicU64, Ordering},
     time::{Duration, Instant},
@@ -12,7 +13,7 @@ use std::{
 use anyhow::{Context, Result, bail};
 use axum::{
     extract::{
-        State,
+        ConnectInfo, State,
         ws::{Message, WebSocket, WebSocketUpgrade},
     },
     http::{HeaderMap, StatusCode, header},
@@ -69,6 +70,7 @@ impl Tokens {
 
 pub async fn collect(
     State((hub, tokens, changed)): State<(Hub, Tokens, watch::Receiver<u64>)>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
     ws: WebSocketUpgrade,
 ) -> Response {
@@ -79,8 +81,9 @@ pub async fn collect(
     let Some(host) = given.and_then(|t| tokens.host_of(t)) else {
         return StatusCode::UNAUTHORIZED.into_response();
     };
+    let addr = super::http::client_ip(&headers, peer);
     ws.on_upgrade(move |socket| async move {
-        if let Err(e) = link(socket, host.clone(), hub, changed).await {
+        if let Err(e) = link(socket, host.clone(), Some(addr), hub, changed).await {
             debug!("collector {host}: {e:#}");
         }
     })
@@ -89,6 +92,7 @@ pub async fn collect(
 async fn link(
     socket: WebSocket,
     host: String,
+    addr: Option<IpAddr>,
     hub: Hub,
     mut changed: watch::Receiver<u64>,
 ) -> Result<()> {
@@ -127,6 +131,7 @@ async fn link(
         conn,
         terminals,
         edit,
+        addr,
         tx,
     })
     .await?;

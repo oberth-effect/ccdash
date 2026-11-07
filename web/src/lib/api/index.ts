@@ -88,6 +88,10 @@ export const answerAsk = (id: string, ask: string, answer: Answer) =>
  * moves on through `launch` updates on the stream. */
 export const startLaunch = (body: LaunchBody) => postJson<{ launch: Launch }>('launches', body);
 
+/** The machine this device sits on: the connected collector linking from
+ * the same address as this request, if one does. */
+export const fetchHere = () => getJson<{ host: string | null }>('here');
+
 /** Keeps a draft on the hub (`session:<id>`, `start`, `issue:<slug>`,
  * `resume:<id>`); an empty text drops it. Every panel hears through the
  * stream. */

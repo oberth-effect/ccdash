@@ -23,7 +23,7 @@ use std::{
 use anyhow::{Context, Result, bail};
 use axum::{
     Extension, Json, Router,
-    extract::{Path, Query, Request, State},
+    extract::{ConnectInfo, Path, Query, Request, State},
     http::{HeaderMap, StatusCode, header},
     middleware::{self, Next},
     response::{
@@ -169,6 +169,7 @@ pub async fn serve(
         .route("/machines/{host}/wake", post(wake_machine))
         .route("/launches", post(launch))
         .route("/launch-targets", get(launch_targets))
+        .route("/here", get(here))
         .route("/drafts/{key}", put(put_draft).delete(delete_draft))
         .route("/drafts/{key}/edit", post(edit_draft))
         .route("/drafts/{key}/edit/cancel", post(cancel_edit))
@@ -253,9 +254,44 @@ pub async fn serve(
             reports,
             catalog,
         });
-    if let Err(e) = axum::serve(listener, app).await {
+    if let Err(e) = axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .await
+    {
         warn!("http: {e}");
     }
+}
+
+/// The address a request came from: the peer's, or behind a proxy on this
+/// machine (the peer is loopback) what the proxy says: `X-Real-IP`, else
+/// the last `X-Forwarded-For` entry (the one the proxy appended; earlier
+/// ones a client may have sent itself).
+pub(crate) fn client_ip(headers: &HeaderMap, peer: std::net::SocketAddr) -> std::net::IpAddr {
+    if !peer.ip().is_loopback() {
+        return peer.ip();
+    }
+    let header = |name: &str| headers.get(name).and_then(|v| v.to_str().ok());
+    if let Some(ip) = header("x-real-ip").and_then(|v| v.trim().parse().ok()) {
+        return ip;
+    }
+    header("x-forwarded-for")
+        .and_then(|v| v.rsplit(',').next())
+        .and_then(|v| v.trim().parse().ok())
+        .unwrap_or(peer.ip())
+}
+
+/// The machine this request's device sits on: the connected collector
+/// that links from the same address, if one does. The panel opens drafts
+/// in an editor there.
+async fn here(
+    State(app): State<App>,
+    ConnectInfo(peer): ConnectInfo<std::net::SocketAddr>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, ApiError> {
+    let host = app.hub.here(client_ip(&headers, peer)).await?;
+    Ok(Json(json!({ "host": host })))
 }
 
 /// Reads the configured token file, or the generated one in the state dir

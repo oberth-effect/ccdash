@@ -272,11 +272,14 @@ in
         "/" = {
           proxyPass = "http://${proxyEndpoint}";
           proxyWebsockets = true;
-          # NOTE: SSE streams and collector links stay open for hours
+          # NOTE: SSE streams and collector links stay open for hours; the
+          # client's address tells the hub which machine a panel sits on
           extraConfig = ''
             proxy_buffering off;
             proxy_read_timeout 1h;
             proxy_send_timeout 1h;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
           '';
         };
         # NOTE: collectors move files in pieces of up to 8 MiB

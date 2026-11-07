@@ -1,0 +1,489 @@
+<script lang="ts">
+	// Settings › Devices: pairing (a token per link), this device (its
+	// token, install, push and what it is notified about), and every
+	// device with a token.
+	import PencilIcon from '@lucide/svelte/icons/pencil';
+	import { clearToken, setToken, tokenFrom, Unauthorized } from '#lib/api/client.js';
+	import {
+		fetchPush,
+		fetchTokens,
+		mintToken,
+		relabelToken,
+		revokeToken,
+		setPushPrefs,
+		testPush,
+		type Devices,
+		type Pairing,
+		type PushInfo,
+		type Token
+	} from '#lib/api/index.js';
+	import { Badge } from '#lib/components/ui/badge/index.js';
+	import { Button } from '#lib/components/ui/button/index.js';
+	import { Checkbox } from '#lib/components/ui/checkbox/index.js';
+	import * as Dialog from '#lib/components/ui/dialog/index.js';
+	import { Input } from '#lib/components/ui/input/index.js';
+	import { fmtDuration, fmtStamp } from '#lib/format.js';
+	import { live } from '#lib/live/store.svelte.js';
+	import { CATEGORIES, wants } from '#lib/notify.js';
+	import { pwa } from '#lib/pwa.svelte.js';
+
+	let label = $state('Phone');
+	let pairing = $state<Pairing | null>(null);
+	let pairError = $state('');
+	let copied = $state(false);
+	let devices = $state<Devices | null>(null);
+	let devicesError = $state('');
+	let editId = $state<number | null>(null);
+	let editLabel = $state('');
+	let editRef = $state<HTMLInputElement | null>(null);
+	let saving = $state(false);
+	let revoking = $state<Token | null>(null);
+	let push = $state<PushInfo | null>(null);
+	let pushError = $state('');
+	let sub = $state<PushSubscription | null>(null);
+	let status = $state('');
+	let busy = $state(false);
+
+	const current = $derived(devices?.tokens.find((t) => t.current) ?? null);
+
+	function failed(e: unknown, set: (message: string) => void) {
+		if (e instanceof Unauthorized) live.needToken = true;
+		else set((e as Error).message);
+	}
+
+	async function loadDevices() {
+		try {
+			devices = await fetchTokens();
+			devicesError = '';
+		} catch (e) {
+			failed(e, (m) => (devicesError = m));
+		}
+	}
+
+	async function load() {
+		await loadDevices();
+		if (!pwa.pushSupported) return;
+		try {
+			push = await fetchPush();
+			sub = await pwa.subscription();
+		} catch (e) {
+			failed(e, (m) => (pushError = m));
+		}
+	}
+
+	$effect(() => {
+		if (live.ready) load();
+	});
+
+	$effect(() => {
+		editRef?.select();
+	});
+
+	/** A fresh token for one more device, shown this once. */
+	async function newLink() {
+		busy = true;
+		pairError = '';
+		copied = false;
+		try {
+			pairing = await mintToken(label.trim() || 'New device');
+			await loadDevices();
+		} catch (e) {
+			failed(e, (m) => (pairError = m));
+		} finally {
+			busy = false;
+		}
+	}
+
+	/** Swaps the shared token for one of this device's own; the push
+	 * subscription follows it. */
+	async function ownToken() {
+		busy = true;
+		status = '';
+		try {
+			const minted = await mintToken(device(navigator.userAgent));
+			setToken(tokenFrom(minted.url));
+			await pwa.syncSubscription();
+			await load();
+		} catch (e) {
+			failed(e, (m) => (status = m));
+		} finally {
+			busy = false;
+		}
+	}
+
+	function edit(t: Token) {
+		editId = t.id;
+		editLabel = t.label;
+	}
+
+	/** Renames the device being edited; the field stays open when that fails. */
+	async function saveLabel() {
+		const id = editId;
+		if (id === null || saving) return;
+		const value = editLabel.trim();
+		const was = devices?.tokens.find((t) => t.id === id);
+		if (!value || !was || value === was.label) {
+			editId = null;
+			return;
+		}
+		saving = true;
+		devicesError = '';
+		try {
+			const { token } = await relabelToken(id, value);
+			if (devices) devices.tokens = devices.tokens.map((t) => (t.id === id ? token : t));
+			editId = null;
+		} catch (e) {
+			failed(e, (m) => (devicesError = m));
+		} finally {
+			saving = false;
+		}
+	}
+
+	async function revoke(t: Token) {
+		busy = true;
+		try {
+			await revokeToken(t.id);
+			revoking = null;
+			if (t.current) {
+				clearToken();
+				live.signOut();
+				return;
+			}
+			await load();
+		} catch (e) {
+			failed(e, (m) => (devicesError = m));
+		} finally {
+			busy = false;
+		}
+	}
+
+	async function togglePush() {
+		if (!push?.key) return;
+		busy = true;
+		status = '';
+		try {
+			if (sub) {
+				await pwa.disablePush(sub);
+				sub = null;
+			} else {
+				sub = await pwa.enablePush(push.key);
+			}
+			push = await fetchPush();
+		} catch (e) {
+			failed(e, (m) => (status = m));
+		} finally {
+			busy = false;
+		}
+	}
+
+	async function sendTest() {
+		busy = true;
+		try {
+			const { results } = await testPush();
+			const mine = results.find((r) => r.endpoint === sub?.endpoint);
+			status = !mine
+				? 'The hub does not know this device; turn push off and on.'
+				: mine.outcome === 'sent'
+					? 'Sent; it shows in a moment.'
+					: `Failed: ${'error' in mine ? mine.error : mine.status}`;
+			push = await fetchPush();
+		} catch (e) {
+			status = (e as Error).message;
+		} finally {
+			busy = false;
+		}
+	}
+
+	/** This device's subscription as the hub has it. */
+	const mine = $derived(push?.subscriptions.find((s) => s.endpoint === sub?.endpoint) ?? null);
+	let prefsBusy = $state(false);
+
+	/** Mutes or unmutes one kind for this device; every kind on means "all". */
+	async function toggleKind(id: (typeof CATEGORIES)[number]['id'], on: boolean) {
+		if (!mine) return;
+		const next = CATEGORIES.map((c) => c.id).filter((c) =>
+			c === id ? on : wants(mine.categories, c)
+		);
+		prefsBusy = true;
+		status = '';
+		try {
+			await setPushPrefs(mine.endpoint, next.length === CATEGORIES.length ? null : next);
+			push = await fetchPush();
+		} catch (e) {
+			failed(e, (m) => (status = m));
+		} finally {
+			prefsBusy = false;
+		}
+	}
+
+	const device = (ua: string | null) =>
+		(ua || '')
+			.match(/(Firefox|Chrome|Safari)\/[\d.]+|Android|iPhone|Linux|Windows|Mac/g)
+			?.join(' ') || 'unknown device';
+
+	const labelOf = (tokenId: number | null) =>
+		devices?.tokens.find((t) => t.id === tokenId)?.label ?? null;
+
+	const pushOn = (t: Token) => push?.subscriptions.some((s) => s.token_id === t.id) ?? false;
+</script>
+
+<section class="flex flex-col gap-2">
+	<h2 class="text-base font-semibold">Connect a phone</h2>
+	<p class="text-sm text-muted-foreground">
+		Every link pairs one device with a token of its own and works for an hour until it is opened.
+		Scan it with the phone's camera while it is on the same network or VPN; the phone keeps the
+		token and shows up under Devices.
+	</p>
+	<form
+		class="flex flex-wrap gap-2"
+		onsubmit={(e) => {
+			e.preventDefault();
+			newLink();
+		}}
+	>
+		<Input
+			bind:value={label}
+			class="max-w-48"
+			placeholder="Label"
+			aria-label="Label of the new device"
+			maxlength={60}
+		/>
+		<Button type="submit" size="sm" disabled={busy}>New link</Button>
+	</form>
+	{#if pairing}
+		<img
+			class="w-48 rounded-md bg-white p-2"
+			alt="QR code of the link below"
+			src="data:image/svg+xml;charset=utf-8,{encodeURIComponent(pairing.svg)}"
+		/>
+		<code class="rounded bg-muted px-2 py-1 font-mono text-xs break-all">{pairing.url}</code>
+		<div class="flex flex-wrap items-center gap-2">
+			<Button
+				variant="outline"
+				size="sm"
+				onclick={async () => {
+					await navigator.clipboard?.writeText(pairing!.url);
+					copied = true;
+				}}>{copied ? 'Copied' : 'Copy link'}</Button
+			>
+			<span class="text-xs text-muted-foreground">
+				For "{pairing.token.label}"; unopened, it expires {pairing.token.expires_at
+					? `in ${fmtDuration(pairing.token.expires_at - live.now)}`
+					: 'never'}.
+			</span>
+		</div>
+	{:else if pairError}
+		<p class="text-sm text-critical">{pairError}</p>
+	{/if}
+</section>
+
+<section class="flex flex-col gap-2">
+	<h2 class="text-base font-semibold">This device</h2>
+	{#if devices?.bootstrap}
+		<p class="text-sm">
+			<span class="font-medium">Shared token.</span> This device is on the hub's configured token, which
+			cannot be revoked by itself. Re-pair to give it its own: open a new link here, or take one now.
+		</p>
+		<div>
+			<Button size="sm" disabled={busy} onclick={ownToken}>Give this device its own token</Button>
+		</div>
+	{:else if current}
+		<p class="text-sm text-muted-foreground">
+			Paired as <span class="font-medium text-foreground">{current.label}</span>; revoke it under
+			Devices to sign out.
+		</p>
+	{/if}
+	{#if pwa.installPrompt}
+		<div>
+			<Button variant="outline" size="sm" onclick={() => pwa.install()}>Install as an app</Button>
+		</div>
+	{:else if !pwa.installed}
+		<p class="text-sm text-muted-foreground">
+			Installable from the browser menu (Add to Home screen).
+		</p>
+	{:else}
+		<p class="text-sm text-muted-foreground">Installed.</p>
+	{/if}
+	{#if !pwa.pushSupported}
+		<p class="text-sm text-muted-foreground">This browser has no Web Push.</p>
+	{:else if !isSecureContext}
+		<p class="text-sm text-muted-foreground">Push notifications need HTTPS.</p>
+	{:else if push && !push.enabled}
+		<p class="text-sm text-muted-foreground">Push is off in the hub's configuration.</p>
+	{:else if Notification.permission === 'denied'}
+		<p class="text-sm text-muted-foreground">
+			Notifications are blocked for this site in the browser.
+		</p>
+	{:else if push}
+		<div class="flex flex-wrap gap-2">
+			<Button size="sm" disabled={busy} onclick={togglePush}
+				>{sub ? 'Turn off push notifications' : 'Turn on push notifications'}</Button
+			>
+			{#if sub}<Button variant="outline" size="sm" disabled={busy} onclick={sendTest}
+					>Send a test</Button
+				>{/if}
+		</div>
+		{#if sub && mine}
+			<fieldset class="flex flex-col gap-1.5 rounded-md border px-3 py-2">
+				<legend class="px-1 text-xs font-medium">Notify this device about</legend>
+				<div class="grid gap-x-6 gap-y-1 sm:grid-cols-2">
+					{#each ['sessions', 'workspace'] as const as group (group)}
+						<div class="flex flex-col gap-1">
+							<span class="text-xs text-muted-foreground"
+								>{group === 'sessions' ? 'Sessions' : 'Workspace sync'}</span
+							>
+							{#each CATEGORIES.filter((c) => c.group === group) as c (c.id)}
+								<label class="flex items-center gap-2 text-sm">
+									<Checkbox
+										checked={wants(mine.categories, c.id)}
+										disabled={prefsBusy}
+										onCheckedChange={(on) => toggleKind(c.id, on === true)}
+									/>
+									{c.label}
+								</label>
+							{/each}
+						</div>
+					{/each}
+				</div>
+				<p class="text-xs text-muted-foreground">
+					Kinds the hub's configuration turns off never notify; other devices keep their own choice.
+				</p>
+			</fieldset>
+		{/if}
+		{#if push.subscriptions.length}
+			<ul class="text-sm">
+				{#each push.subscriptions as d (d.id)}
+					<li class={d.last_failure_at ? 'text-critical' : ''}>
+						{labelOf(d.token_id) ?? device(d.user_agent)}{sub && d.endpoint === sub.endpoint
+							? ' (this device)'
+							: ''}
+						<span class="text-muted-foreground">
+							· {d.last_failure_at
+								? `failed ${fmtDuration(live.now - d.last_failure_at)} ago: ${d.last_failure}`
+								: d.last_success_at
+									? `sent ${fmtDuration(live.now - d.last_success_at)} ago`
+									: 'nothing sent yet'}{#if d.categories}
+								· {d.categories.length} of {CATEGORIES.length} kinds{/if}
+						</span>
+					</li>
+				{/each}
+			</ul>
+		{/if}
+	{:else if pushError}
+		<p class="text-sm text-critical">{pushError}</p>
+	{/if}
+	{#if status}<p class="text-sm text-muted-foreground" role="status">{status}</p>{/if}
+</section>
+
+<section class="flex flex-col gap-2">
+	<h2 class="text-base font-semibold">Devices</h2>
+	<p class="text-sm text-muted-foreground">
+		Every device paired with a link of its own; the pencil renames one. Revoking signs the device
+		out at its next request and ends its push notifications.
+	</p>
+	{#if devices}
+		{#if devices.tokens.length}
+			<ul class="flex flex-col gap-1.5">
+				{#each devices.tokens as t (t.id)}
+					<li class="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-md border px-2.5 py-1.5">
+						<div class="flex min-w-0 flex-1 flex-col gap-0.5">
+							<div class="flex items-center gap-2 text-sm">
+								{#if editId === t.id}
+									<form
+										class="flex min-w-0 flex-1 flex-wrap items-center gap-1.5"
+										onsubmit={(e) => {
+											e.preventDefault();
+											saveLabel();
+										}}
+									>
+										<Input
+											bind:ref={editRef}
+											bind:value={editLabel}
+											class="h-7 max-w-56"
+											aria-label="Name of {t.label}"
+											maxlength={60}
+											disabled={saving}
+											onkeydown={(e) => {
+												if (e.key === 'Escape') editId = null;
+											}}
+										/>
+										<Button type="submit" size="xs" disabled={saving || !editLabel.trim()}
+											>Save</Button
+										>
+										<Button type="button" variant="ghost" size="xs" onclick={() => (editId = null)}
+											>Cancel</Button
+										>
+									</form>
+								{:else}
+									<span class="truncate font-medium">{t.label}</span>
+									<Button
+										variant="ghost"
+										size="icon-xs"
+										aria-label="Rename {t.label}"
+										title="Rename"
+										onclick={() => edit(t)}><PencilIcon /></Button
+									>
+								{/if}
+								{#if t.current}<Badge variant="secondary">this device</Badge>{/if}
+								{#if t.expires_at}<Badge variant="outline">link not opened</Badge>{/if}
+							</div>
+							<div class="text-xs text-muted-foreground">
+								{device(t.user_agent)} · added {fmtStamp(t.created_at)} ·
+								{#if t.expires_at}
+									expires in {fmtDuration(t.expires_at - live.now)}
+								{:else if t.last_seen_at}
+									seen {fmtDuration(live.now - t.last_seen_at)} ago
+								{:else}
+									never seen
+								{/if}
+								{#if pushOn(t)}· push on{/if}
+							</div>
+						</div>
+						<Button variant="outline" size="xs" disabled={busy} onclick={() => (revoking = t)}
+							>Revoke</Button
+						>
+					</li>
+				{/each}
+			</ul>
+		{:else}
+			<p class="text-sm text-muted-foreground">
+				No device has a token of its own yet; every one is on the shared token.
+			</p>
+		{/if}
+	{:else if devicesError}
+		<p class="text-sm text-critical">{devicesError}</p>
+	{/if}
+	{#if devices && devicesError}
+		<p class="text-sm text-critical">{devicesError}</p>
+	{/if}
+</section>
+
+<Dialog.Root
+	open={revoking !== null}
+	onOpenChange={(open) => {
+		if (!open) revoking = null;
+	}}
+>
+	<Dialog.Content>
+		<Dialog.Header>
+			<Dialog.Title>
+				{revoking?.current ? 'Sign this device out?' : `Revoke ${revoking?.label ?? ''}?`}
+			</Dialog.Title>
+			<Dialog.Description>
+				{#if revoking?.current}
+					This signs this device out: its token stops working and its push notifications end. To
+					come back, pair it again from another device or with
+					<code class="font-mono">ccdash url --hub --qr</code>.
+				{:else}
+					The device loses access at its next request and its push notifications end.
+				{/if}
+			</Dialog.Description>
+		</Dialog.Header>
+		<Dialog.Footer>
+			<Button variant="outline" onclick={() => (revoking = null)}>Cancel</Button>
+			<Button variant="destructive" disabled={busy} onclick={() => revoking && revoke(revoking)}
+				>Revoke</Button
+			>
+		</Dialog.Footer>
+	</Dialog.Content>
+</Dialog.Root>
