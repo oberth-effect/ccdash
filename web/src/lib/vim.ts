@@ -93,8 +93,11 @@ export function setClipboard(on: boolean, readOnPaste = true) {
 	const push = rc.pushText;
 	rc.pushText = function (name, operator, text, linewise, blockwise) {
 		push.call(this, name, operator, text, linewise, blockwise);
-		if (clipboardOn && (!name || name === '"') && text)
-			navigator.clipboard?.writeText(text).catch(() => {});
+		if (!clipboardOn || (name && name !== '"') || !text) return;
+		// NOTE: a linewise yank (`Vy`) gets its newline from the engine after this
+		// point; the clipboard must end with it too, or `p` pastes it inline
+		const out = linewise && !text.endsWith('\n') ? text + '\n' : text;
+		navigator.clipboard?.writeText(out).catch(() => {});
 	};
 }
 

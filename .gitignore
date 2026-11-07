@@ -256,3 +256,7 @@ cscope.po.out
 # -------------------------------
 
 .claude-tmp/
+
+# web-ext sign: the signed .xpi and the upload id it keeps for the next run
+web-ext-artifacts/
+firefox-ext/.amo-upload-uuid
