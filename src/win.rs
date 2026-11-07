@@ -17,9 +17,10 @@ use windows_sys::{
     Wdk::System::Threading::ProcessBasicInformation,
     Win32::{
         Foundation::{
-            ERROR_ACCESS_DENIED, ERROR_BUFFER_OVERFLOW, ERROR_IO_PENDING, ERROR_OPERATION_ABORTED,
-            ERROR_SUCCESS, FILETIME, HANDLE, INVALID_HANDLE_VALUE, LocalFree, UNICODE_STRING,
-            WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT,
+            ERROR_ACCESS_DENIED, ERROR_BUFFER_OVERFLOW, ERROR_INVALID_FUNCTION, ERROR_IO_PENDING,
+            ERROR_NOTIFY_ENUM_DIR, ERROR_OPERATION_ABORTED, ERROR_SUCCESS, FILETIME, HANDLE,
+            INVALID_HANDLE_VALUE, LocalFree, UNICODE_STRING, WAIT_FAILED, WAIT_OBJECT_0,
+            WAIT_TIMEOUT,
         },
         NetworkManagement::IpHelper::GAA_FLAG_SKIP_ANYCAST,
         NetworkManagement::IpHelper::GAA_FLAG_SKIP_DNS_SERVER,
@@ -40,7 +41,16 @@ use windows_sys::{
             EqualSid, GetTokenInformation, OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID,
             SECURITY_ATTRIBUTES, TOKEN_QUERY, TOKEN_USER, TokenUser,
         },
-        Storage::FileSystem::{GetDiskFreeSpaceExW, GetVolumePathNameW, ReadFile, WriteFile},
+        Storage::FileSystem::{
+            FILE_ACTION_ADDED, FILE_ACTION_MODIFIED, FILE_ACTION_REMOVED,
+            FILE_ACTION_RENAMED_NEW_NAME, FILE_ACTION_RENAMED_OLD_NAME, FILE_ATTRIBUTE_DIRECTORY,
+            FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OVERLAPPED, FILE_LIST_DIRECTORY,
+            FILE_NOTIFY_CHANGE_ATTRIBUTES, FILE_NOTIFY_CHANGE_DIR_NAME,
+            FILE_NOTIFY_CHANGE_FILE_NAME, FILE_NOTIFY_CHANGE_LAST_WRITE, FILE_NOTIFY_CHANGE_SIZE,
+            FILE_NOTIFY_EXTENDED_INFORMATION, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+            GetDiskFreeSpaceExW, GetVolumePathNameW, ReadDirectoryChangesExW,
+            ReadDirectoryNotifyExtendedInformation, ReadFile, WriteFile,
+        },
         System::{
             Diagnostics::ToolHelp::CreateToolhelp32Snapshot,
             Diagnostics::ToolHelp::PROCESSENTRY32W,
@@ -1024,6 +1034,201 @@ pub fn os_version() -> (Option<String>, String) {
     (pretty, kernel)
 }
 
+/// What happened to a path under a [`DirWatch`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Change {
+    Added,
+    Removed,
+    Modified,
+    /// Renamed away; a `RenamedTo` with the new name follows.
+    RenamedFrom,
+    RenamedTo,
+}
+
+/// One change, its path relative to the watched root with `/` separators.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DirEvent {
+    pub change: Change,
+    pub path: String,
+    pub is_dir: bool,
+}
+
+/// A watch on a directory and everything under it
+/// (`ReadDirectoryChangesExW`, extended information; local disks only, a
+/// network share refuses it). A read is outstanding from `open` on: the
+/// system records changes only once one was issued.
+pub struct DirWatch {
+    dir: std::fs::File,
+    /// Signalled by the outstanding read; held so its handle stays open.
+    _event: Event,
+    /// The outstanding read's; boxed, as the system holds its address.
+    overlapped: Box<OVERLAPPED>,
+    /// The outstanding read's buffer; never resized while it is pending.
+    buf: Vec<u64>,
+    /// A read is outstanding: `drop` waits only for one.
+    pending: bool,
+}
+
+// SAFETY: the OVERLAPPED and the buffer belong to this value alone; the
+// system writes them only for the outstanding read, which `drop` ends
+unsafe impl Send for DirWatch {}
+
+/// Bytes of change records one read can hold.
+const WATCH_BUFFER: usize = 256 << 10;
+
+impl DirWatch {
+    pub fn open(root: &std::path::Path) -> io::Result<Self> {
+        use std::os::windows::fs::OpenOptionsExt;
+        let dir = std::fs::OpenOptions::new()
+            .access_mode(FILE_LIST_DIRECTORY)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OVERLAPPED)
+            .open(root)?;
+        let event = Event::new()?;
+        // SAFETY: all-zero is a valid OVERLAPPED
+        let mut overlapped: Box<OVERLAPPED> = Box::new(unsafe { std::mem::zeroed() });
+        overlapped.hEvent = event.0.as_raw_handle();
+        let mut watch = Self {
+            dir,
+            _event: event,
+            overlapped,
+            buf: vec![0; WATCH_BUFFER / 8],
+            pending: false,
+        };
+        watch.arm().map_err(|e| {
+            if e.raw_os_error() == Some(ERROR_INVALID_FUNCTION as i32) {
+                io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    format!("{} cannot be watched (a network share?)", root.display()),
+                )
+            } else {
+                e
+            }
+        })?;
+        Ok(watch)
+    }
+
+    /// Issues the next read.
+    fn arm(&mut self) -> io::Result<()> {
+        let filter = FILE_NOTIFY_CHANGE_FILE_NAME
+            | FILE_NOTIFY_CHANGE_DIR_NAME
+            | FILE_NOTIFY_CHANGE_ATTRIBUTES
+            | FILE_NOTIFY_CHANGE_SIZE
+            | FILE_NOTIFY_CHANGE_LAST_WRITE;
+        // SAFETY: the buffer and the OVERLAPPED outlive the read: `read` waits
+        // for it before touching them, `drop` cancels and waits
+        let ok = unsafe {
+            ReadDirectoryChangesExW(
+                self.dir.as_raw_handle(),
+                self.buf.as_mut_ptr().cast(),
+                (self.buf.len() * 8) as u32,
+                1,
+                filter,
+                ptr::null_mut(),
+                &raw mut *self.overlapped,
+                None,
+                ReadDirectoryNotifyExtendedInformation,
+            )
+        };
+        if ok == 0 {
+            let e = io::Error::last_os_error();
+            if e.raw_os_error() != Some(ERROR_IO_PENDING as i32) {
+                return Err(e);
+            }
+        }
+        self.pending = true;
+        Ok(())
+    }
+
+    /// Blocks until something under the root changes; None when changes
+    /// were lost (the buffer overflowed).
+    pub fn read(&mut self) -> io::Result<Option<Vec<DirEvent>>> {
+        if !self.pending {
+            self.arm()?;
+        }
+        let mut bytes = 0u32;
+        // SAFETY: the outstanding read's OVERLAPPED; waits for it to end
+        let ok = unsafe {
+            GetOverlappedResult(
+                self.dir.as_raw_handle(),
+                &raw const *self.overlapped,
+                &raw mut bytes,
+                1,
+            )
+        };
+        self.pending = false;
+        if ok == 0 {
+            let e = io::Error::last_os_error();
+            if e.raw_os_error() != Some(ERROR_NOTIFY_ENUM_DIR as i32) {
+                return Err(e);
+            }
+            bytes = 0;
+        }
+        let events = (bytes > 0).then(|| self.parse(bytes as usize));
+        self.arm()?;
+        Ok(events)
+    }
+
+    /// The records of a finished read, `bytes` long.
+    fn parse(&self, bytes: usize) -> Vec<DirEvent> {
+        let mut events = Vec::new();
+        let base = self.buf.as_ptr().cast::<u8>();
+        let mut offset = 0usize;
+        while offset < bytes {
+            // SAFETY: the system wrote the records within `bytes`, the name after
+            // each header; records are only DWORD-aligned, so the header (with
+            // 8-byte fields) is copied out unaligned, inside the buffer
+            let (next, action, attributes, name) = unsafe {
+                let record = base.add(offset);
+                let info = ptr::read_unaligned(record.cast::<FILE_NOTIFY_EXTENDED_INFORMATION>());
+                let at = record
+                    .add(std::mem::offset_of!(
+                        FILE_NOTIFY_EXTENDED_INFORMATION,
+                        FileName
+                    ))
+                    .cast::<u16>();
+                let name = std::slice::from_raw_parts(at, info.FileNameLength as usize / 2);
+                (info.NextEntryOffset, info.Action, info.FileAttributes, name)
+            };
+            let change = match action {
+                FILE_ACTION_ADDED => Some(Change::Added),
+                FILE_ACTION_REMOVED => Some(Change::Removed),
+                FILE_ACTION_MODIFIED => Some(Change::Modified),
+                FILE_ACTION_RENAMED_OLD_NAME => Some(Change::RenamedFrom),
+                FILE_ACTION_RENAMED_NEW_NAME => Some(Change::RenamedTo),
+                _ => None,
+            };
+            if let Some(change) = change {
+                events.push(DirEvent {
+                    change,
+                    path: String::from_utf16_lossy(name).replace('\\', "/"),
+                    is_dir: attributes & FILE_ATTRIBUTE_DIRECTORY != 0,
+                });
+            }
+            if next == 0 {
+                break;
+            }
+            offset += next as usize;
+        }
+        events
+    }
+}
+
+impl Drop for DirWatch {
+    fn drop(&mut self) {
+        if !self.pending {
+            return;
+        }
+        let handle = self.dir.as_raw_handle();
+        let mut bytes = 0u32;
+        // SAFETY: ends the outstanding read before its buffer and OVERLAPPED go
+        unsafe {
+            CancelIoEx(handle, &raw const *self.overlapped);
+            GetOverlappedResult(handle, &raw const *self.overlapped, &raw mut bytes, 1);
+        }
+    }
+}
+
 /// The current process's `TOKEN_USER`, at the start of the buffer.
 fn token_user() -> io::Result<Vec<u64>> {
     let mut token: HANDLE = ptr::null_mut();
@@ -1152,6 +1357,17 @@ mod tests {
     }
 
     #[test]
+    #[ignore = r"needs the C$ share over \\localhost"]
+    fn a_network_share_is_refused_at_once() {
+        let local = std::env::temp_dir();
+        let rest = local.to_str().unwrap().strip_prefix(r"C:\").unwrap();
+        let unc = std::path::Path::new(r"\\localhost\C$").join(rest);
+        // NOTE: a failed first read once left drop waiting for it forever
+        let e = DirWatch::open(&unc).err().unwrap();
+        assert_eq!(e.kind(), io::ErrorKind::Unsupported, "{e}");
+    }
+
+    #[test]
     fn this_process_is_listed_with_its_times_and_command_line() {
         let me = std::process::id();
         let listed = processes().into_iter().find(|p| p.pid == me).unwrap();
@@ -1189,6 +1405,39 @@ mod tests {
         assert!(power_status().is_some());
         let (_, kernel) = os_version();
         assert!(kernel.starts_with("10.0."), "{kernel}");
+    }
+
+    #[test]
+    fn a_tree_watch_sees_files_and_directories() {
+        let root = std::env::temp_dir().join(format!("ccdash-dirwatch-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let mut watch = DirWatch::open(&root).unwrap();
+        let writer = {
+            let root = root.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(200));
+                std::fs::create_dir(root.join("d")).unwrap();
+                std::fs::write(root.join("d").join("f.txt"), "x").unwrap();
+                std::fs::remove_dir_all(root.join("d")).unwrap();
+            })
+        };
+        let mut seen = Vec::new();
+        while !seen.contains(&(Change::Removed, "d".to_owned(), true)) {
+            for e in watch.read().unwrap().unwrap_or_default() {
+                seen.push((e.change, e.path, e.is_dir));
+            }
+        }
+        writer.join().unwrap();
+        assert!(
+            seen.contains(&(Change::Added, "d".to_owned(), true)),
+            "{seen:?}"
+        );
+        assert!(
+            seen.contains(&(Change::Added, "d/f.txt".to_owned(), false)),
+            "{seen:?}"
+        );
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
