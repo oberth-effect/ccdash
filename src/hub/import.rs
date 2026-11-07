@@ -280,16 +280,20 @@ fn memory_tree(
 /// The directory of `workspace_dir` named like `scope`, case-insensitively
 /// (`radar-bite` → `radar-BITE`), as the note's project.
 fn project_dir(workspace_dir: &Path, scope: &str) -> Option<String> {
-    if workspace_dir.join(scope).is_dir() {
-        return Some(scope.to_owned());
-    }
-    let wanted = scope.to_lowercase();
-    std::fs::read_dir(workspace_dir)
+    // NOTE: listed, not `join(scope).is_dir()`: a case-insensitive file
+    // system (Windows) finds `radar-bite` and the real name is lost
+    let names: Vec<String> = std::fs::read_dir(workspace_dir)
         .ok()?
         .filter_map(Result::ok)
         .filter(|e| e.path().is_dir())
         .map(|e| e.file_name().to_string_lossy().into_owned())
-        .find(|name| name.to_lowercase() == wanted)
+        .collect();
+    let wanted = scope.to_lowercase();
+    names
+        .iter()
+        .find(|name| *name == scope)
+        .or_else(|| names.iter().find(|name| name.to_lowercase() == wanted))
+        .cloned()
 }
 
 /// One `- [Title](file.md) — hook` line of an index.
