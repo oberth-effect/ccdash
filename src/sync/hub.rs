@@ -7,7 +7,6 @@ use std::{
     collections::{BTreeMap, HashMap, HashSet},
     fs::{self, File, OpenOptions},
     io::{Read, Seek, SeekFrom, Write},
-    os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -34,6 +33,7 @@ use super::{
     session_of, valid_path,
 };
 use crate::{
+    fsx,
     hub::{collect::Tokens, core::Hub},
     store::Store,
     util::now_ms,
@@ -116,7 +116,7 @@ impl Tree {
     /// The directory cannot be created.
     pub fn open(root: &Path) -> Result<Self> {
         fs::create_dir_all(root).with_context(|| format!("creating {}", root.display()))?;
-        fs::set_permissions(root, fs::Permissions::from_mode(0o700))?;
+        fsx::set_mode(root, 0o700)?;
         Ok(Self {
             root: root.to_owned(),
         })

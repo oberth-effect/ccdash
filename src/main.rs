@@ -15,6 +15,7 @@ mod conversation;
 mod demo;
 mod drafts;
 mod emit;
+mod fsx;
 mod git;
 mod history;
 mod hub;

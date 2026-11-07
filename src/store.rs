@@ -4,8 +4,7 @@
 
 use std::{
     collections::HashSet,
-    fs::{self, OpenOptions, Permissions},
-    os::unix::fs::{OpenOptionsExt, PermissionsExt},
+    fs::{self, OpenOptions},
     path::{Path, PathBuf},
     sync::mpsc,
     thread,
@@ -19,7 +18,9 @@ use tokio::sync::oneshot;
 use tracing::warn;
 
 use crate::{
-    agent_message, claims, knowledge, messages,
+    agent_message, claims,
+    fsx::{self, ModeExt},
+    knowledge, messages,
     model::{Activity, HostStatus, Kind, Resolved, Session, Stamped, Turn},
     paths, push,
     state::{PREVIEW_LEN, Restored, StoreMsg, apply_task},
@@ -207,7 +208,7 @@ pub fn open_writer(path: &Path) -> Result<Connection> {
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir)?;
         if dir == paths::state_dir() {
-            fs::set_permissions(dir, Permissions::from_mode(0o700))?;
+            fsx::set_mode(dir, 0o700)?;
         }
     }
     make_private(path)?;
@@ -409,7 +410,7 @@ pub(crate) fn make_private(path: &Path) -> Result<()> {
     for suffix in ["", "-wal", "-shm"] {
         let file = PathBuf::from(format!("{}{suffix}", path.display()));
         if file.exists() {
-            fs::set_permissions(&file, Permissions::from_mode(0o600))?;
+            fsx::set_mode(&file, 0o600)?;
         }
     }
     Ok(())
@@ -1048,8 +1049,12 @@ mod tests {
             );
         }
 
-        let mode = fs::metadata(dir.join("t.db")).unwrap().permissions().mode();
-        assert_eq!(mode & 0o777, 0o600);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = fs::metadata(dir.join("t.db")).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
         let reader = store.reader().unwrap();
         let page_size: i64 = reader
             .pragma_query_value(None, "page_size", |r| r.get(0))

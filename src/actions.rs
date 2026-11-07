@@ -3,9 +3,8 @@
 
 use std::{
     collections::{BTreeMap, HashSet},
-    fs::{OpenOptions, Permissions},
+    fs::OpenOptions,
     io::Write,
-    os::unix::fs::{OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
     process::Stdio,
     time::{Duration, SystemTime},
@@ -19,6 +18,7 @@ use tracing::{info, warn};
 use crate::{
     collector::Local,
     config,
+    fsx::{self, ModeExt},
     model::{Kind, Session},
     niri, paths,
     sync::glob,
@@ -65,7 +65,7 @@ async fn edit_in(
         return Err(format!("{id:?} is not an edit id"));
     }
     std::fs::create_dir_all(dir).map_err(|e| format!("creating {}: {e}", dir.display()))?;
-    let _ = std::fs::set_permissions(dir, Permissions::from_mode(0o700));
+    let _ = fsx::set_mode(dir, 0o700);
     let file = dir.join(format!("{id}.md"));
     let write = || -> std::io::Result<()> {
         let mut f = OpenOptions::new()
@@ -296,7 +296,7 @@ fn write_settings(
 ) -> Result<PathBuf, String> {
     let dir = launch_dir();
     std::fs::create_dir_all(&dir).map_err(|e| format!("creating {}: {e}", dir.display()))?;
-    let _ = std::fs::set_permissions(&dir, Permissions::from_mode(0o700));
+    let _ = fsx::set_mode(&dir, 0o700);
     prune_settings(&dir, jobs);
     let path = dir.join(format!("{nonce}.json"));
     let mut file = OpenOptions::new()
@@ -703,11 +703,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let script = dir.join("claude");
         std::fs::write(&script, "#!/bin/sh\ntrap 'exit 0' TERM\nsleep 600\n").unwrap();
-        std::fs::set_permissions(
-            &script,
-            <std::fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o755),
-        )
-        .unwrap();
+        fsx::set_mode(&script, 0o755).unwrap();
         // NOTE: a parallel test forking between the write and the exec holds the
         // script open ("text file busy"); spawning is retried
         let mut child = loop {
@@ -743,7 +739,7 @@ mod tests {
             { echo edited; cat \"$1\"; } > \"$1.new\" && mv \"$1.new\" \"$1\"\n",
         )
         .unwrap();
-        std::fs::set_permissions(&script, Permissions::from_mode(0o755)).unwrap();
+        fsx::set_mode(&script, 0o755).unwrap();
         // NOTE: through `sh`: a parallel test forking between the write and an
         // exec of the script holds it open ("text file busy")
         let cmd = vec![

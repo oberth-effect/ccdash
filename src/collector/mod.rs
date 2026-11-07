@@ -13,8 +13,7 @@ mod skills;
 
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
-    fs::Permissions,
-    os::unix::{fs::PermissionsExt, net::UnixStream as StdUnixStream},
+    os::unix::net::UnixStream as StdUnixStream,
     path::{Path, PathBuf},
     sync::Arc,
     time::Duration,
@@ -34,7 +33,7 @@ use crate::{
     agents,
     channel::ToChannel,
     config::{CollectorConfig, Launch, Power},
-    git,
+    fsx, git,
     knowledge::{self, Note, Query},
     machine::{MachineReport, PowerAction, Sampler, display_session},
     model::{
@@ -253,10 +252,10 @@ pub fn run(cfg: CollectorConfig) -> Result<()> {
 async fn serve(cfg: Arc<CollectorConfig>) -> Result<()> {
     let dir = paths::runtime_dir();
     std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
-    std::fs::set_permissions(&dir, Permissions::from_mode(0o700))?;
+    fsx::set_mode(&dir, 0o700)?;
     let state_dir = paths::state_dir();
     std::fs::create_dir_all(&state_dir)?;
-    std::fs::set_permissions(&state_dir, Permissions::from_mode(0o700))?;
+    fsx::set_mode(&state_dir, 0o700)?;
     let (ingest_path, api_path) = (paths::ingest_socket(), paths::api_socket());
     if StdUnixStream::connect(&api_path).is_ok() {
         bail!(
@@ -1076,7 +1075,7 @@ impl Actor {
         let result = serde_json::to_vec(&cache)
             .map_err(std::io::Error::other)
             .and_then(|bytes| std::fs::write(&tmp, bytes))
-            .and_then(|()| std::fs::set_permissions(&tmp, Permissions::from_mode(0o600)))
+            .and_then(|()| fsx::set_mode(&tmp, 0o600))
             .and_then(|()| std::fs::rename(&tmp, &self.cache_path));
         if let Err(e) = result {
             warn!("notes cache: {e}");

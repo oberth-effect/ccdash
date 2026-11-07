@@ -14,7 +14,6 @@ use std::{
     convert::Infallible,
     fs::OpenOptions,
     io::{Read, Write},
-    os::unix::fs::OpenOptionsExt,
     path::PathBuf,
     sync::Arc,
     time::Duration,
@@ -54,6 +53,7 @@ use crate::{
     catalog::{self, Catalog},
     config::HubConfig,
     conversation,
+    fsx::ModeExt,
     history::{self, History},
     knowledge::{
         self, Filter, NoteKind, NoteOp, Status, Upsert,
