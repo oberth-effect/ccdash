@@ -317,6 +317,8 @@ impl Git {
                 self.hooks_dir.to_string_lossy().into_owned(),
             ),
             ("gc.auto".into(), "0".into()),
+            // NOTE: working trees travel byte for byte, whatever the user's git converts
+            ("core.autocrlf".into(), "false".into()),
             ("credential.helper".into(), String::new()),
             ("protocol.version".into(), "2".into()),
             ("advice.detachedHead".into(), "false".into()),
