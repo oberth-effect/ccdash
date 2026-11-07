@@ -70,6 +70,11 @@ mod imp {
         }
     }
 
+    /// Whether a collector serves the API socket at `path`.
+    pub fn serving(path: &Path) -> bool {
+        Stream::connect(path).is_ok()
+    }
+
     /// Where a client of `path` connects, for the log.
     pub fn address(path: &Path) -> String {
         path.display().to_string()
@@ -291,6 +296,12 @@ mod imp {
         }
     }
 
+    /// Whether something serves the API pipe for `path`: only a pipe that
+    /// does not exist says no, a busy one or another user's says yes.
+    pub fn serving(path: &Path) -> bool {
+        !matches!(Stream::connect(path), Err(e) if e.kind() == io::ErrorKind::NotFound)
+    }
+
     /// Where a client of `path` connects, for the log.
     pub fn address(path: &Path) -> String {
         pipe_name(path)
@@ -496,6 +507,27 @@ mod imp {
             .unwrap();
             assert_eq!(reply, "ping!\n");
             server.await.unwrap();
+        }
+
+        #[tokio::test]
+        async fn a_busy_pipe_counts_as_served() {
+            let path = socket("serving");
+            let probe = path.clone();
+            assert!(
+                !tokio::task::spawn_blocking(move || serving(&probe))
+                    .await
+                    .unwrap()
+            );
+            let _listener = Listener::bind(&path).unwrap();
+            // NOTE: holds the only instance; nothing accepts it
+            let held = Stream::connect(&path).unwrap();
+            let probe = path.clone();
+            assert!(
+                tokio::task::spawn_blocking(move || serving(&probe))
+                    .await
+                    .unwrap()
+            );
+            drop(held);
         }
 
         #[tokio::test]

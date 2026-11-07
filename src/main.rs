@@ -80,6 +80,11 @@ enum Command {
     Collector {
         #[arg(long)]
         config: Option<PathBuf>,
+        /// Start it again with no console window, its log in
+        /// `%LOCALAPPDATA%\ccdash\state\collector.log`, and return.
+        #[cfg(windows)]
+        #[arg(long)]
+        background: bool,
     },
     /// Claude Code hook: forward the hook payload on stdin to the collector.
     Emit,
@@ -355,7 +360,12 @@ fn main() -> ExitCode {
             logging();
             config::load::<HubConfig>(config).and_then(hub::run)
         }
-        Command::Collector { config } => {
+        #[cfg(windows)]
+        Command::Collector {
+            config,
+            background: true,
+        } => collector::background(config),
+        Command::Collector { config, .. } => {
             logging();
             config::load::<CollectorConfig>(config).and_then(collector::run)
         }
@@ -480,12 +490,15 @@ fn exit(code: i32) -> ExitCode {
 }
 
 fn logging() {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::try_from_env("CCDASH_LOG").unwrap_or_else(|_| EnvFilter::new("info")),
-        )
-        .without_time()
-        .init();
+    let builder = tracing_subscriber::fmt().with_env_filter(
+        EnvFilter::try_from_env("CCDASH_LOG").unwrap_or_else(|_| EnvFilter::new("info")),
+    );
+    // NOTE: no journal on Windows: a redirected stderr is the log file itself
+    if cfg!(windows) && !std::io::IsTerminal::is_terminal(&std::io::stderr()) {
+        builder.with_ansi(false).init();
+    } else {
+        builder.without_time().init();
+    }
 }
 
 /// The hub's web address: with a fresh device token minted in the hub's

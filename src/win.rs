@@ -52,6 +52,8 @@ use windows_sys::{
             ReadDirectoryNotifyExtendedInformation, ReadFile, WriteFile,
         },
         System::{
+            Console::FreeConsole,
+            Console::GetConsoleProcessList,
             Diagnostics::ToolHelp::CreateToolhelp32Snapshot,
             Diagnostics::ToolHelp::PROCESSENTRY32W,
             Diagnostics::ToolHelp::Process32FirstW,
@@ -714,6 +716,18 @@ fn quote_arg(arg: &str) -> String {
     out.extend(std::iter::repeat_n('\\', backslashes * 2));
     out.push('"');
     out
+}
+
+/// Leaves the console when it was made for this process alone (started
+/// from the Run key or Explorer), so its window closes; one shared with a
+/// shell stays. Output to it is dropped then.
+pub fn leave_own_console() {
+    let mut pids = [0u32; 2];
+    // SAFETY: room for two pids, as given
+    if unsafe { GetConsoleProcessList(pids.as_mut_ptr(), 2) } == 1 {
+        // SAFETY: plain call
+        unsafe { FreeConsole() };
+    }
 }
 
 /// Whether a process with this id runs. One this user may not open

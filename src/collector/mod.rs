@@ -241,6 +241,74 @@ fn features(cfg: &CollectorConfig) -> HostFeatures {
     }
 }
 
+/// How long `background` watches the new collector for an early exit.
+#[cfg(windows)]
+const BACKGROUND_SETTLE: Duration = Duration::from_secs(2);
+
+/// Starts `ccdash collector` again with no console window (the helpers it
+/// runs share that hidden console; editors and attaches get their own), its
+/// output in `<state dir>\collector.log`, rewritten at each start.
+///
+/// # Errors
+///
+/// A collector already listens, or the new one could not start or exited
+/// at once.
+#[cfg(windows)]
+pub fn background(config: Option<PathBuf>) -> Result<()> {
+    use std::{
+        io::Write,
+        os::windows::{fs::OpenOptionsExt, process::CommandExt},
+    };
+    let dir = paths::state_dir();
+    std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
+    // NOTE: one start at a time, from the check to the settled child: two at logon would
+    // both truncate the log
+    let _starting = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .share_mode(0)
+        .open(dir.join("collector.start"))
+        .map_err(|_| anyhow::anyhow!("another ccdash collector is starting"))?;
+    // NOTE: the log is truncated below: a running collector writes to it
+    if ipc::serving(&paths::api_socket()) {
+        bail!("a ccdash collector is already running");
+    }
+    let log_path = dir.join("collector.log");
+    let log = std::fs::File::create(&log_path)
+        .with_context(|| format!("creating {}", log_path.display()))?;
+    let mut command = std::process::Command::new(std::env::current_exe()?);
+    command.arg("collector");
+    if let Some(config) = config {
+        command.arg("--config").arg(config);
+    }
+    let mut child = command
+        .stdin(std::process::Stdio::null())
+        .stdout(log.try_clone()?)
+        .stderr(log)
+        .creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW)
+        .spawn()
+        .context("starting the collector")?;
+    // NOTE: past the checks, a window opened for this start alone (the Run key's) goes,
+    // not to stand through the settling; what follows is in the log as well
+    crate::win::leave_own_console();
+    std::thread::sleep(BACKGROUND_SETTLE);
+    if let Some(status) = child.try_wait()? {
+        let message = format!("the collector exited at once ({status})");
+        if let Ok(mut log) = std::fs::OpenOptions::new().append(true).open(&log_path) {
+            let _ = writeln!(log, "ccdash collector --background: {message}");
+        }
+        bail!("{message}; see {}", log_path.display());
+    }
+    let _ = writeln!(
+        std::io::stdout(),
+        "collector running (pid {}), its log in {}",
+        child.id(),
+        log_path.display()
+    );
+    Ok(())
+}
+
 pub fn run(cfg: CollectorConfig) -> Result<()> {
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -256,7 +324,7 @@ async fn serve(cfg: Arc<CollectorConfig>) -> Result<()> {
     std::fs::create_dir_all(&state_dir)?;
     fsx::set_mode(&state_dir, 0o700)?;
     let (ingest_path, api_path) = (paths::ingest_socket(), paths::api_socket());
-    if ipc::Stream::connect(&api_path).is_ok() {
+    if ipc::serving(&api_path) {
         bail!(
             "another ccdash collector is listening on {}",
             api_path.display()
