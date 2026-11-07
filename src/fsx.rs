@@ -1,6 +1,7 @@
-//! Owner-only file modes. Unix applies them; on Windows a file takes the
-//! ACL of the directory it is created in (under the user's profile), so
-//! they do nothing there.
+//! Owner-only file modes. Unix applies them; on Windows `set_mode` gives an
+//! owner-only mode (no group or other bits) a DACL that lets only the user
+//! in, and a file created with a mode takes the DACL of its directory,
+//! which `set_mode` made owner-only (the state, runtime and edit dirs).
 
 use std::{fs::OpenOptions, io, path::Path};
 
@@ -21,20 +22,23 @@ impl ModeExt for OpenOptions {
     }
 }
 
-/// Sets the permission bits of `path` on Unix; nothing elsewhere.
+/// Sets the permission bits of `path` on Unix; on Windows an owner-only
+/// mode becomes an owner-only DACL, any other leaves the DACL alone.
 ///
 /// # Errors
 ///
-/// `chmod` failed.
+/// `chmod` (or setting the DACL) failed.
 pub fn set_mode(path: &Path, mode: u32) -> io::Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
     {
-        let _ = (path, mode);
+        if mode & 0o077 == 0 {
+            crate::win::owner_only(path)?;
+        }
         Ok(())
     }
 }

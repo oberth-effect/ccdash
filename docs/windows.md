@@ -99,11 +99,13 @@ or an attach opens a window of its own.
 
 The pipes' names hash the socket path under the runtime directory, so
 `CCDASH_RUNTIME_DIR` still gives a second collector a place of its own.
-They let in the current user only, and no remote client. `XDG_*`
-variables still win over the folders above, but for `XDG_RUNTIME_DIR`:
-the pipes are named after the runtime folder, which the collector and
-every hook must agree on, and only `LOCALAPPDATA` is the same for all of
-them. The collector's log names its pipes.
+They let in the current user only, and no remote client. The state and
+runtime folders get a DACL of their own for the user alone, which what
+they hold inherits, as mode 0700 does on Linux. `XDG_*` variables still
+win over the folders above, but for `XDG_RUNTIME_DIR`: the pipes are
+named after the runtime folder, which the collector and every hook must
+agree on, and only `LOCALAPPDATA` is the same for all of them. The
+collector's log names its pipes.
 
 ## 6. Differences
 

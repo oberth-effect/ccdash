@@ -34,12 +34,16 @@ use windows_sys::{
         Networking::WinSock::AF_INET,
         Networking::WinSock::SOCKADDR_IN,
         Security::{
+            ACL,
             Authorization::{
-                ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW,
-                GetSecurityInfo, SDDL_REVISION_1, SE_KERNEL_OBJECT,
+                ConvertSecurityDescriptorToStringSecurityDescriptorW, ConvertSidToStringSidW,
+                ConvertStringSecurityDescriptorToSecurityDescriptorW, GetNamedSecurityInfoW,
+                GetSecurityInfo, SDDL_REVISION_1, SE_FILE_OBJECT, SE_KERNEL_OBJECT,
+                SetNamedSecurityInfoW,
             },
-            EqualSid, GetTokenInformation, OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID,
-            SECURITY_ATTRIBUTES, TOKEN_QUERY, TOKEN_USER, TokenUser,
+            DACL_SECURITY_INFORMATION, EqualSid, GetSecurityDescriptorDacl, GetTokenInformation,
+            OWNER_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR,
+            PSID, SECURITY_ATTRIBUTES, TOKEN_QUERY, TOKEN_USER, TokenUser,
         },
         Storage::FileSystem::{
             FILE_ACTION_ADDED, FILE_ACTION_MODIFIED, FILE_ACTION_REMOVED,
@@ -244,7 +248,8 @@ pub fn wait_named_pipe(name: &str, timeout: Duration) -> bool {
 /// Security attributes that let only the current user in, and make the
 /// user the owner (an elevated token would make it Administrators).
 pub struct OwnerOnly {
-    descriptor: PSECURITY_DESCRIPTOR,
+    /// Held: `attributes` points at it.
+    _descriptor: Descriptor,
     attributes: SECURITY_ATTRIBUTES,
 }
 
@@ -254,40 +259,20 @@ unsafe impl Send for OwnerOnly {}
 impl OwnerOnly {
     pub fn new() -> io::Result<Self> {
         let sid = user_sid()?;
-        let sddl = wide(&format!("O:{sid}D:P(A;;GA;;;{sid})"));
-        let mut descriptor: PSECURITY_DESCRIPTOR = ptr::null_mut();
-        // SAFETY: `sddl` is NUL-terminated; the descriptor is LocalFree'd on drop
-        let ok = unsafe {
-            ConvertStringSecurityDescriptorToSecurityDescriptorW(
-                sddl.as_ptr(),
-                SDDL_REVISION_1,
-                &raw mut descriptor,
-                ptr::null_mut(),
-            )
-        };
-        if ok == 0 {
-            return Err(io::Error::last_os_error());
-        }
+        let descriptor = Descriptor::from_sddl(&format!("O:{sid}D:P(A;;GA;;;{sid})"))?;
         Ok(Self {
-            descriptor,
             attributes: SECURITY_ATTRIBUTES {
                 nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
-                lpSecurityDescriptor: descriptor,
+                lpSecurityDescriptor: descriptor.0,
                 bInheritHandle: 0,
             },
+            _descriptor: descriptor,
         })
     }
 
     /// The `SECURITY_ATTRIBUTES`, valid while `self` is.
     pub fn as_ptr(&self) -> *mut c_void {
         (&raw const self.attributes).cast_mut().cast()
-    }
-}
-
-impl Drop for OwnerOnly {
-    fn drop(&mut self) {
-        // SAFETY: allocated by ConvertStringSecurityDescriptorToSecurityDescriptorW
-        unsafe { LocalFree(self.descriptor) };
     }
 }
 
@@ -321,6 +306,124 @@ pub fn owned_by_me(handle: &impl AsRawHandle) -> io::Result<bool> {
     // SAFETY: allocated by GetSecurityInfo
     unsafe { LocalFree(descriptor) };
     same
+}
+
+/// A security descriptor from SDDL, freed on drop.
+struct Descriptor(PSECURITY_DESCRIPTOR);
+
+impl Descriptor {
+    fn from_sddl(sddl: &str) -> io::Result<Self> {
+        let sddl = wide(sddl);
+        let mut descriptor: PSECURITY_DESCRIPTOR = ptr::null_mut();
+        // SAFETY: `sddl` is NUL-terminated; the descriptor is LocalFree'd on drop
+        let ok = unsafe {
+            ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                sddl.as_ptr(),
+                SDDL_REVISION_1,
+                &raw mut descriptor,
+                ptr::null_mut(),
+            )
+        };
+        if ok == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(Self(descriptor))
+    }
+
+    /// The DACL as SDDL, the form two DACLs compare in.
+    fn dacl_text(&self) -> io::Result<String> {
+        let mut text: PWSTR = ptr::null_mut();
+        // SAFETY: a valid descriptor; `text` is LocalFree'd below
+        let ok = unsafe {
+            ConvertSecurityDescriptorToStringSecurityDescriptorW(
+                self.0,
+                SDDL_REVISION_1,
+                DACL_SECURITY_INFORMATION,
+                &raw mut text,
+                ptr::null_mut(),
+            )
+        };
+        if ok == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: a NUL-terminated string from the call above
+        let sddl = unsafe { from_wide(text) };
+        // SAFETY: allocated by ConvertSecurityDescriptorToStringSecurityDescriptorW
+        unsafe { LocalFree(text.cast()) };
+        Ok(sddl)
+    }
+}
+
+impl Drop for Descriptor {
+    fn drop(&mut self) {
+        // SAFETY: allocated by the system, freed once
+        unsafe { LocalFree(self.0) };
+    }
+}
+
+/// The DACL of the file or directory `path` (NUL-terminated), as SDDL.
+fn file_dacl_text(path: &[u16]) -> io::Result<String> {
+    let mut descriptor: PSECURITY_DESCRIPTOR = ptr::null_mut();
+    // SAFETY: `path` is NUL-terminated; the descriptor is freed by `Descriptor`
+    let status = unsafe {
+        GetNamedSecurityInfoW(
+            path.as_ptr(),
+            SE_FILE_OBJECT,
+            DACL_SECURITY_INFORMATION,
+            ptr::null_mut(),
+            ptr::null_mut(),
+            ptr::null_mut(),
+            ptr::null_mut(),
+            &raw mut descriptor,
+        )
+    };
+    if status != ERROR_SUCCESS {
+        return Err(io::Error::from_raw_os_error(status as i32));
+    }
+    Descriptor(descriptor).dacl_text()
+}
+
+/// Gives `path` a DACL of its own that lets only the current user in, as
+/// mode 0600/0700 does; a directory's passes on to what is created in it
+/// (and to what it holds). Left alone when it has exactly that already.
+pub fn owner_only(path: &std::path::Path) -> io::Result<()> {
+    let inherit = if path.is_dir() { "OICI" } else { "" };
+    // NOTE: AI, as the system marks a DACL it set, so an equal one compares equal
+    let wanted = Descriptor::from_sddl(&format!("D:PAI(A;{inherit};FA;;;{})", user_sid()?))?;
+    let name: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+    if file_dacl_text(&name)? == wanted.dacl_text()? {
+        return Ok(());
+    }
+    let (mut present, mut defaulted) = (0, 0);
+    let mut dacl: *mut ACL = ptr::null_mut();
+    // SAFETY: `dacl` points into `wanted`, alive below
+    if unsafe {
+        GetSecurityDescriptorDacl(
+            wanted.0,
+            &raw mut present,
+            &raw mut dacl,
+            &raw mut defaulted,
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: `name` is NUL-terminated, `dacl` valid while `wanted` is
+    let status = unsafe {
+        SetNamedSecurityInfoW(
+            name.as_ptr(),
+            SE_FILE_OBJECT,
+            DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+            ptr::null_mut(),
+            ptr::null_mut(),
+            dacl,
+            ptr::null(),
+        )
+    };
+    if status != ERROR_SUCCESS {
+        return Err(io::Error::from_raw_os_error(status as i32));
+    }
+    Ok(())
 }
 
 /// The current user's SID, as `S-1-5-…`.
@@ -1565,6 +1668,40 @@ mod tests {
         // NOTE: a failed first read once left drop waiting for it forever
         let e = DirWatch::open(&unc).err().unwrap();
         assert_eq!(e.kind(), io::ErrorKind::Unsupported, "{e}");
+    }
+
+    #[test]
+    fn an_owner_only_directory_passes_it_on() {
+        let dir = std::env::temp_dir().join(format!("ccdash-acl-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("before"), "x").unwrap();
+        owner_only(&dir).unwrap();
+        std::fs::write(dir.join("after"), "x").unwrap();
+        let sid = user_sid().unwrap();
+        let text = |name: &str| {
+            let path: Vec<u16> = dir
+                .join(name)
+                .as_os_str()
+                .encode_wide()
+                .chain(Some(0))
+                .collect();
+            file_dacl_text(&path).unwrap()
+        };
+        assert_eq!(text(""), format!("D:PAI(A;OICI;FA;;;{sid})"));
+        let wanted = Descriptor::from_sddl(&format!("D:PAI(A;OICI;FA;;;{sid})")).unwrap();
+        assert_eq!(
+            wanted.dacl_text().unwrap(),
+            text(""),
+            "a second call compares equal and leaves it"
+        );
+        for file in ["before", "after"] {
+            let acl = text(file);
+            // NOTE: one inherited ACE, the user's
+            assert_eq!(acl.matches("(A;").count(), 1, "{file}: {acl}");
+            assert!(acl.contains(&sid), "{file}: {acl}");
+        }
+        owner_only(&dir).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
