@@ -597,6 +597,7 @@
 			hop={prefs.editor.hop}
 			hopKeys={prefs.editor.hopKeys}
 			clipboard={prefs.editor.clipboard}
+			pasteReads={prefs.editor.paste === 'clipboard'}
 			highlight={prefs.editor.markdown}
 			wrap={prefs.editor.wrap}
 			fill={fill || expanded}

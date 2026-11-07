@@ -27,6 +27,7 @@
 	import { cancelHop, hopActive, hopExtension, hopKey, startHop } from '#lib/hop.js';
 	import {
 		applyVimrc,
+		pasteEvent,
 		pasteFromClipboard,
 		setClipboard,
 		setVimHooks,
@@ -46,6 +47,7 @@
 		hop = true,
 		hopKeys = 'asdfghjkl',
 		clipboard = true,
+		pasteReads = true,
 		fill = false,
 		rows = 1,
 		maxHeight = 220,
@@ -74,6 +76,8 @@
 		hopKeys?: string;
 		/** With vim: yanks go to the system clipboard, `p` reads it. */
 		clipboard?: boolean;
+		/** With vim: a bare `p` reads the clipboard (else the register). */
+		pasteReads?: boolean;
 		/** Fill the parent's height instead of growing to `maxHeight`. */
 		fill?: boolean;
 		/** Lines the empty editor shows. */
@@ -211,7 +215,12 @@
 				vimComp.of(vim ? vimExtension() : []),
 				Prec.highest(
 					EditorView.domEventHandlers({
-						keydown: (event, v) => keydown(event, v)
+						keydown: (event, v) => keydown(event, v),
+						paste: (event, v) => {
+							if (!vim || !clipboard || !pasteEvent(v, event)) return false;
+							event.preventDefault();
+							return true;
+						}
 					})
 				),
 				editable.of([EditorView.editable.of(!disabled), EditorState.readOnly.of(disabled)]),
@@ -368,7 +377,7 @@
 	});
 
 	$effect(() => {
-		setClipboard(vim && clipboard);
+		setClipboard(vim && clipboard, pasteReads);
 	});
 
 	$effect(() => {

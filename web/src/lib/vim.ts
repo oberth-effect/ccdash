@@ -61,6 +61,11 @@ export function vimExtension() {
 
 let clipboardOn = false;
 let clipboardArmed = false;
+/** `p` reads the clipboard (else the register, which in-page yanks and the
+ * browser's own paste keep in step). */
+let pasteReads = true;
+/** A clipboard read is on its way; a second `p` meanwhile is dropped. */
+let reading = false;
 
 type RegisterController = {
 	pushText: (
@@ -77,8 +82,9 @@ type RegisterController = {
  * The engine's own `+` register already does both; this routes the
  * unnamed register there: every push to it is written out, and a `p`
  * without a register reads the clipboard first (`pasteFromClipboard`). */
-export function setClipboard(on: boolean) {
+export function setClipboard(on: boolean, readOnPaste = true) {
 	clipboardOn = on;
+	pasteReads = readOnPaste;
 	if (!on || clipboardArmed) return;
 	clipboardArmed = true;
 	const rc = Vim.getRegisterController() as unknown as RegisterController;
@@ -96,8 +102,9 @@ export function setClipboard(on: boolean) {
  * browser refuses (Firefox asks with a small Paste button the first time
  * the text came from elsewhere) falls back to the register as it is. */
 export function pasteFromClipboard(view: EditorView, event: KeyboardEvent): boolean {
-	if (!clipboardOn || event.ctrlKey || event.metaKey || event.altKey) return false;
+	if (!clipboardOn || !pasteReads || event.ctrlKey || event.metaKey || event.altKey) return false;
 	if (event.key !== 'p' && event.key !== 'P') return false;
+	if (reading) return true;
 	const cm = getCM(view) as Parameters<typeof Vim.handleEx>[0] | null;
 	const state = cm?.state.vim as
 		{ insertMode: boolean; inputState: { registerName?: string; keyBuffer: string[] } } | undefined;
@@ -106,6 +113,7 @@ export function pasteFromClipboard(view: EditorView, event: KeyboardEvent): bool
 	if (!navigator.clipboard?.readText) return false;
 	const key = event.key;
 	const rc = Vim.getRegisterController() as unknown as RegisterController;
+	reading = true;
 	navigator.clipboard
 		.readText()
 		.then((text) => {
@@ -113,8 +121,27 @@ export function pasteFromClipboard(view: EditorView, event: KeyboardEvent): bool
 		})
 		.catch(() => {})
 		.finally(() => {
+			reading = false;
 			Vim.handleKey(cm, key, 'user');
 		});
+	return true;
+}
+
+/** The browser's own paste (Ctrl+Shift+V, Shift+Insert, the menu) in normal
+ * or visual mode: its text becomes the unnamed register and `p` runs, so
+ * it lands as a paste would, with no clipboard prompt anywhere (the
+ * browser hands the text over itself). True when taken; insert mode keeps
+ * the native paste. */
+export function pasteEvent(view: EditorView, event: ClipboardEvent): boolean {
+	if (!clipboardOn) return false;
+	const cm = getCM(view) as Parameters<typeof Vim.handleEx>[0] | null;
+	const state = cm?.state.vim as { insertMode: boolean } | undefined;
+	if (!cm || !state || state.insertMode) return false;
+	const text = event.clipboardData?.getData('text/plain') ?? '';
+	if (!text) return false;
+	const rc = Vim.getRegisterController() as unknown as RegisterController;
+	rc.getRegister('"').setText(text, text.endsWith('\n'));
+	Vim.handleKey(cm, 'p', 'user');
 	return true;
 }
 

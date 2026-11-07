@@ -53,8 +53,11 @@ export type EditorLook = {
 	hop: boolean;
 	/** The label keys of the jump, nearest match first. */
 	hopKeys: string;
-	/** Yanks and deletes go to the system clipboard, `p` reads it. */
+	/** Yanks and deletes go to the system clipboard. */
 	clipboard: boolean;
+	/** What a bare `p` pastes: the clipboard (the browser may ask), or the
+	 * register (the browser's own paste keys read the clipboard without asking). */
+	paste: 'clipboard' | 'register';
 };
 export const DEFAULT_EDITOR: EditorLook = {
 	numbers: 'auto',
@@ -62,7 +65,8 @@ export const DEFAULT_EDITOR: EditorLook = {
 	wrap: true,
 	hop: true,
 	hopKeys: 'asdfghjkl',
-	clipboard: true
+	clipboard: true,
+	paste: 'clipboard'
 };
 export const isVimMode = (x: unknown): x is VimMode => x === 'auto' || x === 'on' || x === 'off';
 

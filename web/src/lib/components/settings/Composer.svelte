@@ -108,12 +108,27 @@
 			checked={prefs.editor.clipboard}
 			onchange={(e) => prefs.setEditor({ clipboard: e.currentTarget.checked })}
 		/>
-		The system clipboard is the unnamed register: yanks and deletes go to it,
-		<code class="font-mono">p</code> pastes from it
+		The system clipboard is the unnamed register: yanks and deletes go to it, and the browser's paste
+		keys (Ctrl Shift V, Shift Insert) paste as <code class="font-mono">p</code> does
+	</label>
+	<label class="flex flex-col gap-1 pl-6 text-sm">
+		<span>A bare <code class="font-mono">p</code> pastes</span>
+		<select
+			class="{selectClass} max-w-md"
+			value={prefs.editor.paste}
+			onchange={(e) => {
+				const v = e.currentTarget.value;
+				if (v === 'clipboard' || v === 'register') prefs.setEditor({ paste: v });
+			}}
+		>
+			<option value="clipboard">the system clipboard (Firefox asks with its Paste button)</option>
+			<option value="register">the register: what was yanked or pasted here (no prompt)</option>
+		</select>
 	</label>
 	<p class="pl-6 text-xs text-muted-foreground">
-		Firefox asks with a small Paste button the first time the text came from another program;
-		Chromium asks once for the permission.
+		Reading the clipboard is a permission: Chromium asks once, Firefox puts a small Paste button
+		under the cursor whenever the text came from another program, and takes a moment to accept it.
+		Ctrl Shift V and Shift Insert never ask, in either browser.
 	</p>
 	<label class="flex items-center gap-2 text-sm">
 		<input
