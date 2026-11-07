@@ -1312,6 +1312,16 @@ impl Actor {
                     && resume
                         .as_deref()
                         .is_some_and(|id| self.has_saved_options(id));
+                // NOTE: the hub names a workspace's first directory; this machine's may be another
+                let cwd = if Path::new(&cwd).is_dir() {
+                    cwd
+                } else {
+                    self.workspaces
+                        .elsewhere(&cwd)
+                        .into_iter()
+                        .find(|dir| Path::new(dir).is_dir())
+                        .unwrap_or(cwd)
+                };
                 let spec = LaunchSpec {
                     cwd,
                     prompt,

@@ -1218,20 +1218,10 @@ async fn prompts(
 ) -> Result<Json<Value>, ApiError> {
     let dirs = match query.workspace.as_deref().filter(|w| !w.is_empty()) {
         None => None,
-        Some(names) => Some(
-            serde_json::to_string(
-                &names
-                    .split(',')
-                    .map(|name| {
-                        app.workspaces.dir(name).map(str::to_owned).ok_or(ApiError(
-                            StatusCode::BAD_REQUEST,
-                            format!("unknown workspace {name:?}"),
-                        ))
-                    })
-                    .collect::<Result<Vec<_>, _>>()?,
-            )
-            .map_err(anyhow::Error::from)?,
-        ),
+        Some(names) => Some(crate::workspace::dirs_param(&workspace_dirs(
+            &app.workspaces,
+            names,
+        )?)),
     };
     let session = match query.session.filter(|s| !s.is_empty()) {
         None => None,
@@ -1390,17 +1380,7 @@ impl RangeQuery {
             .clamp(oldest, until - 60_000);
         let dirs = match &self.workspace {
             None => None,
-            Some(names) => Some(
-                names
-                    .split(',')
-                    .map(|name| {
-                        workspaces.dir(name).map(str::to_owned).ok_or(ApiError(
-                            StatusCode::BAD_REQUEST,
-                            format!("unknown workspace {name:?}"),
-                        ))
-                    })
-                    .collect::<Result<Vec<_>, _>>()?,
-            ),
+            Some(names) => Some(workspace_dirs(workspaces, names)?),
         };
         Ok(Scope {
             since,
@@ -1410,6 +1390,23 @@ impl RangeQuery {
             host: self.host.clone().filter(|h| !h.is_empty()),
         })
     }
+}
+
+/// Every directory of the comma-separated workspace `names`: a workspace
+/// may list one per machine.
+fn workspace_dirs(workspaces: &Workspaces, names: &str) -> Result<Vec<String>, ApiError> {
+    let mut dirs = Vec::new();
+    for name in names.split(',') {
+        let of = workspaces.dirs(name);
+        if of.is_empty() {
+            return Err(ApiError(
+                StatusCode::BAD_REQUEST,
+                format!("unknown workspace {name:?}"),
+            ));
+        }
+        dirs.extend(of);
+    }
+    Ok(dirs)
 }
 
 async fn history(

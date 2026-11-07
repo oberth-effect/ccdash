@@ -161,10 +161,13 @@ mod imp {
     const INGEST_QUEUE: usize = 1024;
 
     /// The pipe for a socket path: pipe names are machine-wide, so the
-    /// path (under the user's profile) is hashed into it.
+    /// path (under the user's profile) is hashed into it, as Windows
+    /// compares paths (any case, either separator): `c:\ccdash` in one
+    /// environment and `C:\ccdash` in another name one pipe.
     pub fn pipe_name(path: &Path) -> String {
+        let key = crate::workspace::path_key(&path.to_string_lossy()).into_owned();
         let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
-        for byte in path.as_os_str().as_encoded_bytes() {
+        for byte in key.as_bytes() {
             hash ^= u64::from(*byte);
             hash = hash.wrapping_mul(0x0100_0000_01b3);
         }
@@ -456,6 +459,10 @@ mod imp {
             let b = pipe_name(Path::new(r"C:\Users\b\AppData\Local\ccdash\run\api.sock"));
             assert!(a.starts_with(r"\\.\pipe\ccdash-api-"), "{a}");
             assert_ne!(a, b);
+            assert_eq!(
+                pipe_name(Path::new(r"c:\ccdash\api.sock")),
+                pipe_name(Path::new("C:/CCDASH/api.sock"))
+            );
         }
 
         #[tokio::test]

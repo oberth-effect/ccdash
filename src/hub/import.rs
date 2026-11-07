@@ -54,6 +54,7 @@ pub fn import(source: &Path, dest: &Path) -> Result<Vec<(String, usize)>> {
         [],
     )?;
     added.push(("sessions".to_owned(), sessions));
+    store::fill_cwd_keys(&tx)?;
     for (table, columns) in TABLES {
         let on = columns
             .split(", ")
@@ -116,6 +117,11 @@ mod tests {
             )
             .unwrap();
             conn.execute(
+                r"INSERT INTO sessions (id, host, cwd, kind, started_at) VALUES ('s2', 'win', 'C:\Users\U\w', 'interactive', 10)",
+                [],
+            )
+            .unwrap();
+            conn.execute(
                 "INSERT INTO events (ts, host, session, kind, data) VALUES (11, 'navi', 's1', 'prompt', '{}')",
                 [],
             )
@@ -128,10 +134,18 @@ mod tests {
         }
         check(&src).unwrap();
         let first = import(&src, &dst).unwrap();
+        // NOTE: the copied sessions get their keys, so scoped queries find them
+        let key: String = rusqlite::Connection::open(&dst)
+            .unwrap()
+            .query_row("SELECT cwd_key FROM sessions WHERE id = 's2'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(key, "c:/users/u/w");
         assert_eq!(
             first,
             [
-                ("sessions".to_owned(), 1),
+                ("sessions".to_owned(), 2),
                 ("events".to_owned(), 1),
                 ("samples".to_owned(), 1),
                 ("proc_samples".to_owned(), 0),

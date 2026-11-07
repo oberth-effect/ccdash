@@ -136,14 +136,17 @@ impl Busy {
         }
     }
 
-    /// Whether a live tool call touches `dir`: the session's label.
+    /// Whether a live tool call touches `dir`: the session's label. Paths
+    /// compare as workspace directories do: a Windows path in any case.
     pub fn covers(&self, dir: &Path, now: i64) -> Option<String> {
+        let key = |path: &str| super::path_key(super::trimmed(&super::slashed(path))).into_owned();
+        let dir = key(&dir.to_string_lossy());
         let map = self.0.lock().ok()?;
         map.iter()
             .filter(|(_, (_, since))| now - since < TOOL_STALE_MS)
             .find(|(_, (cwd, _))| {
-                let cwd = Path::new(cwd);
-                dir.starts_with(cwd) || cwd.starts_with(dir)
+                let cwd = key(cwd);
+                super::within(&dir, &cwd) || super::within(&cwd, &dir)
             })
             .map(|(session, _)| session.chars().take(8).collect())
     }
@@ -2842,6 +2845,22 @@ impl Db {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_live_call_covers_its_unit_in_any_case_on_windows() {
+        let busy = super::Busy::default();
+        busy.start("aaaaaaaa-1", r"C:\Users\me\code\Work\x", 0);
+        busy.start("bbbbbbbb-1", "/home/me/w/u/src", 0);
+        let covers = |dir: &str| busy.covers(std::path::Path::new(dir), 1);
+        assert_eq!(
+            covers(r"C:\Users\me\code\work\x").as_deref(),
+            Some("aaaaaaaa")
+        );
+        assert_eq!(covers("c:/users/me/code/work").as_deref(), Some("aaaaaaaa"));
+        assert_eq!(covers("/home/me/w/u").as_deref(), Some("bbbbbbbb"));
+        assert_eq!(covers("/home/me/w/U"), None, "case counts on Linux");
+        assert_eq!(covers("/home/me/w/u2"), None);
+    }
+
     use super::*;
 
     #[test]
