@@ -772,10 +772,13 @@ mod tests {
     }
 
     /// `ETXTBSY` on Linux.
+    #[cfg(unix)]
     const fn libc_etxtbsy() -> i32 {
         26
     }
 
+    /// Unix: a shell's TERM trap.
+    #[cfg(unix)]
     #[tokio::test]
     async fn stop_ends_a_claude_waiting_for_its_editor() {
         // a shell defers its TERM trap until its foreground child (the
@@ -807,6 +810,8 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
+    /// Unix: on Windows the editor opens a console window.
+    #[cfg(unix)]
     #[tokio::test]
     async fn an_editor_saves_cancels_or_is_ended() {
         let dir = std::env::temp_dir().join(format!("ccdash-edit-{}", std::process::id()));
@@ -977,6 +982,8 @@ mod tests {
         assert!(elsewhere.saved_args().is_none(), "needs the channel flags");
     }
 
+    /// Unix: `/tmp` and `echo` as a program.
+    #[cfg(unix)]
     #[tokio::test]
     async fn a_wake_runs_no_leading_flags_and_its_failure_is_the_launch_failure() {
         let waking = |command: &[&str]| {
@@ -1025,6 +1032,8 @@ mod tests {
         assert!(direnv_vars("direnv: error", &globs).is_err());
     }
 
+    /// Unix: `/tmp` and `sh`.
+    #[cfg(unix)]
     #[tokio::test]
     async fn direnv_runs_in_the_launch_directory_and_its_failure_is_the_launch_failure() {
         let cfg = |direnv: &[&str]| config::Launch {
@@ -1073,7 +1082,9 @@ mod tests {
         std::fs::write(&old, "{}").unwrap();
         let stale = SystemTime::now() - SETTINGS_KEEP - Duration::from_secs(60);
         let age = |path: &Path| {
-            std::fs::File::open(path)
+            std::fs::OpenOptions::new()
+                .write(true)
+                .open(path)
                 .unwrap()
                 .set_modified(stale)
                 .unwrap();

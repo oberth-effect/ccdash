@@ -853,7 +853,7 @@ mod tests {
         server.join().unwrap();
         assert!(subscriptions(&store.reader().unwrap()).unwrap().is_empty());
         drop(store);
-        std::fs::remove_dir_all(dir).unwrap();
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

@@ -4936,7 +4936,7 @@ mod tests {
         assert_eq!(claim.what, "Fix it");
         assert_eq!(claim.issue.as_deref(), Some("w--fix-it"));
         assert!(claim.paths.is_empty());
-        std::fs::remove_dir_all(&dir).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]
@@ -5621,7 +5621,7 @@ mod tests {
         .await
         .unwrap();
         assert!(hub.snapshot().await.unwrap().hosts.is_empty());
-        std::fs::remove_dir_all(&dir).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]

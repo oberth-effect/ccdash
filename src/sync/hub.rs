@@ -1191,7 +1191,7 @@ mod tests {
             session.as_deref(),
             Some("1ee78b00-59c7-4bf5-b462-ef39161f7d8d")
         );
-        fs::remove_dir_all(dir).unwrap();
+        let _ = fs::remove_dir_all(dir);
     }
 
     #[test]
@@ -1229,7 +1229,7 @@ mod tests {
         assert_eq!(out[0].fp.as_deref(), Some(probes[0].fp.as_str()));
         assert_eq!(out[0].row.as_ref().map(|r| r.size), Some(6));
         assert!(out[1].row.is_none() && out[1].fp.is_none());
-        fs::remove_dir_all(dir).unwrap();
+        let _ = fs::remove_dir_all(dir);
     }
 
     #[test]
@@ -1242,7 +1242,7 @@ mod tests {
         assert_eq!(page.lines, vec![(1, lines[0].clone())]);
         assert!(page.more);
         assert_eq!(history(&conn, 1, 10).unwrap().lines.len(), 1);
-        fs::remove_dir_all(dir).unwrap();
+        let _ = fs::remove_dir_all(dir);
     }
 
     fn report(path: &str, copy: &str, size: u64) -> ConflictReport {
@@ -1321,7 +1321,7 @@ mod tests {
         // a copy deleted by hand resolves its conflict at the next report
         conflict_state(&mut conn, "flat", &ConflictState { copies: vec![] }, 12).unwrap();
         assert!(conflicts(&conn).unwrap().is_empty());
-        fs::remove_dir_all(dir).unwrap();
+        let _ = fs::remove_dir_all(dir);
     }
 
     #[test]
@@ -1465,6 +1465,6 @@ mod tests {
             dir_name("/home/me/Project Bundle/x.y"),
             "-home-me-Project-Bundle-x-y"
         );
-        fs::remove_dir_all(dir).unwrap();
+        let _ = fs::remove_dir_all(dir);
     }
 }

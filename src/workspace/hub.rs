@@ -2411,7 +2411,7 @@ mod tests {
             git_ok(&["config", "core.hooksPath"], Some(&path))
                 .unwrap()
                 .trim(),
-            dir.join("workspace/.hooks").to_string_lossy()
+            dir.join("workspace").join(".hooks").to_string_lossy()
         );
         assert!(repos.sync_refs("ts/u").unwrap().is_empty());
         assert!(repos.history("ts/u").unwrap().is_empty());

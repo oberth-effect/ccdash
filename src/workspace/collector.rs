@@ -2908,7 +2908,7 @@ mod tests {
         assert_eq!(saved.conflicts.len(), 1);
         assert_eq!(saved.held.unwrap().added, 3000);
         assert!(!db.load("none").unwrap().adopted);
-        fs::remove_dir_all(&dir).unwrap();
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
