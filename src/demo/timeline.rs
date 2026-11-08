@@ -182,8 +182,7 @@ pub fn build(s: &Session, start: i64, now: Option<&Now>) -> Built {
                     secs,
                     ..
                 } => {
-                    let tool_input =
-                        json!({"command": command, "description": format!("Run {command}")});
+                    let tool_input = json!({"command": command});
                     out.envelopes.push(hook(
                         s,
                         t,

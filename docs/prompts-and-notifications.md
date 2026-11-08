@@ -5,6 +5,8 @@
 3. [Replying to a session](#3-replying-to-a-session)
 4. [Renaming](#4-renaming)
 
+![The Now page on a phone: a permission prompt for a shell command with Allow, Deny and Deny with a note, then a session on your turn](images/phone.png)
+
 ## 1. Answering prompts
 
 Tool approvals, questions (`AskUserQuestion`) and plans (`ExitPlanMode`)

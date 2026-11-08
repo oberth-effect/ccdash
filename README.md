@@ -8,6 +8,11 @@ and notes in step across machines.
 
 > **Status:** work in progress, in daily use.
 
+![The Now page: a session waiting on a permission prompt with Allow and Deny, one on your turn with Claude's reply, the 5-hour, 7-day and model limits with their forecasts, the machines and recent progress](docs/images/now.png)
+
+The screenshots come from `nix run github:tsandrini/ccdash#demo`, a made-up
+workspace; more are in the [panel](docs/panel.md) guide.
+
 ## Contents
 
 - [1. What it does](#1-what-it-does)

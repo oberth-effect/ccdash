@@ -16,6 +16,8 @@ links can be shared and the back button works.
 
 ## 1. Now and Sessions
 
+![Now in dark mode: a permission prompt answered inline, a session on your turn with quick replies, the limits with forecasts, the machines and recent progress](images/now-dark.png)
+
 - **Now** is the page to leave open on a second monitor; a look at it should
   replace opening the sessions. What needs you has the answer inline
   (permission prompts, questions, plans, sessions on your turn with a quick
@@ -53,6 +55,8 @@ the value off the line and a click opens Analytics › Limits. A window that
 reset with no reading since says so, rather than keeping the old number.
 
 ## 2. A session's page
+
+![A finished session's chat: two prompts, Claude's steps grouped with one opened (an edit, a permission request, the test run), the replies and the session's start and end](images/session.png)
 
 | Tab     | Shows                                                                                                                    |
 | ------- | ------------------------------------------------------------------------------------------------------------------------ |
@@ -190,6 +194,8 @@ place; **Open on** and **Resolved** sit beside it, the other actions in its
 
 ## 3. Projects
 
+![Projects: two workspaces, each project with its open issues, the sessions working on it, its last progress and its documents](images/projects.png)
+
 Each workspace's projects with their board (open issues), live sessions,
 progress, documents, memories and the note graph, and a reader and editor
 for every note ([knowledge](knowledge.md)).
@@ -245,6 +251,10 @@ the whole entry in place.
 with the totals, time per project, the most used tools and the 5-hour
 limit over time.
 
+![History over the last hour: totals, each machine's share, four sessions as lanes (working, on a permission prompt, your turn) and the time per project](images/history.png)
+
+![Analytics over seven days: prompts, working time, waits, cost, lines changed and peak memory, each machine's share and the daily activity](images/analytics.png)
+
 **Analytics** sections:
 
 | Section     | Answers                                                                                                            |
@@ -276,6 +286,8 @@ sets the `OTEL_*` variables and starts a receiver in the collector on
 redacted, as Claude Code sends it by default.
 
 ## 5. Machines, Claude state and Workspace
+
+![Machines: the hub's own machine and two nodes with uptime, CPU, temperature, memory, battery, the screen's lock state, their sessions and a Lock button](images/machines.png)
 
 **Machines** shows the hub's own machine (uptime, CPU, temperature,
 memory, disks, system), then every node, that is every machine with a

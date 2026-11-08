@@ -105,6 +105,8 @@ afterwards in the panel when the abstract should say more.
 
 ## 4. Reading, searching, sharing
 
+![A report in the panel: its title, workspace, date, size and machine above, Download, open in a tab and archive, and the report itself with its contents, search and text size](images/report.png)
+
 **Reports** in the sidebar lists every report in the scope, newest first,
 by day, with the one note search narrowed to reports (title, summary and
 abstract). A report's page frames the document, full height, with its

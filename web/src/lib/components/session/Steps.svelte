@@ -71,11 +71,10 @@
 						{#if item.kind === 'permission'}
 							<HandIcon class="mt-0.5 size-3.5 shrink-0 text-permission" />
 							<span class="min-w-0 flex-1"
-								>Asked permission: {toolName(item.tool)}{#if item.summary}<span
-										class="font-mono break-all"
-									>
-										{item.summary}</span
-									>{/if}</span
+								>Asked permission: {toolName(item.tool)}{#if item.summary}
+									<!-- NOTE: Svelte trims a plain space at the start of a block -->
+									&nbsp;<span class="font-mono break-all">{item.summary}</span>
+								{/if}</span
 							>
 						{:else if item.kind === 'answered'}
 							<CheckIcon class="mt-0.5 size-3.5 shrink-0 text-muted-foreground" />

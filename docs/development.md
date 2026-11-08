@@ -88,3 +88,23 @@ it at `http://127.0.0.1:7840/#token=demo`:
 
 The content is `src/demo/script.rs`. Screenshots come from the demo, never
 from a real hub.
+
+### Screenshots
+
+`docs/images/`, taken through a headless browser (Playwright) on the demo
+with the light colour scheme unless named `-dark`, at CSS pixel scale, then
+`oxipng -o 4 --strip safe`; each under 150 kB. Reload after switching the
+colour scheme, and wait for a page's data (Projects and a report's frame
+take a few seconds) before shooting.
+
+| File            | Page                                                              | Viewport  |
+| --------------- | ----------------------------------------------------------------- | --------- |
+| `now.png`       | `/` (after "Recent progress" shows)                               | 1280×800  |
+| `now-dark.png`  | `/`, dark                                                         | 1280×800  |
+| `session.png`   | `/sessions/5f1c2a90-…` (the checkout session), its 2nd group open | 1280×1000 |
+| `projects.png`  | `/projects`                                                       | 1280×800  |
+| `history.png`   | `/history?range=1h`                                               | 1280×800  |
+| `analytics.png` | `/analytics/overview?range=7d`                                    | 1280×800  |
+| `machines.png`  | `/machines`                                                       | 1280×500  |
+| `report.png`    | `/reports/acme/dependency-audit--2026-11`                         | 1280×800  |
+| `phone.png`     | `/`                                                               | 390×844   |
