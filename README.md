@@ -193,10 +193,16 @@ from it first (nginx, a VPN). Notes from before ccdash come in with
 
 ### 3.5 A Windows workstation
 
-The collector, the hooks and the CLI also run on Windows, against a hub on
-Linux: built with cargo, hooks written into Claude Code's settings, started
-at logon with `ccdash collector --background`. Steps and differences:
-[Windows](docs/windows.md).
+A workstation can also run Windows, reporting to a hub on Linux (the hub
+runs on Linux only). From the repository:
+
+```powershell
+pwsh -File windows\install.ps1 -Build -Hub wss://ccdash.example.org/collect -Token .\token
+```
+
+It installs the collector, the hooks and the plugin, and starts the
+collector at logon; the channel, Open and Edit are switches, off until
+given. Steps and differences: [Windows](docs/windows.md).
 
 ## 4. Everyday use
 
