@@ -608,16 +608,26 @@ async fn end_interactive(pid: u32) -> Result<String, String> {
 
 /// Windows has no SIGTERM: Claude Code and every process under it end at
 /// once, without its SessionEnd hook; the collector reports the pid gone.
+/// `ccdash end-tree` ends them from inside Claude's console, to undo what
+/// Claude Code would have on its way out (see [`end_tree_in_console`]); if
+/// that fails, they end from here and the console stays as Claude left it.
 #[cfg(windows)]
 async fn end_interactive(pid: u32) -> Result<String, String> {
     // NOTE: off the runtime's thread: the tree is walked with snapshots and queries
     let kids: Vec<String> = tokio::task::spawn_blocking(move || {
-        let kids = procs::children(pid);
-        procs::end_group(pid, true);
-        kids.into_iter().map(|(_, name)| name).collect()
+        procs::children(pid)
+            .into_iter()
+            .map(|(_, name)| name)
+            .collect()
     })
     .await
     .unwrap_or_default();
+    if let Err(e) = end_in_console(pid).await {
+        warn!("ending Claude Code (pid {pid}) inside its console: {e}");
+    }
+    if running(Some(pid)) {
+        let _ = tokio::task::spawn_blocking(move || procs::end_group(pid, true)).await;
+    }
     if !exited(pid).await {
         return Err(format!(
             "Claude Code (pid {pid}) did not end; close it in its terminal"
@@ -631,6 +641,64 @@ async fn end_interactive(pid: u32) -> Result<String, String> {
             kids.join(", ")
         )
     })
+}
+
+/// Runs `ccdash end-tree PID` with no console of its own, so that it can
+/// attach to Claude's: the collector keeps its own (hidden) one, and a
+/// process it starts while attached to Claude's would print in the user's
+/// terminal.
+#[cfg(windows)]
+async fn end_in_console(pid: u32) -> Result<(), String> {
+    use std::process::Stdio;
+    let exe = std::env::current_exe().map_err(|e| format!("locating ccdash: {e}"))?;
+    let mut command = Command::new(exe);
+    command
+        .args(["end-tree", &pid.to_string()])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .creation_flags(windows_sys::Win32::System::Threading::DETACHED_PROCESS);
+    match tokio::time::timeout(EXIT_GRACE, command.output()).await {
+        Ok(Ok(output)) if output.status.success() => Ok(()),
+        Ok(Ok(output)) => Err(failure(&output)),
+        Ok(Err(e)) => Err(format!("starting ccdash end-tree: {e}")),
+        Err(_) => Err("ccdash end-tree did not finish in time".into()),
+    }
+}
+
+/// `ccdash end-tree PID`, which the collector runs to stop an interactive
+/// session on Windows: attaches to the console of `pid` (Claude Code), ends
+/// it and every process under it at once, and as soon as Claude Code is
+/// gone, before its shell prompts again, turns off the terminal modes it
+/// had turned on and gives the console line input back. Claude Code does
+/// that itself as it exits, but a process ended at once does nothing; its
+/// shell would then read every mouse move as typed text.
+///
+/// # Errors
+///
+/// When the console could not be attached to or restored; the tree is
+/// ended all the same.
+#[cfg(windows)]
+pub fn end_tree_in_console(pid: u32) -> Result<()> {
+    let console = crate::win::ForeignConsole::attach(pid);
+    let mut restored = None;
+    procs::end_tree(
+        pid,
+        Some(|| {
+            restored = console
+                .as_ref()
+                .ok()
+                .map(crate::win::ForeignConsole::restore)
+        }),
+    );
+    let attached = console.map(drop);
+    match (attached, restored) {
+        (Err(e), _) => Err(e).context("attaching to Claude Code's console to restore it"),
+        (Ok(()), Some(result)) => result.context("restoring Claude Code's console"),
+        // NOTE: Claude Code did not end; the caller says so
+        (Ok(()), None) => Ok(()),
+    }
 }
 
 /// Runs `command` with `{id}` replaced, within `STOP_TIMEOUT`.

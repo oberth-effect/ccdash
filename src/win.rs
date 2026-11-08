@@ -18,9 +18,9 @@ use windows_sys::{
     Win32::{
         Foundation::{
             ERROR_ACCESS_DENIED, ERROR_BUFFER_OVERFLOW, ERROR_INVALID_FUNCTION, ERROR_IO_PENDING,
-            ERROR_NOTIFY_ENUM_DIR, ERROR_OPERATION_ABORTED, ERROR_SUCCESS, FILETIME, HANDLE,
-            INVALID_HANDLE_VALUE, LocalFree, UNICODE_STRING, WAIT_FAILED, WAIT_OBJECT_0,
-            WAIT_TIMEOUT,
+            ERROR_NOTIFY_ENUM_DIR, ERROR_OPERATION_ABORTED, ERROR_SUCCESS, FILETIME, GENERIC_READ,
+            GENERIC_WRITE, HANDLE, INVALID_HANDLE_VALUE, LocalFree, UNICODE_STRING, WAIT_FAILED,
+            WAIT_OBJECT_0, WAIT_TIMEOUT,
         },
         NetworkManagement::IpHelper::GAA_FLAG_SKIP_ANYCAST,
         NetworkManagement::IpHelper::GAA_FLAG_SKIP_DNS_SERVER,
@@ -46,18 +46,23 @@ use windows_sys::{
             PSID, SECURITY_ATTRIBUTES, TOKEN_QUERY, TOKEN_USER, TokenUser,
         },
         Storage::FileSystem::{
-            FILE_ACTION_ADDED, FILE_ACTION_MODIFIED, FILE_ACTION_REMOVED,
+            CreateFileW, FILE_ACTION_ADDED, FILE_ACTION_MODIFIED, FILE_ACTION_REMOVED,
             FILE_ACTION_RENAMED_NEW_NAME, FILE_ACTION_RENAMED_OLD_NAME, FILE_ATTRIBUTE_DIRECTORY,
             FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OVERLAPPED, FILE_LIST_DIRECTORY,
             FILE_NOTIFY_CHANGE_ATTRIBUTES, FILE_NOTIFY_CHANGE_DIR_NAME,
             FILE_NOTIFY_CHANGE_FILE_NAME, FILE_NOTIFY_CHANGE_LAST_WRITE, FILE_NOTIFY_CHANGE_SIZE,
             FILE_NOTIFY_EXTENDED_INFORMATION, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
-            GetDiskFreeSpaceExW, GetVolumePathNameW, ReadDirectoryChangesExW,
+            GetDiskFreeSpaceExW, GetVolumePathNameW, OPEN_EXISTING, ReadDirectoryChangesExW,
             ReadDirectoryNotifyExtendedInformation, ReadFile, WriteFile,
         },
         System::{
-            Console::FreeConsole,
-            Console::GetConsoleProcessList,
+            Console::{
+                AttachConsole, CONSOLE_MODE, ENABLE_AUTO_POSITION, ENABLE_ECHO_INPUT,
+                ENABLE_EXTENDED_FLAGS, ENABLE_INSERT_MODE, ENABLE_LINE_INPUT, ENABLE_MOUSE_INPUT,
+                ENABLE_PROCESSED_INPUT, ENABLE_PROCESSED_OUTPUT, ENABLE_QUICK_EDIT_MODE,
+                ENABLE_VIRTUAL_TERMINAL_PROCESSING, FreeConsole, GetConsoleMode,
+                GetConsoleProcessList, SetConsoleCtrlHandler, SetConsoleMode, WriteConsoleW,
+            },
             Diagnostics::ToolHelp::CreateToolhelp32Snapshot,
             Diagnostics::ToolHelp::PROCESSENTRY32W,
             Diagnostics::ToolHelp::Process32FirstW,
@@ -858,6 +863,144 @@ pub fn terminate(pid: u32) -> io::Result<()> {
     Ok(())
 }
 
+/// Waits up to `limit` for `pid` to be gone (`TerminateProcess` only
+/// starts its end); whether it is.
+pub fn wait_gone(pid: u32, limit: Duration) -> bool {
+    let Some(process) = open_process(pid, PROCESS_SYNCHRONIZE) else {
+        return !pid_alive(pid);
+    };
+    let ms = u32::try_from(limit.as_millis()).unwrap_or(INFINITE - 1);
+    // SAFETY: a live handle with SYNCHRONIZE
+    unsafe { WaitForSingleObject(process.as_raw_handle(), ms) == WAIT_OBJECT_0 }
+}
+
+/// What a full-screen program turns on in its terminal and off again as it
+/// exits; ended at once, it leaves them on. Claude Code's: mouse tracking
+/// (SGR pixels, SGR, any-event, button-event, normal), focus events,
+/// bracketed paste, theme reports, synchronized output, a hidden cursor, a
+/// kitty keyboard mode and the alternate screen. Leaving the alternate
+/// screen restores the cursor saved for the main one; ESC 7 saves the
+/// current one there first, for when there is no alternate screen to leave
+/// (each screen saves its own). The kitty mode is popped on both screens,
+/// each keeping its own stack; an empty stack pops to no flags.
+const TERMINAL_RESET: &str = "\x1b[m\x1b[?1016l\x1b[?1006l\x1b[?1003l\x1b[?1002l\x1b[?1000l\
+    \x1b[?1004l\x1b[?2004l\x1b[?2031l\x1b[?2026l\x1b[?25h\x1b7\x1b[<u\x1b[?1049l\x1b[<u";
+
+/// The input mode of a new console: lines edited and echoed by the
+/// console, Ctrl+C a signal.
+const COOKED_INPUT: CONSOLE_MODE = ENABLE_PROCESSED_INPUT
+    | ENABLE_LINE_INPUT
+    | ENABLE_ECHO_INPUT
+    | ENABLE_MOUSE_INPUT
+    | ENABLE_INSERT_MODE
+    | ENABLE_QUICK_EDIT_MODE
+    | ENABLE_EXTENDED_FLAGS
+    | ENABLE_AUTO_POSITION;
+
+/// Another process's console, which this process is attached to for as
+/// long as the value lives.
+pub struct ForeignConsole(());
+
+impl ForeignConsole {
+    /// Attaches to the console `pid` runs in, leaving this process's own
+    /// first.
+    ///
+    /// # Errors
+    ///
+    /// When `pid` has no console or this process may not attach to it.
+    pub fn attach(pid: u32) -> io::Result<Self> {
+        // SAFETY: plain calls
+        unsafe { FreeConsole() };
+        // SAFETY: as above
+        if unsafe { AttachConsole(pid) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        // NOTE: a Ctrl+C typed there now reaches this process too, and is not for it
+        // SAFETY: no routine: this process ignores Ctrl+C
+        unsafe { SetConsoleCtrlHandler(None, 1) };
+        Ok(Self(()))
+    }
+
+    /// Undoes what a full-screen program ended at once left in the console:
+    /// turns off its terminal modes ([`TERMINAL_RESET`]) and, when the input
+    /// is still raw, gives it a new console's line input. A shell it ran
+    /// from would read every mouse move as typed text otherwise, and pass the
+    /// raw input on to the programs it starts (PowerShell does).
+    pub fn restore(&self) -> io::Result<()> {
+        let output = open_console("CONOUT$")?;
+        let mut mode: CONSOLE_MODE = 0;
+        // SAFETY: a live console handle
+        if unsafe { GetConsoleMode(output.as_raw_handle(), &raw mut mode) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let vt = mode | ENABLE_PROCESSED_OUTPUT | ENABLE_VIRTUAL_TERMINAL_PROCESSING;
+        // SAFETY: as above
+        unsafe { SetConsoleMode(output.as_raw_handle(), vt) };
+        let text: Vec<u16> = TERMINAL_RESET.encode_utf16().collect();
+        let mut written = 0;
+        // SAFETY: `text` holds that many units; no reserved argument
+        let wrote = unsafe {
+            WriteConsoleW(
+                output.as_raw_handle(),
+                text.as_ptr(),
+                text.len() as u32,
+                &raw mut written,
+                ptr::null(),
+            )
+        };
+        let error = io::Error::last_os_error();
+        // SAFETY: as above
+        unsafe { SetConsoleMode(output.as_raw_handle(), mode) };
+        if wrote == 0 {
+            return Err(error);
+        }
+        // NOTE: the input after the modes: ConPTY passes a mouse mode on to the
+        // terminal only while the input is VT, and the terminal is what sends mouse moves
+        let input = open_console("CONIN$")?;
+        let mut mode: CONSOLE_MODE = 0;
+        // SAFETY: a live console handle
+        let known = unsafe { GetConsoleMode(input.as_raw_handle(), &raw mut mode) } != 0;
+        // SAFETY: as above
+        if known
+            && mode & ENABLE_LINE_INPUT == 0
+            && unsafe { SetConsoleMode(input.as_raw_handle(), COOKED_INPUT) } == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    }
+}
+
+impl Drop for ForeignConsole {
+    fn drop(&mut self) {
+        // SAFETY: plain call
+        unsafe { FreeConsole() };
+    }
+}
+
+/// The input or the screen (`CONIN$`, `CONOUT$`) of this process's console,
+/// whatever its standard handles are.
+fn open_console(name: &str) -> io::Result<OwnedHandle> {
+    let name = wide(name);
+    // SAFETY: a NUL-terminated name; no security attributes, no template
+    let handle = unsafe {
+        CreateFileW(
+            name.as_ptr(),
+            GENERIC_READ | GENERIC_WRITE,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            ptr::null(),
+            OPEN_EXISTING,
+            0,
+            ptr::null_mut(),
+        )
+    };
+    if handle == INVALID_HANDLE_VALUE {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: a fresh handle nothing else owns
+    Ok(unsafe { OwnedHandle::from_raw_handle(handle) })
+}
+
 /// Milliseconds since boot, sleep included.
 pub fn uptime_ms() -> i64 {
     // SAFETY: plain call
@@ -1579,6 +1722,167 @@ mod tests {
         // NOTE: the System process (4) refuses an unelevated user's SYNCHRONIZE
         assert!(pid_alive(4));
         assert!(!pid_alive(0), "the idle process is not one");
+    }
+
+    /// Set for the copy of this test binary that runs in a console of its own.
+    const CONSOLE_CHILD: &str = "CCDASH_TEST_CONSOLE_CHILD";
+
+    /// A console left as Claude Code leaves it when ended at once (raw VT
+    /// input, mouse tracking, the alternate screen) is restored by a process
+    /// that attaches to it. This binary runs again in a console of its own,
+    /// hidden, as the test's console must not be the one it breaks.
+    #[test]
+    fn a_console_left_raw_and_tracking_the_mouse_is_restored() {
+        if std::env::var_os(CONSOLE_CHILD).is_some() {
+            return restore_own_console();
+        }
+        use std::os::windows::process::CommandExt;
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "win::tests::a_console_left_raw_and_tracking_the_mouse_is_restored",
+                "--nocapture",
+            ])
+            .env(CONSOLE_CHILD, "1")
+            .creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW)
+            .output()
+            .unwrap();
+        let said =
+            String::from_utf8_lossy(&output.stdout) + String::from_utf8_lossy(&output.stderr);
+        assert!(output.status.success(), "{said}");
+        assert!(said.contains("1 passed"), "{said}");
+    }
+
+    /// A process tree ended with the value, a failed assertion's unwinding too.
+    struct Holder(std::process::Child);
+
+    impl Drop for Holder {
+        fn drop(&mut self) {
+            crate::procs::end_group(self.0.id(), true);
+            let _ = self.0.wait();
+        }
+    }
+
+    /// The processes attached to this process's console.
+    fn console_processes() -> Vec<u32> {
+        let mut pids = [0u32; 16];
+        // SAFETY: room for 16 pids, as given
+        let count = unsafe { GetConsoleProcessList(pids.as_mut_ptr(), 16) } as usize;
+        pids[..count.min(16)].to_vec()
+    }
+
+    fn restore_own_console() {
+        // NOTE: a process to attach to, sharing this console and outliving its leaving
+        let holder = Holder(
+            std::process::Command::new("cmd")
+                .args(["/c", "ping -n 30 127.0.0.1 >NUL"])
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .unwrap(),
+        );
+        // NOTE: a new process joins the console as it starts up; leaving first would end it
+        let joined = (0..250).any(|_| {
+            std::thread::sleep(Duration::from_millis(20));
+            console_processes().contains(&holder.0.id())
+        });
+        assert!(joined, "the holder shares this console");
+        let (input, output) = (
+            open_console("CONIN$").unwrap(),
+            open_console("CONOUT$").unwrap(),
+        );
+        // SAFETY: live console handles
+        unsafe {
+            SetConsoleMode(
+                output.as_raw_handle(),
+                ENABLE_PROCESSED_OUTPUT | ENABLE_VIRTUAL_TERMINAL_PROCESSING,
+            );
+            SetConsoleMode(input.as_raw_handle(), 0x208);
+        }
+        write_console(
+            &output,
+            "\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006h\x1b[?1049h",
+        );
+        // NOTE: one tracking mode at a time: 1003, set last, stands for 1000 and 1002 too
+        let modes = |input: &OwnedHandle, output: &OwnedHandle| {
+            [1003, 1006, 1049].map(|mode| dec_mode(input, output, mode))
+        };
+        assert_eq!(
+            modes(&input, &output),
+            [Some(1); 3],
+            "set (DECRQM: 1 set, 2 reset)"
+        );
+        drop((input, output));
+        let console =
+            ForeignConsole::attach(holder.0.id()).expect("attached to the holder's console");
+        console.restore().unwrap();
+        let (input, output) = (
+            open_console("CONIN$").unwrap(),
+            open_console("CONOUT$").unwrap(),
+        );
+        let mut mode = 0;
+        // SAFETY: a live console handle
+        unsafe { GetConsoleMode(input.as_raw_handle(), &raw mut mode) };
+        assert_eq!(mode, COOKED_INPUT, "{mode:#x}");
+        // SAFETY: as above
+        unsafe {
+            SetConsoleMode(
+                output.as_raw_handle(),
+                ENABLE_PROCESSED_OUTPUT | ENABLE_VIRTUAL_TERMINAL_PROCESSING,
+            )
+        };
+        assert_eq!(modes(&input, &output), [Some(2); 3], "reset");
+        drop(console);
+    }
+
+    fn write_console(output: &OwnedHandle, text: &str) {
+        let text: Vec<u16> = text.encode_utf16().collect();
+        let mut written = 0;
+        // SAFETY: `text` holds that many units
+        let ok = unsafe {
+            WriteConsoleW(
+                output.as_raw_handle(),
+                text.as_ptr(),
+                text.len() as u32,
+                &raw mut written,
+                ptr::null(),
+            )
+        };
+        assert_ne!(ok, 0, "{}", io::Error::last_os_error());
+    }
+
+    /// DEC private mode `mode` as the console answers DECRQM: 1 set, 2 reset.
+    fn dec_mode(input: &OwnedHandle, output: &OwnedHandle, mode: u32) -> Option<u32> {
+        use windows_sys::Win32::System::Console::{INPUT_RECORD, KEY_EVENT, ReadConsoleInputW};
+        write_console(output, &format!("\x1b[?{mode}$p"));
+        let mut reply = String::new();
+        while !reply.ends_with("$y") {
+            // SAFETY: a live console handle
+            if unsafe { WaitForSingleObject(input.as_raw_handle(), 2000) } != WAIT_OBJECT_0 {
+                return None;
+            }
+            // SAFETY: all-zero is a valid INPUT_RECORD
+            let mut record: INPUT_RECORD = unsafe { std::mem::zeroed() };
+            let mut read = 0;
+            // SAFETY: room for one record
+            unsafe { ReadConsoleInputW(input.as_raw_handle(), &raw mut record, 1, &raw mut read) };
+            // SAFETY: the union member EventType names
+            if read == 1
+                && u32::from(record.EventType) == KEY_EVENT
+                && unsafe { record.Event.KeyEvent.bKeyDown } != 0
+            {
+                // SAFETY: as above
+                reply.extend(char::from_u32(u32::from(unsafe {
+                    record.Event.KeyEvent.uChar.UnicodeChar
+                })));
+            }
+        }
+        reply
+            .strip_prefix(&format!("\x1b[?{mode};"))?
+            .strip_suffix("$y")?
+            .parse()
+            .ok()
     }
 
     fn ended(child: &ConsoleChild) -> u32 {

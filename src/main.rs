@@ -181,6 +181,12 @@ enum Command {
         #[arg(long, default_value = "127.0.0.1:7840")]
         listen: std::net::SocketAddr,
     },
+    /// Ends Claude Code process PID and everything under it from inside its
+    /// console, then turns off the terminal modes it left on (run by the
+    /// collector's stop, not by hand).
+    #[cfg(windows)]
+    #[command(hide = true)]
+    EndTree { pid: u32 },
     /// Write every note of the hub's database as markdown with frontmatter:
     /// `<dir>/<workspace>/<kind>/<slug>.md`. Reads the database directly,
     /// so it works on a backup copy too.
@@ -470,6 +476,8 @@ fn main() -> ExitCode {
                 }),
         },
         Command::PreReceive => return exit(workspace::hub::pre_receive()),
+        #[cfg(windows)]
+        Command::EndTree { pid } => actions::end_tree_in_console(pid),
         Command::Export { config, db, dir } => export(config, db, &dir),
         Command::Demo { dir, listen } => {
             logging();

@@ -255,16 +255,37 @@ pub fn end_group(pgrp: u32, force: bool) {
 /// it, at once: Windows has no request to end.
 #[cfg(windows)]
 pub fn end_group(pgrp: u32, _force: bool) {
-    let table = scan(&[pgrp]);
+    end_tree(pgrp, None::<fn()>);
+}
+
+/// How long `end_tree` waits for its root to be gone before `root_gone`.
+#[cfg(windows)]
+const ROOT_GONE: Duration = Duration::from_secs(2);
+
+/// Ends `root` and everything below it, at once, as `end_group`; with
+/// `root_gone`, waits for `root` itself to be gone and runs it then, before
+/// the rest goes (not at all when `root` would not end).
+#[cfg(windows)]
+pub fn end_tree(root: u32, mut root_gone: Option<impl FnOnce()>) {
+    let table = scan(&[root]);
     // NOTE: gone already, or not to be queried
-    if !table.contains_key(&pgrp) {
+    if !table.contains_key(&root) {
         return;
     }
     // NOTE: parents first, so none is left to start a replacement for an ended child
     let mut ended: Vec<(u32, u64)> = Vec::new();
-    for pid in subtree(pgrp, &children_of(&table)) {
-        let _ = crate::win::terminate(pid);
+    for pid in subtree(root, &children_of(&table)) {
+        let terminated = crate::win::terminate(pid).is_ok();
         ended.extend(table.get(&pid).map(|stat| (pid, stat.start)));
+        // NOTE: the root comes first
+        if pid == root
+            && terminated
+            && root_gone.is_some()
+            && crate::win::wait_gone(root, ROOT_GONE)
+            && let Some(then) = root_gone.take()
+        {
+            then();
+        }
     }
     // NOTE: and what one started between the snapshot and its end
     for _ in 0..3 {
@@ -909,6 +930,42 @@ mod tests {
             !crate::win::pid_alive(grandchild)
         });
         assert!(gone, "{grandchild} still runs");
+    }
+
+    /// The console is restored between the root's end and its children's:
+    /// the shell prompts again as soon as Claude Code is gone.
+    #[cfg(windows)]
+    #[test]
+    fn a_tree_s_root_is_gone_before_its_children() {
+        use std::os::windows::process::CommandExt;
+        let mut child = std::process::Command::new("cmd")
+            .args(["/c", "ping -n 30 127.0.0.1 >NUL"])
+            .creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW)
+            .spawn()
+            .unwrap();
+        let root = child.id();
+        let grandchild = (0..50)
+            .find_map(|_| {
+                std::thread::sleep(Duration::from_millis(20));
+                children(root).first().map(|(pid, _)| *pid)
+            })
+            .expect("ping under cmd");
+        let mut seen = None;
+        end_tree(
+            root,
+            Some(|| {
+                seen = Some((
+                    crate::win::pid_alive(root),
+                    crate::win::pid_alive(grandchild),
+                ));
+            }),
+        );
+        assert_eq!(seen, Some((false, true)), "(root, child) running then");
+        assert!(!child.wait().unwrap().success());
+        assert!(crate::win::wait_gone(grandchild, Duration::from_secs(2)));
+        let mut again = false;
+        end_tree(root, Some(|| again = true));
+        assert!(!again, "nothing to end, nothing to run");
     }
 
     #[test]

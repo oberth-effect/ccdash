@@ -111,7 +111,7 @@ collector's log names its pipes.
 
 | Area                | On Windows                                                                                            |
 | ------------------- | ----------------------------------------------------------------------------------------------------- |
-| stop a session      | Claude Code and every process under it end at once (`TerminateProcess`); no SessionEnd hook           |
+| stop a session      | Claude Code's tree ends at once (`TerminateProcess`), no SessionEnd hook; its console is then reset   |
 | interrupt           | the running Bash call's process tree is ended at once                                                 |
 | open                | no window focus; a background session is attached in a new console                                    |
 | editor              | `nvim {file}` in a new console; Windows Terminal keeps a tab open after a non-zero exit (`:cq`)       |
