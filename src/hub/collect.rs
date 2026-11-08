@@ -103,12 +103,12 @@ async fn link(
         .await
         .context("no hello")?
         .context("closed before hello")??;
-    let (terminals, edit) = match parse(&hello)? {
+    let (terminals, features) = match parse(&hello)? {
         Some(ToHub::Hello {
             v,
             host: claimed,
             terminals,
-            edit,
+            features,
         }) => {
             if v != VERSION {
                 let _ = sink
@@ -121,7 +121,7 @@ async fn link(
             if claimed != host {
                 bail!("token of {host} used by {claimed}");
             }
-            (terminals, edit)
+            (terminals, features)
         }
         _ => bail!("first message was not a hello"),
     };
@@ -130,7 +130,7 @@ async fn link(
         host: host.clone(),
         conn,
         terminals,
-        edit,
+        features,
         addr,
         tx,
     })

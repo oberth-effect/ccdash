@@ -7,9 +7,12 @@
 	import { fetchSync, fetchWorkspace, type SyncView, type WorkspaceView } from '#lib/api/index.js';
 	import { fmtDuration, plural } from '#lib/format.js';
 	import { live } from '#lib/live/store.svelte.js';
+	import { DOCS_WORKSPACES } from '#lib/docs.js';
 	import { ATTENTION } from '#lib/workspace.js';
 
 	const EVERY_MS = 60_000;
+
+	type Row = { href: string; name: string; text: string; warn: boolean };
 
 	let {
 		hostCounts,
@@ -23,11 +26,15 @@
 	let sync = $state<SyncView | null>(null);
 
 	async function load() {
-		const [ws, state] = await Promise.allSettled([fetchWorkspace(), fetchSync()]);
+		// NOTE: only what is on: the hub answers 404 for a sync it does not run
+		const [ws, state] = await Promise.allSettled([
+			live.hub?.features.workspace ? fetchWorkspace() : null,
+			live.anyHost('sync') ? fetchSync() : null
+		]);
 		if ([ws, state].some((r) => r.status === 'rejected' && r.reason instanceof Unauthorized)) {
 			live.needToken = true;
 		}
-		workspace = ws.status === 'fulfilled' && ws.value.enabled ? ws.value : null;
+		workspace = ws.status === 'fulfilled' && ws.value?.enabled ? ws.value : null;
 		sync = state.status === 'fulfilled' ? state.value : null;
 	}
 
@@ -53,6 +60,13 @@
 
 	const rows = $derived(
 		[
+			live.ready &&
+				!live.workspaces.length && {
+					href: DOCS_WORKSPACES,
+					name: 'Workspaces',
+					text: 'none set: the knowledge tools refuse every session',
+					warn: true
+				},
 			issues && {
 				href: '/projects',
 				name: 'Issues',
@@ -77,7 +91,7 @@
 					: `${plural(sync.hosts.filter((h) => h.connected).length, 'machine')} in sync`,
 				warn: sync.conflicts.length > 0
 			}
-		].filter((row) => row !== null)
+		].filter((row): row is Row => Boolean(row))
 	);
 </script>
 

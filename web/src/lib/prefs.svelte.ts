@@ -146,13 +146,13 @@ class Prefs {
 	vim = $state<VimMode>(
 		browser && isVimMode(localStorage.getItem(VIM_KEY))
 			? (localStorage.getItem(VIM_KEY) as VimMode)
-			: 'auto'
+			: 'off'
 	);
 	vimrc = $state<string>(
 		browser ? (localStorage.getItem(VIMRC_KEY) ?? DEFAULT_VIMRC) : DEFAULT_VIMRC
 	);
 	editor = $state<EditorLook>({ ...DEFAULT_EDITOR, ...load<Partial<EditorLook>>(EDITOR_KEY, {}) });
-	/** The machine whose editor "Edit in nvim" opens; empty picks the
+	/** The machine whose editor "Edit in the editor" opens; empty picks the
 	 * session's host, else the first connected one that can. */
 	editHost = $state<string>(browser ? (localStorage.getItem(EDIT_HOST_KEY) ?? '') : '');
 	start = $state<StartChoice>(load(START_KEY, { host: '', model: '', mode: '' }));

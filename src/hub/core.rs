@@ -34,8 +34,8 @@ use crate::{
     machine::{self, MachineReport, Power, PowerAction, Wake},
     messages,
     model::{
-        Activity, Ask, Draft, Editing, HostStatus, HubStatus, Launch, LaunchState, Message,
-        RateLimits, ScopedLimit, Session, Snapshot, Update,
+        Activity, Ask, Draft, Editing, HostFeatures, HostStatus, HubFeatures, HubStatus, Launch,
+        LaunchState, Message, RateLimits, ScopedLimit, Session, Snapshot, Update,
     },
     notify::{self, Category, Composer, Note},
     paths,
@@ -146,8 +146,8 @@ pub enum Cmd {
         host: String,
         conn: u64,
         terminals: Vec<String>,
-        /// The machine opens drafts in an editor.
-        edit: bool,
+        /// What its collector does besides reporting.
+        features: HostFeatures,
         /// Where it connects from.
         addr: Option<IpAddr>,
         tx: mpsc::Sender<ToCollector>,
@@ -673,6 +673,9 @@ impl Hub {
                 name: host.clone(),
                 started_at: started,
                 machine: None,
+                features: HubFeatures {
+                    workspace: workspace.is_some(),
+                },
             },
             host,
             public_url,
@@ -1194,10 +1197,10 @@ async fn run(mut core: Core, mut rx: mpsc::Receiver<Cmd>) {
                 host,
                 conn,
                 terminals,
-                edit,
+                features,
                 addr,
                 tx,
-            } => core.collector_open(host, conn, terminals, edit, addr, tx),
+            } => core.collector_open(host, conn, terminals, features, addr, tx),
             Cmd::Here { addr, reply } => {
                 let _ = reply.send(
                     core.links
@@ -1713,7 +1716,7 @@ impl Core {
         host: String,
         conn: u64,
         terminals: Vec<String>,
-        edit: bool,
+        features: HostFeatures,
         addr: Option<IpAddr>,
         tx: mpsc::Sender<ToCollector>,
     ) {
@@ -1762,7 +1765,7 @@ impl Core {
                 machine,
                 power: None,
                 wake: None,
-                edit,
+                features,
             },
         );
         self.refresh_wake(&host);
@@ -2316,13 +2319,13 @@ impl Core {
             Some(s) => (
                 s.workspace
                     .clone()
-                    .ok_or_else(|| format!("{cwd} is outside every ccdash workspace"))?,
+                    .ok_or_else(|| self.workspaces.outside(cwd))?,
                 s.project.clone(),
             ),
             None => self
                 .workspaces
                 .locate(cwd)
-                .ok_or_else(|| format!("{cwd} is outside every ccdash workspace"))?,
+                .ok_or_else(|| self.workspaces.outside(cwd))?,
         };
         Ok(Caller {
             host: host.to_owned(),
@@ -2577,7 +2580,7 @@ impl Core {
             }
             Call::Import { dir, notes } => {
                 let Some((workspace, _)) = self.workspaces.locate(&dir) else {
-                    return answer(Err(format!("{dir} is outside every ccdash workspace")));
+                    return answer(Err(self.workspaces.outside(&dir)));
                 };
                 tokio::spawn(async move {
                     let ws = workspace.clone();
@@ -3482,7 +3485,7 @@ impl Core {
         if !self.links.contains_key(host) {
             return Err(format!("{host} is not connected"));
         }
-        if !self.hosts.get(host).is_some_and(|h| h.edit) {
+        if !self.hosts.get(host).is_some_and(|h| h.features.edit) {
             return Err(format!(
                 "{host} does not open an editor from the panel (`[edit] command` is off)"
             ));
@@ -4506,7 +4509,7 @@ mod tests {
                 host: host.into(),
                 conn: conn as u64,
                 terminals: Vec::new(),
-                edit: false,
+                features: HostFeatures::default(),
                 addr: None,
                 tx,
             })
@@ -4621,7 +4624,7 @@ mod tests {
             host: "navi".into(),
             conn: 1,
             terminals: Vec::new(),
-            edit: false,
+            features: HostFeatures::default(),
             addr: None,
             tx,
         })
@@ -4765,7 +4768,7 @@ mod tests {
             host: "navi".into(),
             conn: 2,
             terminals: Vec::new(),
-            edit: false,
+            features: HostFeatures::default(),
             addr: None,
             tx,
         })
@@ -4896,7 +4899,7 @@ mod tests {
             host: "navi".into(),
             conn: 1,
             terminals: Vec::new(),
-            edit: false,
+            features: HostFeatures::default(),
             addr: None,
             tx,
         })
@@ -4973,7 +4976,7 @@ mod tests {
             host: "navi".into(),
             conn: 1,
             terminals: Vec::new(),
-            edit: false,
+            features: HostFeatures::default(),
             addr: None,
             tx,
         })
@@ -5226,7 +5229,7 @@ mod tests {
             host: "navi".into(),
             conn: 1,
             terminals: Vec::new(),
-            edit: false,
+            features: HostFeatures::default(),
             addr: None,
             tx,
         })
@@ -5299,7 +5302,7 @@ mod tests {
             host: "navi".into(),
             conn: 1,
             terminals: Vec::new(),
-            edit: false,
+            features: HostFeatures::default(),
             addr: None,
             tx,
         })
@@ -5463,7 +5466,7 @@ mod tests {
             host: "navi".into(),
             conn: 1,
             terminals: Vec::new(),
-            edit: false,
+            features: HostFeatures::default(),
             addr: None,
             tx,
         })
@@ -5670,7 +5673,10 @@ mod tests {
             host: "navi".into(),
             conn: 2,
             terminals: Vec::new(),
-            edit: true,
+            features: HostFeatures {
+                edit: true,
+                ..HostFeatures::default()
+            },
             addr: None,
             tx,
         })

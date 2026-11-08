@@ -14,7 +14,7 @@ use crate::{
     ask::Answer,
     knowledge::{Hit, Note, NoteOp, NoteView, Query, Upsert, Written},
     machine::{MachineReport, PowerAction},
-    model::{Claim, Kind, Palette, RateLimits, ScopedLimit, Session, Skill, Update},
+    model::{Claim, HostFeatures, Kind, Palette, RateLimits, ScopedLimit, Session, Skill, Update},
     state::{AgentEntry, NiriEvent, ProcPoll},
     sync::{Keep, SyncStatus},
     wire::Envelope,
@@ -23,6 +23,7 @@ use crate::{
     },
 };
 
+/// 16: what a collector does (`Hello.features`, replacing `Hello.edit`).
 /// 15: drafts opened in an editor on a machine (`Hello.edit`, `Edit` and
 /// `EditCancel` down, `Edited` up).
 /// 13: the machine's report (`Machine` up) and its power from the panel
@@ -45,7 +46,7 @@ use crate::{
 /// `Stop`, `Open` down; `Launched`, `Stopped` up), `branch` and `launched`
 /// on sessions, `branch` on agents entries and envelopes, `launch` on
 /// envelopes.
-pub const VERSION: u32 = 15;
+pub const VERSION: u32 = 16;
 
 /// Collector → hub.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -57,9 +58,9 @@ pub enum ToHub {
         host: String,
         /// Window `app_id`s that count as terminals on this host.
         terminals: Vec<String>,
-        /// This machine opens drafts in an editor (`[edit] command` is set).
+        /// What this collector does besides reporting.
         #[serde(default)]
-        edit: bool,
+        features: HostFeatures,
     },
     /// A hook or statusline payload, as `ccdash emit` sent it.
     Envelope {
@@ -550,7 +551,10 @@ mod tests {
             v: VERSION,
             host: "navi".into(),
             terminals: vec!["ghostty".into()],
-            edit: true,
+            features: HostFeatures {
+                edit: true,
+                ..HostFeatures::default()
+            },
         };
         let text = serde_json::to_string(&hello).unwrap();
         assert!(text.starts_with(r#"{"type":"hello""#), "{text}");

@@ -500,9 +500,30 @@ pub struct HostStatus {
     /// Whether and how the hub can wake the machine.
     #[serde(default)]
     pub wake: Option<Wake>,
-    /// Its collector opens drafts in an editor (`[edit] command`).
+    /// What its collector does besides reporting; kept while it is offline.
     #[serde(default)]
+    pub features: HostFeatures,
+}
+
+/// What a machine's collector does besides reporting, as its configuration
+/// says, so the panel offers only that.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export_to = "types.ts")]
+#[serde(default)]
+pub struct HostFeatures {
+    /// Opens drafts in an editor (`[edit] command`).
     pub edit: bool,
+    /// Opens background sessions in a terminal (`[attach] command`).
+    pub attach: bool,
+    /// Starts and resumes sessions from the panel (`[launch] command`).
+    pub launch: bool,
+    /// Its sessions load the ccdash channel, so the panel can reply to them
+    /// (`[launch] channel`).
+    pub channel: bool,
+    /// Keeps `~/.claude` in step through the hub (`[sync] enable`).
+    pub sync: bool,
+    /// Keeps the workspace root in step through the hub (`[workspace] enable`).
+    pub workspace: bool,
 }
 
 /// A prompt being written in the panel, kept on the hub so it survives a
@@ -543,6 +564,18 @@ pub struct HubStatus {
     pub started_at: i64,
     #[serde(default)]
     pub machine: Option<MachineReport>,
+    #[serde(default)]
+    pub features: HubFeatures,
+}
+
+/// What the hub runs besides the panel and the store, as its configuration
+/// says.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export_to = "types.ts")]
+#[serde(default)]
+pub struct HubFeatures {
+    /// The workspace sync (`[workspace] enable`).
+    pub workspace: bool,
 }
 
 /// Colours generated from a machine's wallpaper, which a panel can follow.

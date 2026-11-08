@@ -37,7 +37,10 @@ use crate::{
     git,
     knowledge::{self, Note, Query},
     machine::{MachineReport, PowerAction, Sampler, display_session},
-    model::{HostStatus, Palette, RateLimits, ScopedLimit, Session, Skill, Snapshot, Update},
+    model::{
+        HostFeatures, HostStatus, Palette, RateLimits, ScopedLimit, Session, Skill, Snapshot,
+        Update,
+    },
     niri, otlp, palette, paths, procs,
     protocol::{Call, Injection, Reply, TelemetryRecord, ToCollector, ToHub, Who, WorkspaceDir},
     state::{AgentEntry, NiriEvent, ProcPoll, StoreMsg, Window},
@@ -228,6 +231,18 @@ struct NotesCache {
     notes: HashMap<String, Vec<Note>>,
 }
 
+/// What this collector does besides reporting, as its configuration says.
+fn features(cfg: &CollectorConfig) -> HostFeatures {
+    HostFeatures {
+        edit: !cfg.edit.command.is_empty(),
+        attach: !cfg.attach.command.is_empty(),
+        launch: !cfg.launch.command.is_empty(),
+        channel: cfg.launch.channel,
+        sync: cfg.sync.enable,
+        workspace: cfg.workspace.enable,
+    }
+}
+
 pub fn run(cfg: CollectorConfig) -> Result<()> {
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -267,6 +282,7 @@ async fn serve(cfg: Arc<CollectorConfig>) -> Result<()> {
             cfg.attach.command.clone(),
             cfg.edit.command.clone(),
         )
+        .with_features(features(&cfg))
         .with_skills(cfg.skills.plugin_dirs.clone())
         .with_sync(sync.clone())
         .with_workspace(workspace.clone())
@@ -279,7 +295,7 @@ async fn serve(cfg: Arc<CollectorConfig>) -> Result<()> {
             cfg: cfg.hub.clone(),
             host: host.clone(),
             terminals: cfg.niri.terminals.clone(),
-            edit: !cfg.edit.command.is_empty(),
+            features: features(&cfg),
             queue: queue::Queue::open(paths::outbox_file(), cfg.queue.max_bytes),
             resumed: resumed.clone(),
         },
@@ -580,6 +596,8 @@ struct Actor {
     attach: Vec<String>,
     /// `[edit] command`, for the hub's `Edit`.
     edit: Vec<String>,
+    /// What this collector does besides reporting, for the local snapshot.
+    features: HostFeatures,
     /// The editors open for the hub's edits, by edit id: the pid of their
     /// process group, for `EditCancel`.
     edits: Arc<std::sync::Mutex<HashMap<String, u32>>>,
@@ -654,6 +672,7 @@ impl Actor {
             down_at: None,
             launch: Launch {
                 command: Vec::new(),
+                channel: false,
                 stop: Vec::new(),
                 remove: Vec::new(),
                 direnv: Vec::new(),
@@ -661,6 +680,7 @@ impl Actor {
             },
             attach: Vec::new(),
             edit: Vec::new(),
+            features: HostFeatures::default(),
             edits: Arc::default(),
             dirs: BTreeMap::new(),
             dirs_at: 0,
@@ -776,6 +796,11 @@ impl Actor {
         self.launch = launch;
         self.attach = attach;
         self.edit = edit;
+        self
+    }
+
+    fn with_features(mut self, features: HostFeatures) -> Self {
+        self.features = features;
         self
     }
 
@@ -1138,7 +1163,7 @@ impl Actor {
                 machine: self.machine.clone(),
                 power: None,
                 wake: None,
-                edit: !self.edit.is_empty(),
+                features: self.features,
             }],
             sessions,
             rate_limits: self.rate_limits.clone(),

@@ -144,7 +144,9 @@ pub async fn open_session(session: &Session, attach_command: &[String]) -> Resul
         .iter()
         .map(|arg| arg.replace("{id}", &short_id))
         .collect();
-    let (program, args) = argv.split_first().context("empty attach command")?;
+    let (program, args) = argv.split_first().context(
+        "no terminal to attach in: set `[attach] command` (Home Manager: `services.ccdash.terminal`)",
+    )?;
     let mut child = Command::new(program)
         .args(args)
         .stdin(Stdio::null())
@@ -206,8 +208,8 @@ impl LaunchSpec {
     }
 
     /// The arguments after the configured command; `settings` is the file
-    /// [`settings`] wrote.
-    pub fn args(&self, settings: &Path) -> Vec<String> {
+    /// [`settings`] wrote, `channel` adds the ccdash channel.
+    pub fn args(&self, settings: &Path, channel: bool) -> Vec<String> {
         let mut args = vec!["--bg".to_owned()];
         if let Some(id) = &self.resume {
             args.extend(["--resume".into(), id.clone()]);
@@ -218,9 +220,10 @@ impl LaunchSpec {
         if let Some(mode) = &self.permission_mode {
             args.extend(["--permission-mode".into(), mode.clone()]);
         }
+        if channel {
+            args.extend(["--channels".into(), "plugin:ccdash@inline".into()]);
+        }
         args.extend([
-            "--channels".into(),
-            "plugin:ccdash@inline".into(),
             "--settings".into(),
             settings.to_string_lossy().into_owned(),
             "--".into(),
@@ -414,7 +417,7 @@ pub async fn launch(
     let short = started(
         run(Command::new(program)
             .args(lead)
-            .args(spec.args(&settings))
+            .args(spec.args(&settings, cfg.channel))
             .current_dir(&spec.cwd))
         .await?,
     )?;
@@ -818,11 +821,16 @@ mod tests {
     #[test]
     fn launch_arguments_end_with_the_prompt() {
         let file = Path::new("/state/launch/0123abcd.json");
-        let args = spec().args(file);
+        let args = spec().args(file, true);
         assert_eq!(
             &args[..5],
             ["--bg", "--model", "haiku", "--permission-mode", "plan"]
         );
+        assert!(
+            args.windows(2)
+                .any(|w| w == ["--channels", "plugin:ccdash@inline"])
+        );
+        assert!(!spec().args(file, false).iter().any(|a| a == "--channels"));
         assert_eq!(&args[args.len() - 2..], ["--", "-v fix it"]);
         let settings = args.iter().position(|a| a == "--settings").unwrap();
         assert_eq!(args[settings + 1], "/state/launch/0123abcd.json");
@@ -838,7 +846,7 @@ mod tests {
             permission_mode: None,
             ..spec()
         }
-        .args(file);
+        .args(file, true);
         assert_eq!(
             &resumed[..3],
             ["--bg", "--resume", "9c4719e5-9508-461b-b1f4-e7b5a4c26f9d"]

@@ -7,6 +7,7 @@ import { SvelteMap } from 'svelte/reactivity';
 import { Unauthorized, api, getJson, token } from '../api/client';
 import type {
 	Draft,
+	HostFeatures,
 	HostStatus,
 	HubStatus,
 	Launch,
@@ -17,6 +18,15 @@ import type {
 } from '../api/types';
 
 const STALE_STREAM_MS = 45_000;
+
+const NO_FEATURES: HostFeatures = {
+	edit: false,
+	attach: false,
+	launch: false,
+	channel: false,
+	sync: false,
+	workspace: false
+};
 
 export type ConnKind = 'connecting' | 'live' | 'reconnecting' | 'offline';
 
@@ -63,6 +73,17 @@ class Live {
 
 	connected(host: string): boolean {
 		return this.hosts.some((h) => h.name === host && h.connected);
+	}
+
+	/** What the host's collector does besides reporting; nothing for a host
+	 * not heard from. */
+	features(host: string): HostFeatures {
+		return this.hosts.find((h) => h.name === host)?.features ?? NO_FEATURES;
+	}
+
+	/** Whether any machine's collector does `feature`. */
+	anyHost(feature: keyof HostFeatures): boolean {
+		return this.hosts.some((h) => h.features[feature]);
 	}
 
 	hostLabel(host: string): string {

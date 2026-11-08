@@ -1,5 +1,7 @@
 // The navigation registry: every area the sidebar shows. Adding an area
-// is one entry here plus its route folder.
+// is one entry here plus its route folder. An area whose feature is off
+// everywhere stays out of the sidebar and the palette (its route still
+// answers).
 
 import type { Component } from 'svelte';
 import ActivityIcon from '@lucide/svelte/icons/activity';
@@ -13,6 +15,7 @@ import HistoryIcon from '@lucide/svelte/icons/history';
 import ListIcon from '@lucide/svelte/icons/list';
 import SettingsIcon from '@lucide/svelte/icons/settings';
 import type { Session } from './api/types';
+import { live } from './live/store.svelte';
 import { shown } from './session';
 
 export type Area = {
@@ -23,6 +26,8 @@ export type Area = {
 	match: (path: string) => boolean;
 	/** A count shown next to the entry. */
 	badge?: (sessions: Session[]) => number;
+	/** Whether the area is offered at all; always without. */
+	on?: () => boolean;
 };
 
 const under = (prefix: string) => (path: string) =>
@@ -59,7 +64,22 @@ export const areas: Area[] = [
 		match: under('/analytics')
 	},
 	{ href: '/machines', label: 'Machines', icon: ComputerIcon, match: under('/machines') },
-	{ href: '/state', label: 'Claude state', icon: HardDriveIcon, match: under('/state') },
-	{ href: '/workspace', label: 'Workspace', icon: FolderSyncIcon, match: under('/workspace') },
+	{
+		href: '/state',
+		label: 'Claude state',
+		icon: HardDriveIcon,
+		match: under('/state'),
+		on: () => live.anyHost('sync')
+	},
+	{
+		href: '/workspace',
+		label: 'Workspace',
+		icon: FolderSyncIcon,
+		match: under('/workspace'),
+		on: () => Boolean(live.hub?.features.workspace)
+	},
 	{ href: '/settings', label: 'Settings', icon: SettingsIcon, match: under('/settings') }
 ];
+
+/** The areas offered now. */
+export const offered = (): Area[] => areas.filter((a) => a.on?.() ?? true);

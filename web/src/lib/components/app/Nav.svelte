@@ -2,7 +2,7 @@
 	// The areas, from the registry; a count where the area has one; the
 	// links keep the range. `compact`: icons only, for the collapsed sidebar.
 	import { page } from '$app/state';
-	import { areas } from '#lib/nav.js';
+	import { offered } from '#lib/nav.js';
 	import { live } from '#lib/live/store.svelte.js';
 	import { scope } from '#lib/scope.svelte.js';
 	import { cn } from '#lib/utils.js';
@@ -14,7 +14,7 @@
 </script>
 
 <nav class="flex flex-col gap-0.5 p-2" aria-label="Areas">
-	{#each areas as area (area.href)}
+	{#each offered() as area (area.href)}
 		{@const active = area.match(page.url.pathname)}
 		{@const badge = area.badge?.(inScope)}
 		<a

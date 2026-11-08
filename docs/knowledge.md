@@ -30,10 +30,18 @@ becomes that note's title.
 
 ## 2. Tools
 
-Sessions reach the notes through tools the channel server exposes:
+Sessions reach the notes through tools of the ccdash plugin's MCP server
+(`ccdash channel`), which the Home Manager module gives every session
+(`claudeCode.plugin.enable`, on by default; the channel is not needed):
 `recall`, `remember`, `verify`, `issue_add`, `issue_update`, `progress`,
 `doc_write`, `report_publish` ([reports](reports.md)), and between
-sessions `claim`, `release` and `tell_session`.
+sessions `claim`, `release` and `tell_session`. The plugin also carries the
+`ccdash:wrap-up`, `ccdash:report` and `ccdash:project` skills.
+
+The tools need a **workspace**: a session outside every one the hub lists
+(`services.ccdash-hub.workspaces`, the TOML's `workspaces.dirs`) is
+refused, and the Now page says so while the list is empty. Bring in
+what you had before with `ccdash import` ([below](#6-import-and-export)).
 
 - Every call is scoped to the calling session's workspace; a session never
   sees another workspace's notes.

@@ -16,6 +16,7 @@ and notes in step across machines.
   - [3.1 The hub](#31-the-hub)
   - [3.2 Each workstation](#32-each-workstation)
   - [3.3 Your phone](#33-your-phone)
+  - [3.4 One machine](#34-one-machine)
 - [4. Everyday use](#4-everyday-use)
 - [5. Configuration](#5-configuration)
 - [6. Development](#6-development)
@@ -74,7 +75,15 @@ panel. Details: [architecture](docs/architecture.md).
 ## 3. Install
 
 ccdash ships as a Nix flake with a NixOS module for the hub and a Home
-Manager module for the workstations.
+Manager module for the workstations. It needs NixOS, flakes and Home
+Manager (with `programs.claude-code`).
+
+```nix
+inputs.ccdash.url = "github:tsandrini/ccdash";
+```
+
+Everything beyond reporting is off until you turn it on: the syncs,
+replies from the phone, opening sessions in a terminal, the desktop plugin.
 
 ### 3.1 The hub
 
@@ -84,21 +93,25 @@ Manager module for the workstations.
 
   services.ccdash-hub = {
     enable = true;
-    tokenFile = "/run/agenix/ccdash-ui-token";         # bootstrap token
     collectors = {
       desk = "/run/agenix/ccdash-collector-desk";       # one token per machine
       laptop = "/run/agenix/ccdash-collector-laptop";
     };
+    workspaces = [ "/home/me/code/work" "/home/me/code/personal" ];
     nginx = { enable = true; domain = "ccdash.example.org"; };
     backup.enable = true;                               # nightly database copy
-    settings.workspaces.dirs = [ "/home/me/code/work" "/home/me/code/personal" ];
   };
   # TLS, listen addresses and access control of the vhost are yours:
   services.nginx.virtualHosts."ccdash.example.org" = { ... };
 }
 ```
 
-Keep the hub on your LAN or VPN: see [security](docs/security.md).
+A collector token is any secret string in a file the `ccdash` user can
+read (`openssl rand -hex 32`), kept with agenix, sops-nix or by hand. The
+**workspaces** are the directories your projects live in, the same paths
+on every machine: notes, issues and reports belong to one, and the
+knowledge tools refuse sessions outside them. Keep the hub on your LAN or
+VPN: see [security](docs/security.md).
 
 ### 3.2 Each workstation
 
@@ -110,6 +123,9 @@ Keep the hub on your LAN or VPN: see [security](docs/security.md).
     enable = true;
     hub.url = "wss://ccdash.example.org/collect";
     hub.tokenFile = "\${XDG_RUNTIME_DIR}/agenix/ccdash-collector-desk";
+    terminal = { command = [ "ghostty" "-e" ]; appId = "com.mitchellh.ghostty"; };
+    editor = "nvim";                    # the panel's Edit in the editor
+    # optional:
     sync.enable = true;                 # sessions and prompt history on every machine
     claudeCode.channel.enable = true;   # reply to sessions from the phone
     dms.enable = true;                  # the DankMaterialShell plugin
@@ -117,9 +133,11 @@ Keep the hub on your LAN or VPN: see [security](docs/security.md).
 }
 ```
 
-The module wires the hooks into `programs.claude-code`. The machine's host
-name must match a key of `collectors` on the hub. For replies from the phone
-also allow the channel on the NixOS side:
+The module wires the hooks into `programs.claude-code` and gives every
+session the ccdash plugin: the knowledge tools and the `ccdash:wrap-up`,
+`ccdash:report` and `ccdash:project` skills. The machine's host name must
+match a key of `collectors` on the hub. For replies from the phone also
+allow the channel on the NixOS side:
 
 ```nix
 imports = [ inputs.ccdash.nixosModules.default ];
@@ -134,6 +152,30 @@ sudo -u ccdash ccdash url --hub --config /etc/ccdash/hub.toml --qr
 
 Scan the code: the link pairs the phone with a token of its own. Install the
 panel from the browser's menu and turn on push in Settings.
+
+### 3.4 One machine
+
+The hub and a workstation in one: the hub module generates the local
+collector's token and the Home Manager module picks it up.
+
+```nix
+# NixOS
+services.ccdash-hub = {
+  enable = true;
+  localCollector = { enable = true; user = "me"; };
+  workspaces = [ "/home/me/code" ];
+};
+# Home Manager (user me)
+services.ccdash = {
+  enable = true;
+  hub.local = true;
+};
+```
+
+The panel listens on `127.0.0.1:7837`: the command in 3.3 without `--qr`
+prints a link that signs this browser in; a phone needs the hub reachable
+from it first (nginx, a VPN). Notes from before ccdash come in with
+`ccdash import memory <dir>` ([knowledge](docs/knowledge.md#6-import-and-export)).
 
 ## 4. Everyday use
 

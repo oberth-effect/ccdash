@@ -7,7 +7,8 @@
 # connect to its `/collect`, `/sync/` and `/git/` endpoints, each with its
 # own token. Reports sessions publish (`report_publish`) are kept as plain
 # files under `reports.directory` and served to the panel in a sandboxed
-# frame.
+# frame. Tokens the module manages (the bootstrap one without `tokenFile`,
+# the local collector's) are generated once by `ccdash-hub-tokens`.
 { localFlake }:
 {
   config,
@@ -24,6 +25,8 @@ let
     mkIf
     mkMerge
     mkOption
+    optionalAttrs
+    optionalString
     types
     ;
 
@@ -33,6 +36,13 @@ let
   exe = getExe cfg.package;
   stateDir = "/var/lib/ccdash-hub";
   proxyEndpoint = "127.0.0.1:${toString cfg.port}";
+  local = cfg.localCollector;
+  uiTokenFile = if cfg.tokenFile != null then cfg.tokenFile else "${stateDir}/ui-token";
+  # NOTE: the home-manager module's `hub.local` reads this path too
+  localTokenDir = "/var/lib/ccdash-hub-local";
+  localTokenFile = "${localTokenDir}/collector.token";
+  generated =
+    lib.optional (cfg.tokenFile == null) uiTokenFile ++ lib.optional local.enable localTokenFile;
 in
 {
   options.services.ccdash-hub = {
@@ -62,15 +72,58 @@ in
     };
 
     tokenFile = mkOption {
-      type = types.str;
+      type = types.nullOr types.str;
+      default = null;
       example = "/run/agenix/ccdash-ui-token";
       description = ''
         File holding the bootstrap bearer token of the web UI and API,
-        readable by the `ccdash` user. Devices paired through a link get
-        tokens of their own (Settings › Devices); the hub accepts this one
-        alongside them, so changing it signs out only the devices still on
-        it.
+        readable by the `ccdash` user; `null` generates one once into
+        {file}`/var/lib/ccdash-hub/ui-token`. Devices paired through a link
+        (`ccdash url --hub`) get tokens of their own (Settings › Devices);
+        the hub accepts this one alongside them, so changing it signs out
+        only the devices still on it.
       '';
+    };
+
+    workspaces = mkOption {
+      type = types.listOf types.str;
+      default = [ ];
+      example = [
+        "/home/me/code/work"
+        "/home/me/code/personal"
+      ];
+      description = ''
+        The workspaces: top-level directories on the workstations, each
+        holding project directories (repository clones). Memories, issues,
+        documents and reports belong to a workspace and are shared by its
+        sessions; the panel scopes by them. A workspace is named by its last
+        path component, so keep the paths the same on every machine. The
+        knowledge tools refuse sessions outside every workspace, so set at
+        least one.
+      '';
+    };
+
+    localCollector = {
+      enable = mkEnableOption ''
+        a collector on this machine too (a single node: the hub and a
+        workstation in one). Generates its token once into
+        {file}`/var/lib/ccdash-hub-local/collector.token`, readable by
+        {option}`user` and the hub, and lists it under {option}`host`; the
+        home-manager module's `services.ccdash.hub.local` picks it up
+      '';
+
+      user = mkOption {
+        type = types.str;
+        example = "alice";
+        description = "The user whose collector runs on this machine.";
+      };
+
+      host = mkOption {
+        type = types.str;
+        default = config.networking.hostName;
+        defaultText = literalExpression "config.networking.hostName";
+        description = "The host name that collector announces (the kernel's host name by default).";
+      };
     };
 
     collectors = mkOption {
@@ -203,11 +256,12 @@ in
       services.ccdash-hub.settings = {
         http = {
           listen = mkDefault [ proxyEndpoint ];
-          token_file = mkDefault cfg.tokenFile;
+          token_file = mkDefault uiTokenFile;
           public_url = mkIf cfg.nginx.enable (mkDefault "https://${cfg.nginx.domain}");
           web_dir = mkDefault "${cfg.webPackage}";
         };
-        collect.tokens = cfg.collectors;
+        collect.tokens = cfg.collectors // optionalAttrs local.enable { ${local.host} = localTokenFile; };
+        workspaces.dirs = mkDefault cfg.workspaces;
         store.path = mkDefault "${stateDir}/ccdash.db";
         push.key_file = mkDefault "${stateDir}/vapid.p8";
         sync.dir = mkDefault cfg.sync.directory;
@@ -226,10 +280,51 @@ in
       environment.systemPackages = [ cfg.package ];
       environment.etc."ccdash/hub.toml".source = configFile;
 
+      assertions = [
+        {
+          assertion = !local.enable || config.users.users ? ${local.user};
+          message = "services.ccdash-hub.localCollector.user: no user ${local.user} on this machine.";
+        }
+        {
+          assertion = !(local.enable && cfg.collectors ? ${local.host});
+          message = "services.ccdash-hub: ${local.host} is in collectors and is the localCollector's host.";
+        }
+      ];
+
+      systemd.services.ccdash-hub-tokens = mkIf (generated != [ ]) {
+        description = "ccdash hub: tokens the module manages";
+        requiredBy = [ "ccdash-hub.service" ];
+        before = [ "ccdash-hub.service" ];
+        serviceConfig = {
+          Type = "oneshot";
+          RemainAfterExit = true;
+          UMask = "0077";
+        };
+        script = ''
+          # NOTE: once only: an existing token is kept, its owner and mode put right
+          gen() {
+            if [ ! -s "$1" ]; then
+              head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n' > "$1.new"
+              mv "$1.new" "$1"
+            fi
+            chown "$2" "$1"
+            chmod "$3" "$1"
+          }
+          ${optionalString (cfg.tokenFile == null) ''
+            install -d -m 0700 -o ccdash -g ccdash ${stateDir}
+            gen ${uiTokenFile} ccdash:ccdash 0400
+          ''}
+          ${optionalString local.enable ''
+            install -d -m 0755 ${localTokenDir}
+            gen ${localTokenFile} ${local.user}:ccdash 0440
+          ''}
+        '';
+      };
+
       systemd.services.ccdash-hub = {
         description = "ccdash hub";
         wantedBy = [ "multi-user.target" ];
-        after = [ "network-online.target" ];
+        after = [ "network-online.target" ] ++ lib.optional (generated != [ ]) "ccdash-hub-tokens.service";
         wants = [ "network-online.target" ];
         restartTriggers = [ configFile ];
         # NOTE: the hub spawns `git http-backend` and the pre-receive guard

@@ -45,6 +45,19 @@ impl Workspaces {
         Self { dirs }
     }
 
+    /// Why `path` belongs to no workspace, for an error: with none
+    /// configured, also how to set one.
+    pub fn outside(&self, path: &str) -> String {
+        if self.dirs.is_empty() {
+            format!(
+                "{path} is outside every ccdash workspace: the hub has none yet \
+                (`[workspaces] dirs`; NixOS: `services.ccdash-hub.workspaces`)"
+            )
+        } else {
+            format!("{path} is outside every ccdash workspace")
+        }
+    }
+
     pub fn names(&self) -> Vec<String> {
         self.dirs.iter().map(|(name, _)| name.clone()).collect()
     }
@@ -1061,6 +1074,12 @@ mod tests {
             "/home/u",
         );
         assert_eq!(ws.names(), ["meteopress", "tsandrini"]);
+        assert!(!ws.outside("/x").contains("has none"));
+        assert!(
+            Workspaces::new(&[], "/home/u")
+                .outside("/x")
+                .contains("has none yet")
+        );
         assert_eq!(ws.dir("meteopress"), Some("/home/u/PB/meteopress"));
         assert_eq!(
             ws.of("/home/u/PB/meteopress/radar"),

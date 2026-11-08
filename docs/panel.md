@@ -103,9 +103,10 @@ interrupts the turn, so what you type next is what Claude reads
 long prompts: Enter is always a new line and only `Ctrl Enter` sends, on
 every device; it wraps, highlights markdown lightly, keeps an undo history
 that survives what the toolbar inserts, and **Expand** (`Ctrl Shift F`)
-gives it most of the screen. With a mouse it has vim keys (Settings ›
-Composer turns them on or off, and holds a vimrc of maps it starts with:
-`jk` leaves insert mode, `Space w` is `:w`); `:w` keeps the draft now,
+gives it most of the screen. Vim keys are off until Settings › Composer
+turns them on (On, or Auto: on with a mouse, off on touch); it also holds
+a vimrc of maps they start with (`jk` leaves insert mode, `Space w` is
+`:w`); `:w` keeps the draft now,
 `:x` is done editing. Line numbers (none, absolute, or relative to the
 cursor's line with the current one absolute, as Neovim's `number` +
 `relativenumber`; Auto is relative with vim keys), the markdown
@@ -135,7 +136,7 @@ terminal does. Its keyboard button lists the shortcuts:
 | `Ctrl Shift Enter` | Next prompt instead of a turn                 |
 | `Ctrl Shift 1–9`   | That quick reply                              |
 | `Ctrl .`           | Stop the turn                                 |
-| `Ctrl G`           | Edit in nvim on a machine (below)             |
+| `Ctrl G`           | Edit in the editor on a machine (below)       |
 | `Ctrl Shift F`     | Expand the field, and back                    |
 | `Ctrl J`           | Go to the open question                       |
 | `Ctrl ↑` `Ctrl ↓`  | Walk the prompt history                       |
@@ -165,10 +166,11 @@ the desktop, a reload or a closed tab loses nothing, and the start sheet
 opens with what you left in it. A draft is dropped when its prompt is
 sent, or after 90 days untouched.
 
-**Edit in nvim** (`Ctrl G`, the terminal button) opens the draft in an
-editor on a machine, as Claude Code's own `Ctrl G` opens the prompt in
+**Edit in the editor** (`Ctrl G`, the terminal button) opens the draft in
+an editor on a machine, as Claude Code's own `Ctrl G` opens the prompt in
 `$EDITOR`: the collector there writes the text to a file and runs its
-`edit.command` (the default is `ghostty -e nvim {file}`,
+`edit.command` (off by default; the Home Manager module's `terminal` and
+`editor` set it, such as `ghostty -e nvim {file}`,
 [configuration](configuration.md#4-collector-keys)); the field waits,
 with Cancel, until the editor closes, then takes the file's content. Exit
 without saving (`:cq`) and the text stays as it was. Which machine:
@@ -302,6 +304,12 @@ Host names on the Now page and in the Workspace area open it.
 **Claude state** is each machine's copy of `~/.claude` (the [state
 sync](state-sync.md)): machines with Resync, conflicts with their
 resolutions, sizes and growth.
+
+Claude state and Workspace are in the sidebar only while their sync is on
+(a collector with `sync.enable`, a hub with `workspace.enable`); so are
+their lines on the Now and Machines pages. Each collector tells the hub
+what it does, so Open, Edit, Start and Resolved show only on machines that
+can.
 
 **Workspace** is the workspace root on every machine (the [workspace
 sync](workspace.md#7-the-workspace-area)), in sections: **Overview** (the

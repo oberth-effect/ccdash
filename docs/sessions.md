@@ -262,17 +262,23 @@ nobody logs in to needs `loginctl enable-linger`.
 A session runs with the `PATH` of whatever dispatched it, so sessions from
 the panel get the collector's, which keeps the user manager's.
 
+Open (attach to a background session) and Edit in the editor need a
+terminal; without one the panel leaves them out. The Home Manager module
+writes both commands from `services.ccdash.terminal` (and `editor`).
+
 ```toml
 # collector config
 [launch]
 command = ["claude"]                  # + the arguments above; [] turns starting off; a job
                                       # continued on this machine runs without its arguments
+channel = false                       # true adds --channels (Home Manager: claudeCode.channel.enable)
 stop = ["claude", "stop", "{id}"]
 remove = ["claude", "rm", "{id}"]     # when stop fails on a job nothing runs
 
 [attach]
-command = ["ghostty", "-e", "claude", "attach", "{id}"]
+command = []    # off; e.g. ["ghostty", "-e", "claude", "attach", "{id}"]
 
 [edit]
-command = ["ghostty", "-e", "nvim", "{file}"]   # the panel's Edit in nvim ([panel](panel.md#2-a-sessions-page))
+command = []    # off; e.g. ["ghostty", "-e", "nvim", "{file}"], the panel's Edit in the editor
+                # ([panel](panel.md#2-a-sessions-page))
 ```

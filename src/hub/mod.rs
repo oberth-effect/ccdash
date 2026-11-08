@@ -52,6 +52,11 @@ async fn serve(cfg: Arc<HubConfig>) -> Result<()> {
     let host = cfg.host();
     let home = std::env::var("HOME").unwrap_or_default();
     let workspaces = Workspaces::new(&cfg.workspaces.dirs, &home);
+    if cfg.workspaces.dirs.is_empty() {
+        warn!(
+            "no workspaces (`[workspaces] dirs`): the knowledge tools refuse every session until one is set"
+        );
+    }
     let store = Store::open(&cfg.store_path(), cfg.store.retention_days)?;
     let token = Arc::new(http::load_token(&cfg)?);
     let public_url = cfg.public_url();

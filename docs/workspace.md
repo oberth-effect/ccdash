@@ -1,13 +1,13 @@
 # The workspace on every machine (workspace sync)
 
-With the workspace sync on, the workspace root (`~/ProjectBundle`: every git
-repository and plain directory under it) behaves like one directory that
-happens to be visible on every machine. A file saved on one machine is on
-the others within a second; a branch switch, a staged file and a stash
-follow; two sessions on two machines editing one repository collide only
-where two sessions on one machine would (the same hunk), and that collision
-is an ordinary git conflict marker plus an entry in the panel. Nothing to
-run by hand.
+With the workspace sync on, the workspace root (`workspace.root`, such as
+`~/code`: every git repository and plain directory under it) behaves like
+one directory that happens to be visible on every machine. A file saved on
+one machine is on the others within a second; a branch switch, a staged
+file and a stash follow; two sessions on two machines editing one
+repository collide only where two sessions on one machine would (the same
+hunk), and that collision is an ordinary git conflict marker plus an entry
+in the panel. Nothing to run by hand.
 
 1. [Turning it on](#1-turning-it-on)
 2. [Units](#2-units)
@@ -25,7 +25,7 @@ run by hand.
 services.ccdash-hub.workspace.enable = true;   # NixOS, the hub
 services.ccdash.workspace = {                  # Home Manager, every workstation
   enable = true;
-  root = "~/ProjectBundle";
+  root = "~/code";                             # no default
   include = [ "work/*" "me/*" ];               # globs on unit ids, empty = everything
   exclude = [ "me/nixpkgs" "*_bkp" ];
 };
@@ -330,7 +330,7 @@ enable = true
 # collector config
 [workspace]
 enable = true
-root = "~/ProjectBundle"
+root = "~/code"
 # depth = 2
 # include = ["tsandrini/*"]
 # exclude = ["tsandrini/nixpkgs"]

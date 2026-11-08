@@ -80,6 +80,11 @@ services.ccdash.claudeCode.channel.enable = true;
 programs.ccdash.channel.allow = true;
 ```
 
+The channel is for replies only: the knowledge tools and the skills reach
+every session through the plugin without it ([knowledge](knowledge.md#2-tools)).
+Without the channel, Resolved stays out of the panel and the message box
+leaves a note for the session's next prompt.
+
 This uses Claude Code
 [channels](https://code.claude.com/docs/en/channels-reference), a research
 preview: `ccdash channel` is an MCP server every such session runs,

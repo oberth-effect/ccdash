@@ -56,7 +56,7 @@ export const ACTIONS: SessionAction[] = [
 		id: 'open',
 		label: (s) => `Open on ${s.host}`,
 		icon: MonitorUpIcon,
-		offered: (s) => running(s) && online(s) && isBackground(s),
+		offered: (s) => running(s) && online(s) && isBackground(s) && live.features(s.host).attach,
 		run: async (s) => {
 			await put(openSession(s.id));
 			return `Opening on ${s.host}.`;
@@ -77,7 +77,8 @@ export const ACTIONS: SessionAction[] = [
 		id: 'resolve',
 		label: () => 'Resolved',
 		icon: CircleCheckIcon,
-		offered: (s) => running(s) && online(s) && s.hooked && !s.resolved,
+		offered: (s) =>
+			running(s) && online(s) && s.hooked && !s.resolved && live.features(s.host).channel,
 		blocked: (s) =>
 			s.channel
 				? null

@@ -18,7 +18,10 @@
 	let ws = $state<WorkspaceView | null>(null);
 
 	async function load() {
-		const [s, w] = await Promise.allSettled([fetchSync(), fetchWorkspace()]);
+		const [s, w] = await Promise.allSettled([
+			live.anyHost('sync') ? fetchSync() : null,
+			live.hub?.features.workspace ? fetchWorkspace() : null
+		]);
 		for (const r of [s, w]) {
 			if (r.status === 'rejected' && r.reason instanceof Unauthorized) live.needToken = true;
 		}
@@ -149,26 +152,30 @@
 										>{needs} need you</span
 									>{/if}
 							</dd>
-							<dt class="text-muted-foreground">Claude state</dt>
-							<dd>
-								{#if sh?.status}
-									{plural(sh.status.files, 'file')}, {fmtBytes(
-										sh.status.bytes
-									)}{#if sh.status.pending_up || sh.status.pending_down}
-										· {sh.status.pending_up + sh.status.pending_down} moving{:else}
-										· in step{/if}
-								{:else}
-									not syncing
-								{/if}
-							</dd>
-							<dt class="text-muted-foreground">Workspace</dt>
-							<dd>
-								{#if wh}
-									{hostSummary(wh, live.now)}
-								{:else}
-									not syncing
-								{/if}
-							</dd>
+							{#if live.anyHost('sync')}
+								<dt class="text-muted-foreground">Claude state</dt>
+								<dd>
+									{#if sh?.status}
+										{plural(sh.status.files, 'file')}, {fmtBytes(
+											sh.status.bytes
+										)}{#if sh.status.pending_up || sh.status.pending_down}
+											· {sh.status.pending_up + sh.status.pending_down} moving{:else}
+											· in step{/if}
+									{:else}
+										not syncing
+									{/if}
+								</dd>
+							{/if}
+							{#if live.hub?.features.workspace}
+								<dt class="text-muted-foreground">Workspace</dt>
+								<dd>
+									{#if wh}
+										{hostSummary(wh, live.now)}
+									{:else}
+										not syncing
+									{/if}
+								</dd>
+							{/if}
 							{#if wh?.status?.cost}
 								<dt class="text-muted-foreground">Collector</dt>
 								<dd>

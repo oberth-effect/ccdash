@@ -342,22 +342,25 @@ pub struct Procs {
     pub interval_secs: u64,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Attach {
-    /// Opens a background session; `{id}` is replaced with its short id.
+    /// Opens a background session in a terminal; `{id}` is replaced with its
+    /// short id (`["ghostty", "-e", "claude", "attach", "{id}"]`). Empty (the
+    /// default) turns the panel's Open off on this machine.
     pub command: Vec<String>,
 }
 
 /// The panel's drafts opened in an editor on this machine (the panel's
 /// Ctrl+G, as Claude Code's own opens the prompt in `$EDITOR`).
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Edit {
     /// Opens the draft's file and returns when the editor closes; `{file}`
-    /// is replaced with its path. Exit status 0 takes the file's content,
-    /// anything else (`:cq`) cancels. Empty turns editing from the panel
-    /// off on this machine.
+    /// is replaced with its path (`["ghostty", "-e", "nvim", "{file}"]`).
+    /// Exit status 0 takes the file's content, anything else (`:cq`)
+    /// cancels. Empty (the default) turns editing from the panel off on
+    /// this machine.
     pub command: Vec<String>,
 }
 
@@ -367,9 +370,14 @@ pub struct Edit {
 pub struct Launch {
     /// The Claude Code executable and any leading arguments (never
     /// `--settings`: ccdash passes its own); ccdash adds `--bg`, the model,
-    /// the permission mode, `--resume`, `--channels plugin:ccdash@inline`
-    /// and the prompt. Empty turns starting sessions from the panel off.
+    /// the permission mode, `--resume`, the channel (with `channel`) and
+    /// the prompt. Empty turns starting sessions from the panel off.
     pub command: Vec<String>,
+    /// Sessions here load the ccdash channel (`--channels
+    /// plugin:ccdash@inline`, the plugin through `--plugin-dir` in
+    /// `command`), so the panel can reply to them. The Home Manager module
+    /// sets it with `claudeCode.channel.enable`.
+    pub channel: bool,
     /// Stops a background session; `{id}` is replaced with its short id.
     pub stop: Vec<String>,
     /// Removes a background session no process runs any more, when `stop`
@@ -546,7 +554,15 @@ impl Default for Niri {
     fn default() -> Self {
         Self {
             enable: true,
-            terminals: vec!["com.mitchellh.ghostty".to_owned()],
+            terminals: [
+                "com.mitchellh.ghostty",
+                "foot",
+                "kitty",
+                "Alacritty",
+                "org.wezfurlong.wezterm",
+            ]
+            .map(String::from)
+            .to_vec(),
         }
     }
 }
@@ -560,30 +576,11 @@ impl Default for Procs {
     }
 }
 
-impl Default for Attach {
-    fn default() -> Self {
-        Self {
-            command: ["ghostty", "-e", "claude", "attach", "{id}"]
-                .map(String::from)
-                .to_vec(),
-        }
-    }
-}
-
-impl Default for Edit {
-    fn default() -> Self {
-        Self {
-            command: ["ghostty", "-e", "nvim", "{file}"]
-                .map(String::from)
-                .to_vec(),
-        }
-    }
-}
-
 impl Default for Launch {
     fn default() -> Self {
         Self {
             command: vec!["claude".into()],
+            channel: false,
             stop: ["claude", "stop", "{id}"].map(String::from).to_vec(),
             remove: ["claude", "rm", "{id}"].map(String::from).to_vec(),
             direnv: Vec::new(),
@@ -736,6 +733,10 @@ mod tests {
         assert_eq!(collector.agents.interval_secs, 9);
         assert!(collector.niri.enable);
         assert_eq!(collector.launch.command, ["claude"]);
+        // NOTE: no terminal or editor is assumed: Open and Edit stay off until set
+        assert!(collector.attach.command.is_empty());
+        assert!(collector.edit.command.is_empty());
+        assert!(!collector.workspace.enable);
         let off: CollectorConfig = toml::from_str("[launch]\ncommand = []\n").unwrap();
         assert!(off.launch.command.is_empty());
         assert_eq!(off.launch.stop, ["claude", "stop", "{id}"]);

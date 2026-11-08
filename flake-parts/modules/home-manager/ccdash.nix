@@ -3,6 +3,7 @@
 {
   config,
   lib,
+  options,
   pkgs,
   ...
 }:
@@ -78,6 +79,11 @@ let
 
   channel = cfg.claudeCode.channel;
   pluginDir = "${cfg.package}/share/ccdash/claude-plugin";
+  # NOTE: `programs.claude-code.plugins` arrived in home-manager late in 2026
+  canPlugin = options.programs ? claude-code && options.programs.claude-code ? plugins;
+  claudeExe =
+    if claudeCode.enable && claudeCode.package != null then getExe claudeCode.package else "claude";
+  inherit (cfg) terminal;
   # NOTE: `claude <subcommand>` parsers reject the channel flags (`rc` included)
   claudeWrapper = pkgs.writeShellScriptBin "claude" ''
     real=${getExe claudeCode.package}
@@ -153,10 +159,19 @@ in
     };
 
     hub = {
+      local = mkEnableOption ''
+        a hub on this machine (the NixOS module with
+        `services.ccdash-hub.localCollector` for this user): {option}`url`
+        and {option}`tokenFile` default to it
+      '';
+
       url = mkOption {
         type = types.str;
         example = "wss://ccdash.example.org/collect";
-        description = "The hub's `/collect` endpoint.";
+        description = ''
+          The hub's `/collect` endpoint; with {option}`local`
+          `ws://127.0.0.1:7837/collect` (set it for another port).
+        '';
       };
 
       tokenFile = mkOption {
@@ -164,9 +179,62 @@ in
         example = "\${XDG_RUNTIME_DIR}/agenix/ccdash-collector-token";
         description = ''
           File holding this machine's collector token, the one the hub
-          lists under this host name. `$VAR` and `''${VAR}` expand.
+          lists under this host name. `$VAR` and `''${VAR}` expand. With
+          {option}`local` the token the hub generated for this machine.
         '';
       };
+    };
+
+    terminal = mkOption {
+      type = types.nullOr (
+        types.submodule {
+          options = {
+            command = mkOption {
+              type = types.listOf types.str;
+              example = [
+                "ghostty"
+                "-e"
+              ];
+              description = "Opens a new terminal window running the program and arguments that follow.";
+            };
+            appId = mkOption {
+              type = types.nullOr types.str;
+              default = null;
+              example = "com.mitchellh.ghostty";
+              description = ''
+                The terminal's window app id, so ccdash ties a session to its
+                window on niri (focus, `ccdash open`). `null` keeps the
+                built-in list of common terminals.
+              '';
+            };
+          };
+        }
+      );
+      default = null;
+      example = literalExpression ''
+        {
+          command = [ "ghostty" "-e" ];
+          appId = "com.mitchellh.ghostty";
+        }
+      '';
+      description = ''
+        The terminal ccdash opens things in on this machine: background
+        sessions (the panel's Open, `ccdash open`) and, with {option}`editor`,
+        drafts. `null` turns both off; the panel then hides them.
+      '';
+    };
+
+    editor = mkOption {
+      type = types.nullOr types.str;
+      default = null;
+      example = "nvim";
+      description = ''
+        The editor the panel's Edit in the editor (Ctrl G) opens a draft in,
+        inside {option}`terminal`. It must return when the file is closed;
+        exit status 0 takes the text, anything else (`:cq`) cancels. `null`
+        turns it off; an editor with a window of its own goes in
+        {option}`settings.edit.command`.
+      '';
     };
 
     settings = mkOption {
@@ -226,9 +294,10 @@ in
       '';
 
       root = mkOption {
-        type = types.str;
-        default = "~/ProjectBundle";
-        description = "The workspace root. `~/` and `$VAR` expand.";
+        type = types.nullOr types.str;
+        default = null;
+        example = "~/code";
+        description = "The workspace root, needed with {option}`enable`. `~/` and `$VAR` expand.";
       };
 
       depth = mkOption {
@@ -374,6 +443,19 @@ in
         '';
       };
 
+      plugin.enable = mkOption {
+        type = types.bool;
+        default = true;
+        description = ''
+          Whether every Claude Code session loads the ccdash plugin: the
+          knowledge tools (`recall`, `remember`, `issue_add`, …) and the
+          `ccdash:wrap-up`, `ccdash:report` and `ccdash:project` skills.
+          Installed through {option}`programs.claude-code.plugins` (Claude
+          Code 2.1.157 or later); sessions with the channel load the same
+          plugin through `--plugin-dir`, which takes precedence.
+        '';
+      };
+
       channel = {
         enable = mkEnableOption ''
           replying to sessions from ccdash, through a Claude Code channel.
@@ -439,6 +521,13 @@ in
 
   config = mkIf cfg.enable (mkMerge [
     {
+      assertions = [
+        {
+          assertion = !cfg.workspace.enable || cfg.workspace.root != null;
+          message = "services.ccdash.workspace.enable needs services.ccdash.workspace.root.";
+        }
+      ];
+
       home.packages = [ cfg.package ];
 
       services.ccdash.settings = {
@@ -453,7 +542,7 @@ in
         };
         workspace = {
           enable = mkDefault cfg.workspace.enable;
-          root = mkDefault cfg.workspace.root;
+          root = mkIf (cfg.workspace.root != null) (mkDefault cfg.workspace.root);
           depth = mkDefault cfg.workspace.depth;
           include = mkDefault cfg.workspace.include;
           exclude = mkDefault cfg.workspace.exclude;
@@ -471,7 +560,34 @@ in
             ]
           );
           env = mkDefault cfg.launch.env;
+          channel = mkDefault channel.enable;
         };
+        attach.command = mkIf (terminal != null) (
+          mkDefault (
+            terminal.command
+            ++ [
+              claudeExe
+              "attach"
+              "{id}"
+            ]
+          )
+        );
+        edit.command = mkIf (terminal != null && cfg.editor != null) (
+          mkDefault (
+            terminal.command
+            ++ [
+              cfg.editor
+              "{file}"
+            ]
+          )
+        );
+        niri.terminals = mkIf (terminal != null && terminal.appId != null) (mkDefault [ terminal.appId ]);
+      };
+
+      services.ccdash.hub = mkIf cfg.hub.local {
+        url = mkDefault "ws://127.0.0.1:7837/collect";
+        # NOTE: the NixOS hub module's `localCollector` generates it there
+        tokenFile = mkDefault "/var/lib/ccdash-hub-local/collector.token";
       };
 
       xdg.configFile."ccdash/config.toml".source = configFile;
@@ -508,9 +624,12 @@ in
         ];
         # NOTE: the real binary, not the channel wrapper; ccdash adds `-p /usage`
         usage.command = mkDefault [ (getExe claudeCode.package) ];
-        # NOTE: the composer's `/` menu lists the plugin's skills only through this
-        skills.plugin_dirs = mkDefault (optionals channel.enable [ pluginDir ]);
+        # NOTE: the composer's `/` menu reads a skills-dir plugin by itself
+        skills.plugin_dirs = mkDefault (
+          optionals (channel.enable && !(cfg.claudeCode.plugin.enable && canPlugin)) [ pluginDir ]
+        );
         # NOTE: the wrapper passes `--bg` through without the plugin; ccdash adds `--channels`
+        # (`launch.channel`)
         launch = {
           command = mkDefault (
             [ (getExe claudeCode.package) ]
@@ -561,6 +680,16 @@ in
         )
       ]);
     })
+    (mkIf (cfg.claudeCode.plugin.enable && claudeCode.enable) (
+      if canPlugin then
+        { programs.claude-code.plugins.ccdash = pluginDir; }
+      else
+        {
+          warnings = [
+            "services.ccdash.claudeCode.plugin: this home-manager has no programs.claude-code.plugins, so only sessions with the channel get the ccdash tools and skills."
+          ];
+        }
+    ))
     (mkIf channel.enable {
       assertions = [
         {

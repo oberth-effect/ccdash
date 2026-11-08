@@ -12,7 +12,7 @@
 	import NoteRow from '#lib/components/notes/NoteRow.svelte';
 	import SearchFilters from '#lib/components/notes/SearchFilters.svelte';
 	import { live } from '#lib/live/store.svelte.js';
-	import { areas } from '#lib/nav.js';
+	import { offered } from '#lib/nav.js';
 	import { notePanel } from '#lib/notepanel.svelte.js';
 	import { reportHref } from '#lib/notes.js';
 	import { NoteSearch } from '#lib/notesearch.svelte.js';
@@ -48,7 +48,7 @@
 			.sort((a, b) => b.last_event_at - a.last_event_at)
 	);
 	const pages = $derived([
-		...areas.filter((area) => matches(area.label)),
+		...offered().filter((area) => matches(area.label)),
 		...(matches('past sessions resume old closed history')
 			? [{ href: PAST, label: 'Past sessions', icon: ArchiveRestoreIcon }]
 			: [])

@@ -112,8 +112,9 @@
 			fetchTargets()
 				.then(({ hosts }) => {
 					if (!starter.open) return;
-					targets = hosts;
-					pick(preset, hosts);
+					const starting = hosts.filter((t) => live.features(t.host).launch);
+					targets = starting;
+					pick(preset, starting);
 				})
 				.catch((e) => {
 					if (e instanceof Unauthorized) live.needToken = true;
@@ -295,7 +296,8 @@
 			<p class="text-sm text-muted-foreground">Loading…</p>
 		{:else if !connected.length}
 			<p class="text-sm text-muted-foreground">
-				No host is connected: sessions start on a workstation whose ccdash collector is up.
+				No connected machine starts sessions: they start on a workstation whose ccdash collector is
+				up, with <code class="font-mono">[launch] command</code> set.
 			</p>
 		{:else}
 			<div class="flex flex-wrap items-end gap-2">

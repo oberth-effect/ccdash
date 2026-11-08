@@ -1,7 +1,7 @@
 <script lang="ts">
 	// Settings › Composer: how the field behaves on this device (vim keys,
-	// line numbers, markdown, wrapping), the vimrc, which machine Edit in
-	// nvim opens, the quick replies and the templates. Every choice here is
+	// line numbers, markdown, wrapping), the vimrc, which machine Edit in an
+	// editor opens on, the quick replies and the templates. Every choice here is
 	// kept in this browser.
 	import { Button } from '#lib/components/ui/button/index.js';
 	import { Input } from '#lib/components/ui/input/index.js';
@@ -16,7 +16,7 @@
 	let vimrcText = $state(prefs.vimrc);
 	let vimrcErrors = $state<string[] | null>(null);
 	/** Machines whose collector opens an editor from the panel. */
-	const editors = $derived(live.hosts.filter((h) => h.edit));
+	const editors = $derived(live.hosts.filter((h) => h.features.edit));
 	/** Where Ctrl G would open the editor from this device right now. */
 	const opensOn = $derived(editHostFor(null));
 	const firefox = /firefox/i.test(navigator.userAgent);
@@ -194,7 +194,7 @@
 </section>
 
 <section class="flex flex-col gap-2">
-	<h2 class="text-base font-semibold">Edit in nvim</h2>
+	<h2 class="text-base font-semibold">Edit in an editor</h2>
 	<p class="text-sm text-muted-foreground">
 		Ctrl G opens the draft in an editor on a machine, through its collector. Left on Auto, it is the
 		machine this device sits on (the one whose collector connects from the same address), else the
@@ -227,8 +227,9 @@
 	{#if !editors.length}
 		<p class="text-xs text-muted-foreground">
 			No machine opens an editor yet: its collector needs
-			<code class="font-mono">[edit] command</code> (the default runs
-			<code class="font-mono">ghostty -e nvim</code>).
+			<code class="font-mono">[edit] command</code> (Home Manager:
+			<code class="font-mono">services.ccdash.terminal</code> and
+			<code class="font-mono">editor</code>).
 		</p>
 	{/if}
 </section>

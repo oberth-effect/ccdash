@@ -19,7 +19,7 @@
 				<span class="text-muted-foreground">
 					· {h.connected ? 'connected' : 'offline'} for {fmtDuration(
 						live.now - h.since
-					)}{#if h.edit}
+					)}{#if h.features.edit}
 						· opens an editor{/if}{#if live.here === h.name}
 						· this device is here{/if}</span
 				>

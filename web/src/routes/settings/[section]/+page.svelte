@@ -1,6 +1,6 @@
 <script lang="ts">
 	// Settings in sections: Devices (pairing, this device, push), Appearance
-	// (theme, colours), Composer (the editor, vim, Edit in nvim, quick
+	// (theme, colours), Composer (the editor, vim, Edit in an editor, quick
 	// replies, templates), Machines (hosts, a pointer to Claude state).
 	import { page } from '$app/state';
 	import Appearance from '#lib/components/settings/Appearance.svelte';

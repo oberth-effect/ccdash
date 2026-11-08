@@ -6,7 +6,7 @@
 	// send at once; the field (history, templates, note links, fence,
 	// preview, vim keys, its shortcuts) is `PromptField`. The draft lives on
 	// the hub (`drafts.ts`): it survives reloads and follows the owner from
-	// the phone to the desk, and Edit in nvim opens it in an editor on a
+	// the phone to the desk, and Edit in the editor opens it on a
 	// machine. `i` anywhere on the page goes back to the field, as Esc left it.
 	import OctagonXIcon from '@lucide/svelte/icons/octagon-x';
 	import { Unauthorized } from '#lib/api/client.js';
@@ -225,9 +225,14 @@
 	{#if error}<p class="text-xs text-critical" role="alert">{error}</p>{/if}
 	{#if !s.channel && !s.asleep && s.activity !== 'gone'}
 		<p class="text-xs text-muted-foreground">
-			To start a turn from here, the session needs the ccdash channel: exit it and run
-			<code class="font-mono">claude --resume {s.id}</code>. A note still reaches it with its next
-			prompt.
+			{#if live.features(s.host).channel}
+				To start a turn from here, the session needs the ccdash channel: exit it and run
+				<code class="font-mono">claude --resume {s.id}</code>.
+			{:else}
+				Starting a turn from here needs the ccdash channel, off on {s.host}
+				(<code class="font-mono">services.ccdash.claudeCode.channel.enable</code>).
+			{/if}
+			A note still reaches it with its next prompt.
 		</p>
 	{/if}
 </div>

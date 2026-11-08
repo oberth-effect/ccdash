@@ -598,6 +598,37 @@ export type HomeDir = { unit: string, path: string, bytes: number, files: number
 export type HostCount = { host: string, count: number, };
 
 /**
+ * What a machine's collector does besides reporting, as its configuration
+ * says, so the panel offers only that.
+ */
+export type HostFeatures = { 
+/**
+ * Opens drafts in an editor (`[edit] command`).
+ */
+edit: boolean, 
+/**
+ * Opens background sessions in a terminal (`[attach] command`).
+ */
+attach: boolean, 
+/**
+ * Starts and resumes sessions from the panel (`[launch] command`).
+ */
+launch: boolean, 
+/**
+ * Its sessions load the ccdash channel, so the panel can reply to them
+ * (`[launch] channel`).
+ */
+channel: boolean, 
+/**
+ * Keeps `~/.claude` in step through the hub (`[sync] enable`).
+ */
+sync: boolean, 
+/**
+ * Keeps the workspace root in step through the hub (`[workspace] enable`).
+ */
+workspace: boolean, };
+
+/**
  * A machine whose collector reports to the hub. The hub keeps every one
  * it has seen, across restarts, until the owner forgets it.
  */
@@ -627,9 +658,9 @@ power: Power | null,
  */
 wake: Wake | null, 
 /**
- * Its collector opens drafts in an editor (`[edit] command`).
+ * What its collector does besides reporting; kept while it is offline.
  */
-edit: boolean, };
+features: HostFeatures, };
 
 export type HostTotals = { host: string, sessions: number, working_ms: number, permission_ms: number, 
 /**
@@ -648,13 +679,23 @@ answers: number, answer_p50_ms: number | null, sessions: number, working_ms: num
 your_turn_ms: number, parked_ms: number, prompts: number, cost_usd: number, lines_added: number, lines_removed: number, tools: number, tool_failures: number, compactions: number, tokens: number, cpu_secs: number, peak_mem_bytes: number, };
 
 /**
+ * What the hub runs besides the panel and the store, as its configuration
+ * says.
+ */
+export type HubFeatures = { 
+/**
+ * The workspace sync (`[workspace] enable`).
+ */
+workspace: boolean, };
+
+/**
  * The hub's own machine.
  */
 export type HubStatus = { name: string, 
 /**
  * When the hub process started.
  */
-started_at: number, machine: MachineReport | null, };
+started_at: number, machine: MachineReport | null, features: HubFeatures, };
 
 /**
  * A gitignored file or directory that travels anyway.

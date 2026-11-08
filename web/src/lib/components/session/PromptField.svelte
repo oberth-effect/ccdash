@@ -146,7 +146,7 @@
 			onalternate ? ['Ctrl Shift Enter', 'Next prompt'] : null,
 			onquick ? ['Ctrl Shift 1–9', 'Quick reply'] : null,
 			onstop ? ['Ctrl .', 'Stop the turn'] : null,
-			onedit ? ['Ctrl G', `Edit in nvim${editHost ? ` on ${editHost}` : ''}`] : null,
+			onedit ? ['Ctrl G', `Edit in the editor${editHost ? ` on ${editHost}` : ''}`] : null,
 			expandable && !fill ? ['Ctrl Shift F', 'Expand the field'] : null,
 			['Ctrl J', 'Go to the open question'],
 			['Ctrl ↑ ↓', 'Prompt history'],
@@ -413,7 +413,7 @@
 		{#if editing}
 			<span class="flex items-center gap-2 px-1 text-xs text-muted-foreground" role="status">
 				<SquareTerminalIcon class="size-3.5 text-working" />
-				Editing in nvim on {editing.host} · {fmtDuration(live.now - editing.since)} · the text lands here
+				In the editor on {editing.host} · {fmtDuration(live.now - editing.since)} · the text lands here
 				when it closes
 				{#if oncanceledit}
 					<Button variant="outline" size="xs" type="button" onclick={oncanceledit}>Cancel</Button>
@@ -472,9 +472,9 @@
 					size="icon-sm"
 					type="button"
 					title={editHost
-						? `Edit in nvim on ${editHost} (Ctrl G)`
+						? `Edit in the editor on ${editHost} (Ctrl G)`
 						: 'No connected machine opens an editor: set [edit] command in its collector'}
-					aria-label="Edit in nvim"
+					aria-label="Edit in the editor"
 					disabled={locked || !editHost}
 					onclick={onedit}
 				>

@@ -59,7 +59,10 @@
 	}
 
 	async function loadLive() {
-		const [s, w] = await Promise.allSettled([fetchSync(), fetchWorkspace()]);
+		const [s, w] = await Promise.allSettled([
+			live.anyHost('sync') ? fetchSync() : null,
+			live.hub?.features.workspace ? fetchWorkspace() : null
+		]);
 		if (s.status === 'fulfilled') sync = s.value;
 		else failed(s.reason);
 		if (w.status === 'fulfilled') ws = w.value;
@@ -71,7 +74,7 @@
 		const tz = -new Date().getTimezoneOffset();
 		const [a, st] = await Promise.allSettled([
 			fetchAnalytics({ ...params, tz, host: h }),
-			fetchWorkspaceStats(params)
+			live.hub?.features.workspace ? fetchWorkspaceStats(params) : null
 		]);
 		if (h !== host) return;
 		if (a.status === 'fulfilled') analytics = a.value;
@@ -253,106 +256,111 @@
 		{/if}
 	</section>
 
-	<section class="flex flex-col gap-2">
-		<div class="flex items-baseline gap-2">
-			<h2 class="text-base font-semibold">Claude state</h2>
-			<a href="/state" class="text-xs text-muted-foreground hover:underline">the State page</a>
-		</div>
-		{#if !sync}
-			<p class="text-sm text-muted-foreground">Loading…</p>
-		{:else if !syncHost?.status}
-			<p class="text-sm text-muted-foreground">This machine does not sync Claude's state.</p>
-		{:else}
-			{@const s = syncHost.status}
-			<p class="text-sm">
-				{plural(s.files, 'file')}, {fmtBytes(s.bytes)} of what travels{#if s.pending_up || s.pending_down}
-					· {s.pending_up} to send, {s.pending_down} to fetch{:else}
-					· in step{/if}{#if s.held}
-					· {s.held} held while their session runs elsewhere{/if}{#if s.last_pass}
-					· last checked {fmtDuration(live.now - s.last_pass)} ago{/if}{#if !s.watching}
-					· scanning instead of watching{/if}
-				{#if s.error}<span class="text-critical"> · {s.error}</span>{/if}
-			</p>
-		{/if}
-	</section>
-
-	<section class="flex flex-col gap-2">
-		<div class="flex items-baseline gap-2">
-			<h2 class="text-base font-semibold">Workspace</h2>
-			<a href="/workspace/machines" class="text-xs text-muted-foreground hover:underline"
-				>every machine</a
-			>
-		</div>
-		{#if !ws}
-			<p class="text-sm text-muted-foreground">The workspace sync is off, or still loading.</p>
-		{:else if !wsHost?.status}
-			<p class="text-sm text-muted-foreground">This machine does not sync the workspace.</p>
-		{:else}
-			{@const st = wsHost.status}
-			<Tiles>
-				<StatTile
-					name="Units"
-					value="{st.in_step} of {st.units}"
-					sub={st.pending ? `in step · ${st.pending} moving` : 'in step'}
-				/>
-				<StatTile
-					name="Moved in the range"
-					value={traffic ? fmtBytes(traffic.bytes_in + traffic.bytes_out) : '—'}
-					sub={traffic
-						? `↑ ${fmtBytes(traffic.bytes_in)} · ↓ ${fmtBytes(traffic.bytes_out)} · ${plural(traffic.requests, 'request')}${traffic.pushes ? ` · a push took ${fmtMs(traffic.push_ms / traffic.pushes)}` : ''}`
-						: 'nothing recorded'}
-				/>
-				<StatTile
-					name="Cost in the range"
-					value={cost ? `${((cost.cpu_ms + cost.git_cpu_ms) / 1000).toFixed(1)} s CPU` : '—'}
-					sub={cost
-						? `${fmtPct(corePct(cost.cpu_ms + cost.git_cpu_ms, spanMs))} of one core · ${plural(cost.passes, 'pass', 'passes')} · read ${fmtBytes(cost.io_read)}, wrote ${fmtBytes(cost.io_write)}`
-						: 'nothing recorded'}
-				/>
-				<StatTile
-					name="Collector now"
-					value={st.cost ? fmtBytes(st.cost.rss_kb * 1024) : '—'}
-					sub={st.cost
-						? `resident · ${plural(st.cost.watches, 'watch', 'watches')} · ${((st.cost.cpu_ms + st.cost.git_cpu_ms) / 1000).toFixed(0)} s CPU since start`
-						: ''}
-				/>
-			</Tiles>
-			{#if st.error}<p class="text-sm text-critical">{st.error}</p>{/if}
-			{#if notInStep.length}
-				<div class="rounded-lg border bg-card p-3">
-					<div class="mb-1 text-sm font-medium">Not in step here</div>
-					<ul class="flex flex-col divide-y text-sm">
-						{#each notInStep as u (u.unit)}
-							{@const s = u.hosts[host]}
-							<li class="flex flex-wrap items-center gap-x-3 gap-y-0.5 py-1">
-								<a href={unitHref(u.unit)} class="font-mono text-xs hover:underline">{u.unit}</a>
-								<StateChip state={s.state} detail={s.detail} />
-								{#if s.detail}<span class="text-xs text-muted-foreground">{s.detail}</span>{/if}
-							</li>
-						{/each}
-					</ul>
-				</div>
+	{#if live.anyHost('sync')}
+		<section class="flex flex-col gap-2">
+			<div class="flex items-baseline gap-2">
+				<h2 class="text-base font-semibold">Claude state</h2>
+				<a href="/state" class="text-xs text-muted-foreground hover:underline">the State page</a>
+			</div>
+			{#if !sync}
+				<p class="text-sm text-muted-foreground">Loading…</p>
+			{:else if !syncHost?.status}
+				<p class="text-sm text-muted-foreground">This machine does not sync Claude's state.</p>
 			{:else}
-				<p class="text-xs text-muted-foreground">Every unit is in step on this machine.</p>
+				{@const s = syncHost.status}
+				<p class="text-sm">
+					{plural(s.files, 'file')}, {fmtBytes(s.bytes)} of what travels{#if s.pending_up || s.pending_down}
+						· {s.pending_up} to send, {s.pending_down} to fetch{:else}
+						· in step{/if}{#if s.held}
+						· {s.held} held while their session runs elsewhere{/if}{#if s.last_pass}
+						· last checked {fmtDuration(live.now - s.last_pass)} ago{/if}{#if !s.watching}
+						· scanning instead of watching{/if}
+					{#if s.error}<span class="text-critical"> · {s.error}</span>{/if}
+				</p>
 			{/if}
-			{#if transfers.length}
-				<div class="rounded-lg border bg-card p-3">
-					<div class="mb-1 text-sm font-medium">Large transfers in the range</div>
-					<ul class="flex flex-col divide-y text-xs">
-						{#each transfers as t (t.at + t.unit)}
-							<li class="flex flex-wrap items-center gap-x-3 py-1">
-								<span class="text-muted-foreground">{fmtStamp(t.at)}</span>
-								<a href={unitHref(t.unit)} class="font-mono hover:underline">{t.unit}</a>
-								<span class="text-muted-foreground">{t.kind === 'push' ? 'pushed' : 'fetched'}</span
-								>
-								<span class="ml-auto tabular-nums"
-									>{fmtBytes(t.bytes)} in {fmtMs(t.ms)} · {fmtRate(t.bytes, t.ms)}</span
-								>
-							</li>
-						{/each}
-					</ul>
-				</div>
+		</section>
+	{/if}
+
+	{#if live.hub?.features.workspace}
+		<section class="flex flex-col gap-2">
+			<div class="flex items-baseline gap-2">
+				<h2 class="text-base font-semibold">Workspace</h2>
+				<a href="/workspace/machines" class="text-xs text-muted-foreground hover:underline"
+					>every machine</a
+				>
+			</div>
+			{#if !ws}
+				<p class="text-sm text-muted-foreground">The workspace sync is off, or still loading.</p>
+			{:else if !wsHost?.status}
+				<p class="text-sm text-muted-foreground">This machine does not sync the workspace.</p>
+			{:else}
+				{@const st = wsHost.status}
+				<Tiles>
+					<StatTile
+						name="Units"
+						value="{st.in_step} of {st.units}"
+						sub={st.pending ? `in step · ${st.pending} moving` : 'in step'}
+					/>
+					<StatTile
+						name="Moved in the range"
+						value={traffic ? fmtBytes(traffic.bytes_in + traffic.bytes_out) : '—'}
+						sub={traffic
+							? `↑ ${fmtBytes(traffic.bytes_in)} · ↓ ${fmtBytes(traffic.bytes_out)} · ${plural(traffic.requests, 'request')}${traffic.pushes ? ` · a push took ${fmtMs(traffic.push_ms / traffic.pushes)}` : ''}`
+							: 'nothing recorded'}
+					/>
+					<StatTile
+						name="Cost in the range"
+						value={cost ? `${((cost.cpu_ms + cost.git_cpu_ms) / 1000).toFixed(1)} s CPU` : '—'}
+						sub={cost
+							? `${fmtPct(corePct(cost.cpu_ms + cost.git_cpu_ms, spanMs))} of one core · ${plural(cost.passes, 'pass', 'passes')} · read ${fmtBytes(cost.io_read)}, wrote ${fmtBytes(cost.io_write)}`
+							: 'nothing recorded'}
+					/>
+					<StatTile
+						name="Collector now"
+						value={st.cost ? fmtBytes(st.cost.rss_kb * 1024) : '—'}
+						sub={st.cost
+							? `resident · ${plural(st.cost.watches, 'watch', 'watches')} · ${((st.cost.cpu_ms + st.cost.git_cpu_ms) / 1000).toFixed(0)} s CPU since start`
+							: ''}
+					/>
+				</Tiles>
+				{#if st.error}<p class="text-sm text-critical">{st.error}</p>{/if}
+				{#if notInStep.length}
+					<div class="rounded-lg border bg-card p-3">
+						<div class="mb-1 text-sm font-medium">Not in step here</div>
+						<ul class="flex flex-col divide-y text-sm">
+							{#each notInStep as u (u.unit)}
+								{@const s = u.hosts[host]}
+								<li class="flex flex-wrap items-center gap-x-3 gap-y-0.5 py-1">
+									<a href={unitHref(u.unit)} class="font-mono text-xs hover:underline">{u.unit}</a>
+									<StateChip state={s.state} detail={s.detail} />
+									{#if s.detail}<span class="text-xs text-muted-foreground">{s.detail}</span>{/if}
+								</li>
+							{/each}
+						</ul>
+					</div>
+				{:else}
+					<p class="text-xs text-muted-foreground">Every unit is in step on this machine.</p>
+				{/if}
+				{#if transfers.length}
+					<div class="rounded-lg border bg-card p-3">
+						<div class="mb-1 text-sm font-medium">Large transfers in the range</div>
+						<ul class="flex flex-col divide-y text-xs">
+							{#each transfers as t (t.at + t.unit)}
+								<li class="flex flex-wrap items-center gap-x-3 py-1">
+									<span class="text-muted-foreground">{fmtStamp(t.at)}</span>
+									<a href={unitHref(t.unit)} class="font-mono hover:underline">{t.unit}</a>
+									<span class="text-muted-foreground"
+										>{t.kind === 'push' ? 'pushed' : 'fetched'}</span
+									>
+									<span class="ml-auto tabular-nums"
+										>{fmtBytes(t.bytes)} in {fmtMs(t.ms)} · {fmtRate(t.bytes, t.ms)}</span
+									>
+								</li>
+							{/each}
+						</ul>
+					</div>
+				{/if}
 			{/if}
-		{/if}
-	</section>
+		</section>
+	{/if}
 </div>
