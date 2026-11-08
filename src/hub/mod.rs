@@ -45,10 +45,15 @@ pub fn run(cfg: HubConfig) -> Result<()> {
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?
-        .block_on(serve(Arc::new(cfg)))
+        .block_on(serve(Arc::new(cfg), None))
 }
 
-async fn serve(cfg: Arc<HubConfig>) -> Result<()> {
+/// What `ccdash demo` runs next to its hub: stand-in machines in the place
+/// of this machine's numbers.
+pub type Demo = Box<dyn FnOnce(Hub) + Send>;
+
+/// Runs the hub until a signal.
+pub async fn serve(cfg: Arc<HubConfig>, demo: Option<Demo>) -> Result<()> {
     let host = cfg.host();
     let home = std::env::var("HOME").unwrap_or_default();
     let workspaces = Workspaces::new(&cfg.workspaces.dirs, &home);
@@ -159,9 +164,13 @@ async fn serve(cfg: Arc<HubConfig>) -> Result<()> {
         ));
     }
     tokio::spawn(ticker(hub.sender()));
-    let mut disks = vec![PathBuf::from("/")];
-    disks.extend(cfg.store_path().parent().map(Path::to_path_buf));
-    tokio::spawn(machine(Sampler::new(disks), hub.sender()));
+    if let Some(demo) = demo {
+        demo(hub.clone());
+    } else {
+        let mut disks = vec![PathBuf::from("/")];
+        disks.extend(cfg.store_path().parent().map(Path::to_path_buf));
+        tokio::spawn(machine(Sampler::new(disks), hub.sender()));
+    }
     if cfg.knowledge.reflect {
         tokio::spawn(reflector(hub.sender()));
     }

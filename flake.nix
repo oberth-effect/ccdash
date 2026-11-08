@@ -9,6 +9,11 @@
     flake-parts-builder.url = "github:tsandrini/flake-parts-builder";
 
     # --- YOUR DEPENDENCIES ---
+    # NOTE: the VM tests only (`checks`); consumers can `follows` their own
+    home-manager = {
+      url = "github:nix-community/home-manager";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
     pre-commit-hooks.url = "github:cachix/pre-commit-hooks.nix";
     systems.url = "github:nix-systems/default";
   };

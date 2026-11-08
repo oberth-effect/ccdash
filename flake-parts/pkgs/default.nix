@@ -32,5 +32,14 @@ in
 
       # NOTE: svelte-check, eslint and prettier over web/ without a local node_modules
       checks.ccdash-web-lint = config.packages.ccdash-web.lint;
+
+      # `nix run .#demo`: the panel on a made-up workspace (`ccdash demo`)
+      apps.demo = {
+        type = "app";
+        program = "${pkgs.writeShellScript "ccdash-demo" ''
+          exec ${lib.getExe config.packages.ccdash} demo "$@"
+        ''}";
+        meta.description = "A ccdash hub on a made-up workspace, to try the panel";
+      };
     };
 }

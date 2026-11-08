@@ -79,11 +79,19 @@ Manager module for the workstations. It needs NixOS, flakes and Home
 Manager (with `programs.claude-code`).
 
 ```nix
-inputs.ccdash.url = "github:tsandrini/ccdash";
+inputs.ccdash = {
+  url = "github:tsandrini/ccdash";
+  inputs.nixpkgs.follows = "nixpkgs";
+  inputs.home-manager.follows = "home-manager"; # only its tests use it
+};
 ```
 
 Everything beyond reporting is off until you turn it on: the syncs,
 replies from the phone, opening sessions in a terminal, the desktop plugin.
+
+To look around first, `nix run github:tsandrini/ccdash#demo` serves the
+panel on a made-up workspace with two stand-in machines at
+<http://127.0.0.1:7840/#token=demo>; nothing in it is real.
 
 ### 3.1 The hub
 

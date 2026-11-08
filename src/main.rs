@@ -12,6 +12,7 @@ mod collector;
 mod command;
 mod config;
 mod conversation;
+mod demo;
 mod drafts;
 mod emit;
 mod git;
@@ -161,6 +162,16 @@ enum Command {
     /// snapshot must build on the other hosts' current tips.
     #[command(hide = true)]
     PreReceive,
+    /// A hub on a made-up workspace with two stand-in machines, to try the
+    /// panel or take screenshots: a fresh database each run, nothing real.
+    Demo {
+        /// Where its database and files go (made, or emptied when an earlier
+        /// demo made it; default: a `ccdash-demo` temporary directory).
+        #[arg(long)]
+        dir: Option<PathBuf>,
+        #[arg(long, default_value = "127.0.0.1:7840")]
+        listen: std::net::SocketAddr,
+    },
     /// Write every note of the hub's database as markdown with frontmatter:
     /// `<dir>/<workspace>/<kind>/<slug>.md`. Reads the database directly,
     /// so it works on a backup copy too.
@@ -446,6 +457,10 @@ fn main() -> ExitCode {
         },
         Command::PreReceive => return exit(workspace::hub::pre_receive()),
         Command::Export { config, db, dir } => export(config, db, &dir),
+        Command::Demo { dir, listen } => {
+            logging();
+            demo::run(dir, listen)
+        }
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,

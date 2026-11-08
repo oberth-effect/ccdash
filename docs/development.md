@@ -3,6 +3,7 @@
 1. [The daemons](#1-the-daemons)
 2. [The panel](#2-the-panel)
 3. [Checks](#3-checks)
+4. [The demo](#4-the-demo)
 
 ## 1. The daemons
 
@@ -50,8 +51,40 @@ npm run build                 # → web/build, what a `cargo run` hub serves
 cargo test && cargo clippy --all-targets -- -D warnings && cargo fmt --check
 cd web && npm run check && npm run lint
 nix flake check     # also runs the pre-commit hooks (editorconfig, markdownlint, typos, …)
+                    # and the VM tests
 nix build .#ccdash .#ccdash-web .#ccdash-aarch64-linux
+nix build .#checks.x86_64-linux.vm-single-node -L    # one VM test, with its log
 ```
+
+The VM tests (`flake-parts/checks/`) boot NixOS with the modules as a user
+would set them up, a stand-in `claude` answering the collector:
+`vm-single-node` is one machine as hub and workstation (`localCollector`,
+`hub.local`), covering the generated tokens, the link and its feature
+report, the panel, the plugin, the knowledge tools in and outside a
+workspace, and a hub restart. They need KVM; home-manager is a flake input
+for them only.
 
 `nix flake check` sees only files git knows; check a fresh clone or a copy
 before pushing new files.
+
+## 4. The demo
+
+```sh
+nix run .#demo                               # or: cargo run -- demo
+nix run .#demo -- --listen 127.0.0.1:7841 --dir /tmp/ccdash-demo-2
+```
+
+`ccdash demo` writes a fresh database (`--dir`, by default a `ccdash-demo`
+temporary directory, emptied only when an earlier demo made it) and serves
+it at `http://127.0.0.1:7840/#token=demo`:
+
+- a week of sessions on two made-up machines, `desk` and `laptop`, in two
+  workspaces, `acme` and `personal`, written through the hub's own reducer,
+  so the chats, History and Analytics read as they would for real ones;
+- memories, issues, progress, documents and a report;
+- while it runs, two stand-in collectors keep four sessions open (working,
+  waiting on a permission prompt, the owner's turn) and report the machines'
+  numbers, the hub's own included, all made up.
+
+The content is `src/demo/script.rs`. Screenshots come from the demo, never
+from a real hub.
