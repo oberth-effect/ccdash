@@ -135,7 +135,7 @@ in ccdash (memories, issues, progress) and release its claim. Ask nothing and
 start no new work: the session closes when this turn ends.
 ```
 
-The [`wrap-up` skill](../claude-plugin/skills/wrap-up/SKILL.md) ships with
+The [`wrap-up` skill][wrap-up] ships with
 the ccdash plugin: Claude closes or comments the issues it worked on, logs
 progress, records durable memories, releases its claim and ends with a
 short summary, which stays on the session's page. It edits, commits and
@@ -282,3 +282,5 @@ command = []    # off; e.g. ["ghostty", "-e", "claude", "attach", "{id}"]
 command = []    # off; e.g. ["ghostty", "-e", "nvim", "{file}"], the panel's Edit in the editor
                 # ([panel](panel.md#2-a-sessions-page))
 ```
+
+[wrap-up]: https://github.com/tsandrini/ccdash/blob/main/claude-plugin/skills/wrap-up/SKILL.md

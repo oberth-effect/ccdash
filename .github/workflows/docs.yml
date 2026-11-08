@@ -1,0 +1,50 @@
+# The documentation site: `nix build .#docs` (mdBook over docs/ with the
+# module options generated from the modules), published to GitHub Pages at
+# https://tsandrini.github.io/ccdash/. Needs Settings › Pages › Source:
+# GitHub Actions.
+name: docs
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "docs/**"
+      - "flake-parts/docs/**"
+      - "flake-parts/modules/**"
+      - "flake.nix"
+      - "flake.lock"
+      - ".github/workflows/docs.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# NOTE: one deployment at a time, and never cancel one half-way
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: cachix/install-nix-action@v31
+      - run: nix build .#docs --print-build-logs
+      # NOTE: the artifact wants plain, writable files, not the store's symlink
+      - run: cp -rL result site && chmod -R u+w site
+      - uses: actions/upload-pages-artifact@v4
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

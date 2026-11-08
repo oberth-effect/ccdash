@@ -57,6 +57,8 @@ in
           # --- Misc ---
           markdownlint = {
             enable = true; # Markdown lint tool
+            # NOTE: mdBook's table of contents has a heading per part
+            excludes = [ "^docs/SUMMARY\\.md$" ];
             # NOTE: tables (prettier aligns them) and code may run past 80 columns
             settings.configuration.MD013 = {
               tables = false;

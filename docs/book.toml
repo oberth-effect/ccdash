@@ -1,0 +1,22 @@
+# The documentation site (mdBook): `nix build .#docs` writes it with the
+# module options reference generated into `options/`.
+
+[book]
+title = "ccdash"
+description = "A live dashboard for all your Claude Code sessions, on every machine"
+authors = ["tsandrini"]
+language = "en"
+src = "."
+
+[build]
+build-dir = "../build/book"
+# NOTE: the options pages exist only in the Nix build; never create stubs here
+create-missing = false
+
+[output.html]
+site-url = "/ccdash/"
+git-repository-url = "https://github.com/tsandrini/ccdash"
+edit-url-template = "https://github.com/tsandrini/ccdash/edit/main/docs/{path}"
+default-theme = "light"
+preferred-dark-theme = "navy"
+no-section-label = true

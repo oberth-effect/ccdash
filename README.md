@@ -255,6 +255,12 @@ the real one): [development](docs/development.md).
 
 ## 7. Documentation
 
+The documentation is also a site, with the module options generated from
+the modules: <https://tsandrini.github.io/ccdash/>. Start with
+[installation](docs/installation.md), [getting
+started](docs/getting-started.md) and
+[troubleshooting](docs/troubleshooting.md).
+
 | Document                                                       | About                                                         |
 | -------------------------------------------------------------- | ------------------------------------------------------------- |
 | [architecture](docs/architecture.md)                           | components, protocol, what Claude Code interfaces are used    |

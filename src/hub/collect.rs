@@ -110,16 +110,20 @@ async fn link(
             terminals,
             features,
         }) => {
-            if v != VERSION {
-                let _ = sink
-                    .send(Message::Text(
-                        format!("the hub speaks protocol {VERSION}, not {v}").into(),
-                    ))
-                    .await;
-                bail!("protocol {v}");
-            }
-            if claimed != host {
-                bail!("token of {host} used by {claimed}");
+            let refused = if v != VERSION {
+                Some(format!("the hub speaks protocol {VERSION}, not {v}"))
+            } else if claimed != host {
+                Some(format!(
+                    "this token is {host}'s, but the machine calls itself {claimed}: \
+                    make the collector's `host` and the hub's `collectors` key agree"
+                ))
+            } else {
+                None
+            };
+            if let Some(reason) = refused {
+                warn!("collector {host}: refused: {reason}");
+                let _ = sink.send(Message::Text(reason.clone().into())).await;
+                bail!("{reason}");
             }
             (terminals, features)
         }

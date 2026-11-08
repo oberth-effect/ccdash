@@ -372,7 +372,7 @@ until text reads against the background (`web/src/lib/theme.ts`).
 
 ## 7. Desktop (DankMaterialShell)
 
-`services.ccdash.dms.enable = true` links the [plugin](../dms-plugin/) into
+`services.ccdash.dms.enable = true` links the [plugin][dms-plugin] into
 DankMaterialShell: a bar pill with the sessions that need you, a dash tab
 and card, notifications when a session starts waiting, and
 `dms ipc call ccdash focusWaiting` to jump to the session that has waited
@@ -386,3 +386,5 @@ Mod+Shift+C { spawn "dms" "ipc" "call" "ccdash" "focusWaiting"; }
 
 Clicking a session focuses its terminal window. The plugin opens the panel
 without a token, so pair the desktop browser once ([security](security.md)).
+
+[dms-plugin]: https://github.com/tsandrini/ccdash/tree/main/dms-plugin
