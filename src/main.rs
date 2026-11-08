@@ -71,7 +71,8 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Run the hub: store, web UI, API, collector links, notifications.
+    /// Run the hub: store, web UI, API, collector links, notifications
+    /// (Linux only).
     Hub {
         #[arg(long)]
         config: Option<PathBuf>,
@@ -172,7 +173,8 @@ enum Command {
     #[command(hide = true)]
     PreReceive,
     /// A hub on a made-up workspace with two stand-in machines, to try the
-    /// panel or take screenshots: a fresh database each run, nothing real.
+    /// panel or take screenshots: a fresh database each run, nothing real
+    /// (Linux only).
     Demo {
         /// Where its database and files go (made, or emptied when an earlier
         /// demo made it; default: a `ccdash-demo` temporary directory).
@@ -364,7 +366,9 @@ fn main() -> ExitCode {
         Command::Tee { command } => return exit(emit::run(Source::Statusline, &command)),
         Command::Hub { config } => {
             logging();
-            config::load::<HubConfig>(config).and_then(hub::run)
+            hub_here("the hub")
+                .and_then(|()| config::load::<HubConfig>(config))
+                .and_then(hub::run)
         }
         #[cfg(windows)]
         Command::Collector {
@@ -481,7 +485,7 @@ fn main() -> ExitCode {
         Command::Export { config, db, dir } => export(config, db, &dir),
         Command::Demo { dir, listen } => {
             logging();
-            demo::run(dir, listen)
+            hub_here("ccdash demo, a hub,").and_then(|()| demo::run(dir, listen))
         }
     };
     match result {
@@ -495,6 +499,17 @@ fn main() -> ExitCode {
 
 fn exit(code: i32) -> ExitCode {
     ExitCode::from(u8::try_from(code).unwrap_or(1))
+}
+
+/// The hub runs on Linux only, and so does the demo: a Windows machine is
+/// a workstation, its collector reporting to a hub elsewhere.
+fn hub_here(what: &str) -> Result<()> {
+    if cfg!(windows) {
+        anyhow::bail!(
+            "{what} runs on Linux only: on Windows run the collector, against a hub on Linux"
+        );
+    }
+    Ok(())
 }
 
 fn logging() {
