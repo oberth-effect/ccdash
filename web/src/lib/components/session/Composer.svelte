@@ -3,8 +3,8 @@
 	// a sleeping session with it; Next prompt leaves it as context for the
 	// next prompt (also for sessions without the channel); Stop interrupts a
 	// turn, so the correction typed next is what Claude reads. Quick replies
-	// send at once; the field (history, templates, note links, fence,
-	// preview, vim keys, its shortcuts) is `PromptField`. The draft lives on
+	// send at once; the field (its menu, the formatting bar, the history,
+	// vim keys, its shortcuts) is `PromptField`. The draft lives on
 	// the hub (`drafts.ts`): it survives reloads and follows the owner from
 	// the phone to the desk, and Edit in the editor opens it on a
 	// machine. `i` anywhere on the page goes back to the field, as Esc left it.
@@ -90,12 +90,17 @@
 		field?.focus();
 	}
 
-	async function prompts() {
-		const own = (await fetchPrompts({ session: s.id, limit: 50 })).prompts;
-		const ws = s.workspace
-			? (await fetchPrompts({ workspace: s.workspace, limit: 50 })).prompts
-			: [];
-		return [...own, ...ws];
+	/** The session's prompts, then the workspace's; with `q`, those that hold its words. */
+	async function prompts(q?: string) {
+		const limit = q ? 100 : 50;
+		const [own, ws] = await Promise.all([
+			fetchPrompts({ session: s.id, q, limit }),
+			s.workspace ? fetchPrompts({ workspace: s.workspace, q, limit }) : { prompts: [] }
+		]);
+		if (!q) return [...own.prompts, ...ws.prompts];
+		const mine: Record<string, true> = {};
+		for (const p of own.prompts) mine[p.text] = true;
+		return [...own.prompts, ...ws.prompts.filter((p) => !mine[p.text])].sort((a, b) => b.at - a.at);
 	}
 
 	async function submit(kind: 'reply' | 'message') {
@@ -201,7 +206,8 @@
 					title={s.interrupting
 						? 'Asked already: Claude stops at its next step'
 						: 'Interrupt the turn: Claude stops at its next step, then reads what you send'}
-					onclick={stop}><OctagonXIcon /> Stop</Button
+					aria-label="Stop"
+					onclick={stop}><OctagonXIcon /> <span class="max-sm:hidden">Stop</span></Button
 				>
 			{/if}
 			{#if canReply}

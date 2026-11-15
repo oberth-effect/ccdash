@@ -561,18 +561,45 @@ fn cap_tools(exchange: &mut Exchange) {
 pub struct Prompt {
     pub at: i64,
     pub session: String,
+    /// The session's title, else its name; None when it has neither.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub title: Option<String>,
     pub text: String,
+}
+
+/// The words of a history search as `LIKE` patterns, at most eight.
+fn like_patterns(query: &str) -> Vec<String> {
+    query
+        .split_whitespace()
+        .take(8)
+        .map(|word| {
+            let mut pattern = String::with_capacity(word.len() + 2);
+            pattern.push('%');
+            for c in word.chars() {
+                if matches!(c, '%' | '_' | '\\') {
+                    pattern.push('\\');
+                }
+                pattern.push(c);
+            }
+            pattern.push('%');
+            pattern
+        })
+        .collect()
 }
 
 /// The newest `limit` distinct prompts, newest first: of one session (with
 /// those of the sessions it continues as a copy), or of every session
-/// under `dirs` (every session when None).
+/// under `dirs` (every session when None). `query` keeps the prompts that
+/// hold every one of its words (ASCII letters match in either case).
 pub fn prompts(
     conn: &Connection,
     session: Option<&str>,
     dirs: Option<&str>,
+    query: Option<&str>,
     limit: usize,
 ) -> Result<Vec<Prompt>> {
+    let words = serde_json::to_string(&like_patterns(query.unwrap_or_default()))?;
     let parts = match session {
         Some(session) => parts(conn, session)?,
         None => Vec::new(),
@@ -581,20 +608,24 @@ pub fn prompts(
         .map(|_| serde_json::to_string(&parts.iter().map(|p| &p.session).collect::<Vec<_>>()))
         .transpose()?;
     let mut stmt = conn.prepare_cached(&format!(
-        "SELECT e.ts, e.session, json_extract(e.data, '$.text') FROM events e
+        "SELECT e.ts, e.session, json_extract(e.data, '$.text'), COALESCE(x.title, x.name)
+            FROM events e
             JOIN sessions x ON x.id = e.session
             WHERE e.kind = 'prompt'
                 AND (:sessions IS NULL OR e.session IN (SELECT value FROM json_each(:sessions)))
+                AND NOT EXISTS (SELECT 1 FROM json_each(:words) w
+                    WHERE json_extract(e.data, '$.text') NOT LIKE w.value ESCAPE '\\')
                 AND {IN_SCOPE}
             ORDER BY e.ts DESC LIMIT :scan"
     ))?;
     let scan = i64::try_from(limit.saturating_mul(4).max(limit))?;
     let rows = stmt.query_map(
-        named_params! { ":sessions": sessions, ":dirs": dirs, ":host": Option::<String>::None, ":scan": scan },
+        named_params! { ":sessions": sessions, ":words": words, ":dirs": dirs, ":host": Option::<String>::None, ":scan": scan },
         |r| {
             Ok(Prompt {
                 at: r.get(0)?,
                 session: r.get(1)?,
+                title: r.get::<_, Option<String>>(3)?.filter(|t| !t.is_empty()),
                 text: r.get::<_, Option<String>>(2)?.unwrap_or_default(),
             })
         },
@@ -899,7 +930,7 @@ mod tests {
         assert!(!last.more);
 
         // the composer's history reaches back the same way
-        let texts: Vec<String> = prompts(&conn, Some("c"), None, 10)
+        let texts: Vec<String> = prompts(&conn, Some("c"), None, None, 10)
             .unwrap()
             .into_iter()
             .map(|p| p.text)
@@ -1235,16 +1266,43 @@ mod tests {
             [json!({"text": "elsewhere"}).to_string()],
         )
         .unwrap();
-        let all = prompts(&conn, None, None, 10).unwrap();
+        conn.execute(
+            "UPDATE sessions SET title = 'Elsewhere, named' WHERE id = 't'",
+            [],
+        )
+        .unwrap();
+        let all = prompts(&conn, None, None, None, 10).unwrap();
+        assert_eq!(all[0].title.as_deref(), Some("Elsewhere, named"));
+        assert_eq!(all[1].title, None);
         assert_eq!(
             all.iter().map(|p| p.text.as_str()).collect::<Vec<_>>(),
             ["elsewhere", "first ", "second"]
         );
-        let mine = prompts(&conn, Some("s"), None, 10).unwrap();
+        let mine = prompts(&conn, Some("s"), None, None, 10).unwrap();
         assert_eq!(mine.len(), 2);
-        let scoped = prompts(&conn, None, Some(r#"["/work"]"#), 10).unwrap();
+        let scoped = prompts(&conn, None, Some(r#"["/work"]"#), None, 10).unwrap();
         assert_eq!(scoped.len(), 2);
-        assert_eq!(prompts(&conn, None, None, 1).unwrap().len(), 1);
+        assert_eq!(prompts(&conn, None, None, None, 1).unwrap().len(), 1);
+
+        // every word, in either case; `%` and `_` are plain characters
+        event(
+            &conn,
+            5,
+            "prompt",
+            json!({"text": "Run the 100% check_all step"}),
+        );
+        let found = |q: &str| -> Vec<String> {
+            prompts(&conn, None, None, Some(q), 10)
+                .unwrap()
+                .into_iter()
+                .map(|p| p.text)
+                .collect()
+        };
+        assert_eq!(found("CHECK run"), ["Run the 100% check_all step"]);
+        assert_eq!(found("100% check_"), ["Run the 100% check_all step"]);
+        assert_eq!(found("check missing"), Vec::<String>::new());
+        assert_eq!(found("sec%nd"), Vec::<String>::new());
+        assert_eq!(found("  ").len(), 4);
     }
 
     #[test]

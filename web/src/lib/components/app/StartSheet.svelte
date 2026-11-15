@@ -270,8 +270,8 @@
 		}
 	});
 
-	async function prompts() {
-		return ws ? (await fetchPrompts({ workspace: ws, limit: 50 })).prompts : [];
+	async function prompts(q?: string) {
+		return ws ? (await fetchPrompts({ workspace: ws, q, limit: q ? 100 : 50 })).prompts : [];
 	}
 
 	async function start() {

@@ -104,5 +104,6 @@ sends one ([prompts and notifications](prompts-and-notifications.md)).
 - **Settings › Devices**: the paired devices, push on this one, a test.
 - **Settings › Composer**: vim keys (off by default), line numbers, quick
   replies and templates, per device.
-- **Settings › Appearance**: light, dark or the system's, and the colour
+- **Settings › Appearance**: the size of the panel on this device (smaller
+  by default on a phone), light, dark or the system's, and the colour
   schemes.

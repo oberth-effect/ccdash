@@ -1,9 +1,9 @@
 <script lang="ts">
-	// Settings › Appearance: the theme (system, light, dark) and the colour
-	// scheme, including the one a machine's wallpaper gives.
+	// Settings › Appearance: the text size, the theme (system, light, dark)
+	// and the colour scheme, including the one a machine's wallpaper gives.
 	import { Button } from '#lib/components/ui/button/index.js';
 	import { live } from '#lib/live/store.svelte.js';
-	import { prefs, type Theme } from '#lib/prefs.svelte.js';
+	import { prefs, TEXT_SIZES, type Theme } from '#lib/prefs.svelte.js';
 	import { paletteSwatch, SCHEMES, swatch, WALLPAPER } from '#lib/theme.js';
 
 	const reporting = $derived(live.hosts.filter((h) => h.palette));
@@ -12,7 +12,35 @@
 	);
 	const modes = (s: (typeof SCHEMES)[number]) =>
 		s.css || (s.dark && s.light) ? 'Light and dark' : s.dark ? 'Dark only' : 'Light only';
+	const autoLabel = $derived(
+		TEXT_SIZES.find((s) => s.value === prefs.autoTextSize)?.label.toLowerCase() ?? 'normal'
+	);
 </script>
+
+<section class="flex flex-col gap-2">
+	<h2 class="text-base font-semibold">Size</h2>
+	<div class="flex flex-wrap gap-2" role="group" aria-label="Text size">
+		<Button
+			variant={prefs.textSize === 'auto' ? 'default' : 'outline'}
+			size="sm"
+			aria-pressed={prefs.textSize === 'auto'}
+			onclick={() => prefs.setTextSize('auto')}>Auto ({autoLabel})</Button
+		>
+		{#each TEXT_SIZES as size (size.value)}
+			<Button
+				variant={prefs.textSize === size.value ? 'default' : 'outline'}
+				size="sm"
+				aria-pressed={prefs.textSize === size.value}
+				onclick={() => prefs.setTextSize(size.value)}>{size.label}</Button
+			>
+		{/each}
+	</div>
+	<p class="text-xs text-muted-foreground">
+		Text, buttons and spacing change together, on this device only. Auto is Small on a phone and
+		Normal on a tablet or a computer. Now {prefs.textScale}% of the browser's text size: a zoom set
+		in the browser or in the installed app's settings still applies on top of it.
+	</p>
+</section>
 
 <section class="flex flex-col gap-2">
 	<h2 class="text-base font-semibold">Theme</h2>

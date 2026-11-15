@@ -1269,11 +1269,14 @@ struct PromptsQuery {
     session: Option<String>,
     /// Comma-separated workspace names; every workspace when empty.
     workspace: Option<String>,
+    /// Words the prompt must all hold.
+    q: Option<String>,
     limit: Option<usize>,
 }
 
 /// Recent prompts, newest first and de-duplicated, for the composer's
-/// history: `session=` narrows to one session, `workspace=` to workspaces.
+/// history: `session=` narrows to one session, `workspace=` to workspaces,
+/// `q=` to the prompts holding every word.
 async fn prompts(
     State(app): State<App>,
     Query(query): Query<PromptsQuery>,
@@ -1301,8 +1304,15 @@ async fn prompts(
     };
     let limit = query.limit.unwrap_or(50).clamp(1, 200);
     let store = app.store.clone();
+    let words = query.q.filter(|q| !q.trim().is_empty());
     let prompts = tokio::task::spawn_blocking(move || {
-        conversation::prompts(&store.reader()?, session.as_deref(), dirs.as_deref(), limit)
+        conversation::prompts(
+            &store.reader()?,
+            session.as_deref(),
+            dirs.as_deref(),
+            words.as_deref(),
+            limit,
+        )
     })
     .await
     .map_err(anyhow::Error::from)??;

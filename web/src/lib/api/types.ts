@@ -1373,7 +1373,11 @@ export type Projects = { workspaces: Array<WorkspaceProjects>, };
 /**
  * A prompt as typed, for the composer's history.
  */
-export type Prompt = { at: number, session: string, text: string, };
+export type Prompt = { at: number, session: string, 
+/**
+ * The session's title, else its name; None when it has neither.
+ */
+title?: string, text: string, };
 
 export type PushOutcome = { "outcome": "sent" } | { "outcome": "dropped", status: number, } | { "outcome": "failed", error: string, };
 

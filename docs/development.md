@@ -89,6 +89,29 @@ it at `http://127.0.0.1:7840/#token=demo`:
 The content is `src/demo/script.rs`. Screenshots come from the demo, never
 from a real hub.
 
+### Viewports
+
+`web/scripts/viewports.mjs` opens the main pages of a running demo at the
+sizes the panel is used at (two phones, a phone on its side, a tablet, a
+laptop, a 4K desktop at 150 %), writes a screenshot of each and fails
+when a page is wider than its screen, a button runs off the edge, the
+composer's buttons take more than one row, the chat keeps under 40 % of a
+session page, or a page throws. Run it after any change to the layout,
+the composer or the sizes, and look at the phone screenshots: the checks
+catch what overflows, not what merely looks crowded.
+
+```sh
+cargo run -- demo &
+export PLAYWRIGHT_CORE=$(nix build nixpkgs#playwright-driver --no-link --print-out-paths)
+export PLAYWRIGHT_BROWSERS_PATH=$(nix build nixpkgs#playwright-driver.browsers --no-link --print-out-paths)
+node web/scripts/viewports.mjs --out /tmp/ccdash-viewports
+node web/scripts/viewports.mjs --only phone-small,phone   # some of them
+```
+
+The demo serves `web/build`, so `npm run build` first. A phone here is a
+screen whose short side is under 600 CSS pixels: that is what the Auto
+text size goes by (`prefs.svelte.ts`).
+
 ### Screenshots
 
 `docs/images/`, taken through a headless browser (Playwright) on the demo

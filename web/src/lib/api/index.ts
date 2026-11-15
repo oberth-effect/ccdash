@@ -249,8 +249,13 @@ export const fetchConflictBlob = async (id: number, side: Side) =>
 export const workspaceResync = (host: string, unit?: string) =>
 	postJson<{ ok: boolean }>(`workspace/${encodeURIComponent(host)}/resync`, { unit });
 
-export const fetchPrompts = (params: { session?: string; workspace?: string; limit?: number }) =>
-	getJson<{ prompts: Prompt[] }>(`prompts${query(params)}`);
+export const fetchPrompts = (params: {
+	session?: string;
+	workspace?: string;
+	/** Words the prompts must all hold. */
+	q?: string;
+	limit?: number;
+}) => getJson<{ prompts: Prompt[] }>(`prompts${query(params)}`);
 
 /** The devices with a token; `bootstrap` when this one is on the configured token. */
 export type Devices = { tokens: Token[]; bootstrap: boolean };
