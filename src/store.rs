@@ -4,8 +4,7 @@
 
 use std::{
     collections::HashSet,
-    fs::{self, OpenOptions, Permissions},
-    os::unix::fs::{OpenOptionsExt, PermissionsExt},
+    fs::{self, OpenOptions},
     path::{Path, PathBuf},
     sync::mpsc,
     thread,
@@ -19,7 +18,9 @@ use tokio::sync::oneshot;
 use tracing::warn;
 
 use crate::{
-    agent_message, claims, knowledge, messages,
+    agent_message, claims,
+    fsx::{self, ModeExt},
+    knowledge, messages,
     model::{Activity, HostStatus, Kind, Resolved, Session, Stamped, Turn},
     paths, push,
     state::{PREVIEW_LEN, RanOn, Restored, StoreMsg, apply_task},
@@ -91,7 +92,8 @@ CREATE TABLE IF NOT EXISTS sessions (
     started_at INTEGER NOT NULL,
     ended_at INTEGER,
     branch TEXT,
-    launched INTEGER
+    launched INTEGER,
+    cwd_key TEXT
 );
 ";
 
@@ -116,6 +118,7 @@ const ADDED_COLUMNS: &[(&str, &str, &str)] = &[
     ("sessions", "branch", "TEXT"),
     ("sessions", "launched", "INTEGER"),
     ("sessions", "project", "TEXT"),
+    ("sessions", "cwd_key", "TEXT"),
     ("push_subscriptions", "categories", "TEXT"),
     ("sessions", "continues", "TEXT"),
     ("sessions", "model", "TEXT"),
@@ -124,10 +127,11 @@ const ADDED_COLUMNS: &[(&str, &str, &str)] = &[
 
 const UPSERT_SESSION: &str = "
 INSERT INTO sessions (id, host, cwd, name, title, kind, started_at, ended_at, branch, launched,
-    project, continues, model, effort)
-VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+    project, continues, model, effort, cwd_key)
+VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
 ON CONFLICT (id) DO UPDATE SET
     cwd = excluded.cwd,
+    cwd_key = excluded.cwd_key,
     name = COALESCE(excluded.name, name),
     title = COALESCE(excluded.title, title),
     kind = excluded.kind,
@@ -213,7 +217,7 @@ pub fn open_writer(path: &Path) -> Result<Connection> {
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir)?;
         if dir == paths::state_dir() {
-            fs::set_permissions(dir, Permissions::from_mode(0o700))?;
+            fsx::set_mode(dir, 0o700)?;
         }
     }
     make_private(path)?;
@@ -388,7 +392,8 @@ fn write_batch(conn: &mut Connection, batch: &[(String, StoreMsg)]) -> Result<()
                         project,
                         continues,
                         model,
-                        effort
+                        effort,
+                        crate::workspace::path_key(cwd)
                     ],
                 )?;
             }
@@ -437,7 +442,7 @@ pub(crate) fn make_private(path: &Path) -> Result<()> {
     for suffix in ["", "-wal", "-shm"] {
         let file = PathBuf::from(format!("{}{suffix}", path.display()));
         if file.exists() {
-            fs::set_permissions(&file, Permissions::from_mode(0o600))?;
+            fsx::set_mode(&file, 0o600)?;
         }
     }
     Ok(())
@@ -508,6 +513,34 @@ fn rewrite(conn: &Connection) -> Result<()> {
         }
         tx.pragma_update(None, "user_version", 2)?;
         tx.commit()?;
+    }
+    if done < 4 {
+        let tx = conn.unchecked_transaction()?;
+        // Keys once lowered ASCII letters only; all are filled in again below.
+        tx.execute(
+            "UPDATE sessions SET cwd_key = NULL WHERE cwd_key IS NOT NULL",
+            [],
+        )?;
+        tx.pragma_update(None, "user_version", 4)?;
+        tx.commit()?;
+    }
+    // NOTE: at every open (an import or an older hub writes none), in one transaction
+    let tx = conn.unchecked_transaction()?;
+    fill_cwd_keys(&tx)?;
+    tx.commit()?;
+    Ok(())
+}
+
+/// Gives sessions without a `cwd_key` theirs ([`crate::workspace::path_key`]).
+/// Run it in a transaction: outside one each session is a commit of its own.
+pub fn fill_cwd_keys(conn: &Connection) -> Result<()> {
+    let cwds: Vec<(String, String)> = conn
+        .prepare("SELECT id, cwd FROM sessions WHERE cwd_key IS NULL")?
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+    let mut update = conn.prepare("UPDATE sessions SET cwd_key = ?1 WHERE id = ?2")?;
+    for (id, cwd) in cwds {
+        update.execute(params![crate::workspace::path_key(&cwd), id])?;
     }
     Ok(())
 }
@@ -986,10 +1019,21 @@ mod tests {
             ],
         )
         .unwrap();
+        conn.execute(
+            r"INSERT INTO sessions (id, host, cwd, kind, started_at) VALUES ('w', 'h', 'C:\Users\U\w', 'interactive', 0)",
+            [],
+        )
+        .unwrap();
         conn.pragma_update(None, "user_version", 0).unwrap();
         drop(conn);
 
         let conn = open_writer(&path).unwrap();
+        let key: String = conn
+            .query_row("SELECT cwd_key FROM sessions WHERE id = 'w'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(key, "c:/users/u/w");
         let kinds: Vec<String> = conn
             .prepare("SELECT kind FROM events ORDER BY rowid")
             .unwrap()
@@ -1037,7 +1081,7 @@ mod tests {
         let done: i64 = conn
             .pragma_query_value(None, "user_version", |r| r.get(0))
             .unwrap();
-        assert_eq!(done, 2);
+        assert_eq!(done, 4);
         drop(conn);
         std::fs::remove_dir_all(&dir).unwrap();
     }
@@ -1125,8 +1169,12 @@ mod tests {
             );
         }
 
-        let mode = fs::metadata(dir.join("t.db")).unwrap().permissions().mode();
-        assert_eq!(mode & 0o777, 0o600);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = fs::metadata(dir.join("t.db")).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
         let reader = store.reader().unwrap();
         let page_size: i64 = reader
             .pragma_query_value(None, "page_size", |r| r.get(0))
