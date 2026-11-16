@@ -16,6 +16,9 @@
 	import TaskList from './TaskList.svelte';
 
 	const UNDELIVERED_MS = 20_000;
+	/** NOTE: a prompt with files waits while its machine fetches them, cuts a
+	 * video's frames and puts a recording into words. */
+	const UNDELIVERED_FILES_MS = 300_000;
 
 	let { session: s, messageShown = false }: { session: Session; messageShown?: boolean } = $props();
 
@@ -38,8 +41,9 @@
 {#if s.activity !== 'gone' && s.outbox?.length}
 	<!-- NOTE: by position: two sends can share a millisecond; it is a queue -->
 	{#each s.outbox as m, i (i)}
-		{@const stuck = !busy && live.now - m.at > UNDELIVERED_MS}
 		{@const sent = parse(m.text)}
+		{@const stuck =
+			!busy && live.now - m.at > (sent.ids.length ? UNDELIVERED_FILES_MS : UNDELIVERED_MS)}
 		<div class="flex flex-col items-end gap-1">
 			{#if sent.text}
 				<div

@@ -28,7 +28,9 @@
 	// one. Every key is in the panel's help (`help.svelte.ts`). With a
 	// `tray`, files are attached from the menu, by pasting or by dropping
 	// them on the field; they wait above the buttons until the prompt goes.
-	import type { Snippet } from 'svelte';
+	// The microphone dictates: it records, a machine puts the recording into
+	// words (`dictation.svelte.ts`), and they land at the cursor to read over.
+	import { onDestroy, type Snippet } from 'svelte';
 	import { goto } from '$app/navigation';
 	import ALargeSmallIcon from '@lucide/svelte/icons/a-large-small';
 	import BoldIcon from '@lucide/svelte/icons/bold';
@@ -44,6 +46,7 @@
 	import LinkIcon from '@lucide/svelte/icons/link';
 	import ListIcon from '@lucide/svelte/icons/list';
 	import ListOrderedIcon from '@lucide/svelte/icons/list-ordered';
+	import LoaderCircleIcon from '@lucide/svelte/icons/loader-circle';
 	import Maximize2Icon from '@lucide/svelte/icons/maximize-2';
 	import MicIcon from '@lucide/svelte/icons/mic';
 	import Minimize2Icon from '@lucide/svelte/icons/minimize-2';
@@ -63,6 +66,7 @@
 	import * as Dialog from '#lib/components/ui/dialog/index.js';
 	import * as DropdownMenu from '#lib/components/ui/dropdown-menu/index.js';
 	import type { Tray } from '#lib/attachments.svelte.js';
+	import { Dictation, MAX_SECONDS, dictationHostFor } from '#lib/dictation.svelte.js';
 	import { fmtBytes, fmtDuration } from '#lib/format.js';
 	import { help } from '#lib/help.svelte.js';
 	import { live } from '#lib/live/store.svelte.js';
@@ -155,6 +159,23 @@
 	let cameraInput = $state<HTMLInputElement | null>(null);
 	/** A file is held over the field. */
 	let dropping = $state(false);
+	// svelte-ignore state_referenced_locally
+	const dictation = new Dictation(
+		session,
+		() => host,
+		(words) => {
+			preview = false;
+			// NOTE: a space between what was there and what was said, none doubled
+			const { from } = editor?.selection() ?? { from: 0 };
+			const lead = from > 0 && !/\s/.test(text[from - 1] ?? ' ') ? ' ' : '';
+			editor?.insert(`${lead}${words} `);
+		}
+	);
+	onDestroy(() => dictation.destroy());
+	/** The machine that would put a recording into words; null: none can. */
+	const dictateHost = $derived(dictationHostFor(host));
+	const clock = (seconds: number) =>
+		`${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
 	let history = $state<Prompt[]>([]);
 	let historyLoaded = false;
 	/** Where up/down is in `history`; -1 is the field's own text. */
@@ -374,6 +395,12 @@
 				toggleExpand();
 				return true;
 			}
+			if (event.code === 'KeyD') {
+				if (!dictateHost) return false;
+				if (dictation.state === 'recording') dictation.done();
+				else if (!locked) dictation.start();
+				return true;
+			}
 			const digit = /^Digit([1-9])$/.exec(event.code);
 			if (!digit || !onquick) return false;
 			onquick(Number(digit[1]) - 1);
@@ -559,6 +586,40 @@
 					<Button variant="outline" size="xs" type="button" onclick={oncanceledit}>Cancel</Button>
 				{/if}
 			</span>
+		{:else if dictation.busy}
+			<span class="flex h-7 min-w-0 items-center gap-2 px-1 text-xs" role="status">
+				{#if dictation.state === 'recording'}
+					<span class="size-2.5 shrink-0 animate-pulse rounded-full bg-critical" aria-hidden="true"
+					></span>
+					<span class="shrink-0 font-mono whitespace-nowrap tabular-nums"
+						>{clock(dictation.seconds)}</span
+					>
+					<span
+						class="h-1.5 w-12 shrink-0 overflow-hidden rounded-full bg-muted sm:w-20"
+						aria-hidden="true"
+					>
+						<span
+							class="block h-full rounded-full bg-working"
+							style:width="{Math.min(100, dictation.level * 140)}%"
+						></span>
+					</span>
+					{#if dictation.seconds >= MAX_SECONDS - 30}
+						<span class="text-warning">stops at {clock(MAX_SECONDS)}</span>
+					{/if}
+					<Button size="xs" type="button" onclick={() => dictation.done()}>Done</Button>
+				{:else if dictation.state === 'working'}
+					<LoaderCircleIcon class="size-3.5 shrink-0 animate-spin text-working" />
+					<span class="truncate text-muted-foreground"
+						>{dictation.host} is putting it into words…</span
+					>
+				{:else}
+					<MicIcon class="size-3.5 shrink-0 text-muted-foreground" />
+					<span class="truncate text-muted-foreground">Allow the microphone…</span>
+				{/if}
+				<Button variant="ghost" size="xs" type="button" onclick={() => dictation.cancel()}
+					>Cancel</Button
+				>
+			</span>
 		{:else}
 			<DropdownMenu.Root>
 				<DropdownMenu.Trigger>
@@ -651,10 +712,23 @@
 							<span class="ml-auto pl-2 text-xs text-muted-foreground">off here</span>
 						</DropdownMenu.Item>
 					{/if}
-					<DropdownMenu.Item disabled>
-						<MicIcon /> Voice dictation
-						<span class="ml-auto pl-2 text-xs text-muted-foreground">not built yet</span>
+					<DropdownMenu.Item
+						disabled={locked || !dictateHost}
+						title={dictateHost
+							? undefined
+							: 'No connected machine puts recordings into words: set [transcribe] command in its collector'}
+						onSelect={() => dictation.start()}
+					>
+						<MicIcon /> Dictate
+						<span class="ml-auto pl-2 text-xs text-muted-foreground"
+							>{dictateHost ? `words by ${dictateHost}` : 'no machine can'}</span
+						>
 					</DropdownMenu.Item>
+					{#if dictateHost && expandable && !fill}
+						<DropdownMenu.Item class="sm:hidden" onSelect={toggleExpand}>
+							{#if big}<Minimize2Icon /> Back to the page{:else}<Maximize2Icon /> Expand the field{/if}
+						</DropdownMenu.Item>
+					{/if}
 					<DropdownMenu.Separator />
 					<DropdownMenu.Item onSelect={() => help.show()}>
 						<KeyboardIcon /> Keys and help
@@ -687,11 +761,25 @@
 			>
 				<HistoryIcon />
 			</Button>
+			{#if dictateHost}
+				<Button
+					variant="ghost"
+					size="icon-sm"
+					type="button"
+					title="Dictate: record, and {dictateHost} puts it into words here"
+					aria-label="Dictate"
+					disabled={locked}
+					onclick={() => dictation.start()}
+				>
+					<MicIcon />
+				</Button>
+			{/if}
 			{#if expandable && !fill}
 				<Button
 					variant="ghost"
 					size="icon-sm"
 					type="button"
+					class={dictateHost ? 'max-sm:hidden' : ''}
 					title={big ? 'Back to the page (Ctrl Shift F)' : 'Expand the field (Ctrl Shift F)'}
 					aria-label={big ? 'Shrink the field' : 'Expand the field'}
 					onclick={toggleExpand}
@@ -715,7 +803,12 @@
 				>
 			{/if}
 		{/if}
-		<span class="ml-auto flex shrink-0 items-center gap-1.5 pl-1">{@render actions()}</span>
+		<!-- NOTE: on a phone the recording takes the row: Send comes back with the words -->
+		<span
+			class="ml-auto flex shrink-0 items-center gap-1.5 pl-1 {dictation.busy
+				? 'max-sm:hidden'
+				: ''}">{@render actions()}</span
+		>
 	</div>
 {/snippet}
 
@@ -890,6 +983,9 @@
 			onchange={picked}
 		/>
 		{#if tray.notice}<p class="text-xs text-warning" role="status">{tray.notice}</p>{/if}
+	{/if}
+	{#if dictation.error}
+		<p class="text-xs text-warning" role="alert">Dictation: {dictation.error}</p>
 	{/if}
 	{#if notice && !editing}
 		<p class="text-xs text-muted-foreground" role="status">Editor: {notice}</p>

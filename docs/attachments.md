@@ -1,8 +1,9 @@
 # Attachments
 
-A photo of a board taken at work, a screenshot of an error, a log, a PDF:
-the panel attaches files to a prompt, from the phone or the desk, and
-Claude opens them on the machine its session runs on.
+A photo of a board taken at work, a screenshot of an error, a log, a PDF,
+a short video: the panel attaches files to a prompt, from the phone or
+the desk, and Claude opens them on the machine its session runs on. The
+microphone dictates a prompt instead of typing it.
 
 1. [Attaching](#1-attaching)
 2. [What Claude gets](#2-what-claude-gets)
@@ -10,7 +11,9 @@ Claude opens them on the machine its session runs on.
 4. [Files: what is kept, and for how long](#4-files-what-is-kept-and-for-how-long)
 5. [How it works](#5-how-it-works)
 6. [Turning it off, and the bounds](#6-turning-it-off-and-the-bounds)
-7. [Not yet](#7-not-yet)
+7. [Dictation](#7-dictation)
+8. [Recordings and videos](#8-recordings-and-videos)
+9. [Not yet](#9-not-yet)
 
 ## 1. Attaching
 
@@ -40,12 +43,12 @@ What is on this board?
 [Attached image: /home/you/.local/state/ccdash/attachments/3e2b…/board.jpg]
 ```
 
-| Kind                           | What Claude does with it                                 |
-| ------------------------------ | -------------------------------------------------------- |
-| picture (JPEG, PNG, GIF, WebP) | sees it, by reading the file                             |
-| PDF, text, code                | reads it                                                 |
-| sound, video                   | cannot hear or watch; the prompt says so, tools may help |
-| anything else                  | opens it with whatever tool fits, if one does            |
+| Kind                           | What Claude does with it                                                                     |
+| ------------------------------ | -------------------------------------------------------------------------------------------- |
+| picture (JPEG, PNG, GIF, WebP) | sees it, by reading the file                                                                 |
+| PDF, text, code                | reads it                                                                                     |
+| sound, video                   | cannot hear or watch: it gets the words and still frames ([below](#8-recordings-and-videos)) |
+| anything else                  | opens it with whatever tool fits, if one does                                                |
 
 The kind is read from the file's first bytes, never from its name: an SVG
 or a page is text to ccdash, so it is never drawn in the panel.
@@ -136,10 +139,74 @@ On a workstation (`services.ccdash.settings.attachments`, or
 A machine fetches only when its collector has a token for the hub
 (`hub.token_file`).
 
-## 7. Not yet
+## 7. Dictation
 
-- **Voice dictation**: record, and the words land in the field to check
-  and send. Sound files attach today, but Claude cannot hear them.
-- **Video**: frames and the spoken words handed to Claude. Videos attach
-  and play in the panel today; Claude is told it cannot watch them.
+The microphone in a message field (`Ctrl Shift D`, or **+ › Dictate**)
+records; **Done** sends the recording to a machine that puts it into
+words, and the words land at the cursor for you to read over, correct and
+send. Nothing is sent by itself. **Cancel** throws the recording away. A
+recording stops by itself after ten minutes, and it is not kept: the hub
+drops it once the words are back.
+
+The words are made on a workstation, by
+[whisper.cpp](https://github.com/ggml-org/whisper.cpp), on your own
+hardware: nothing goes to a service. One machine has to offer it:
+
+```nix
+services.ccdash.transcribe = {
+  enable = true;
+  language = "auto"; # or "cs", "en": steadier on short sentences
+};
+```
+
+That fetches the `small` model (466 MB, many languages; a sentence takes
+a few seconds on a desktop's processor) and sets `[transcribe] command`.
+`transcribe.model` takes another model file, `transcribe.extraArgs` more
+arguments for `whisper-cli`; without the module, set the command
+yourself: it gets the recording's path as `{file}` and prints the words.
+
+The panel asks the session's own machine when it can, else any connected
+one that can; Settings › Composer › Dictation names one for good. The
+microphone needs the panel opened over https (or on localhost), and the
+browser asks once for it.
+
+## 8. Recordings and videos
+
+Claude cannot hear or watch, so the session's machine makes something it
+can read, once, when the prompt is delivered:
+
+- of a **video**, still frames spread evenly from its start to its end
+  (12 by default, at most 1568 pixels on the long side), with
+  `services.ccdash.video.enable` (ffmpeg);
+- of a **video or a sound recording**, the words said in it, in a text
+  file, with `services.ccdash.transcribe.enable`.
+
+The prompt names both under the file's own line, and Claude reads the
+frames it needs:
+
+```text
+[Attached video, which you cannot watch: /…/attachments/3e2b…/clip.mp4]
+[Frames of 3e2b…: 12 stills, one every 3.5 s from its start to its end, are in /…/3e2b…/derived/frames/ as 001.jpg to 012.jpg. Read the ones you need.]
+[Transcript of 3e2b…: what is said in it is in /…/3e2b…/derived/transcript.txt]
+```
+
+The chat shows the video or the recording with a player and a line with
+what Claude got. When a machine has neither tool, or one fails, the
+prompt says that instead, so Claude does not guess at a file it cannot
+open. A long video takes a while to cut and to put into words: the prompt
+goes out when that is done, and the chat shows it as sent meanwhile.
+
+| Key                       | Default      | Is                                                    |
+| ------------------------- | ------------ | ----------------------------------------------------- |
+| `transcribe.command`      | `[]` (off)   | prints what is said in `{file}`                       |
+| `transcribe.timeout_secs` | `300`        | the command is stopped after this long                |
+| `transcribe.attachments`  | `true`       | attached recordings and videos get their words too    |
+| `video.ffmpeg`            | `""` (off)   | the `ffmpeg` to cut frames with (`ffprobe` beside it) |
+| `video.frames`, `.edge`   | `12`, `1568` | how many frames, and their longest side in pixels     |
+| `video.timeout_secs`      | `300`        | cutting is stopped after this long                    |
+
+## 9. Not yet
+
+- Recording a voice message or a video inside the panel as an attachment:
+  the phone's own camera and recorder do it through **Photo or file**.
 - Attaching a file again from Files, and the phone's Share sheet.

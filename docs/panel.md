@@ -140,8 +140,12 @@ every screen, so the chat keeps the height:
   ([attachments](attachments.md); pasting a screenshot or dropping files
   on the field does the same), a template (Settings › Composer holds
   them), a `[[note]]` link, a skill, the text opened in your editor on a
-  machine (below), and the panel's keys. Voice dictation is listed there
-  and not built yet.
+  machine (below), and the panel's keys.
+- The **microphone** dictates (`Ctrl Shift D`): it records, a machine
+  puts the recording into words, and they land at the cursor to read
+  over ([dictation](attachments.md#7-dictation)). It shows when a
+  connected machine offers it; on a phone it takes Expand's place in the
+  row, and Expand moves into **+**.
 - **Aa** shows the formatting bar above the text: bold, italic,
   strikethrough, code, a code block, a link, lists, a quote, a heading,
   and **Preview**, which renders the markdown in place. Each button works
@@ -169,6 +173,7 @@ sidebar, lists every key:
 | `Ctrl .`           | Stop the turn                                 |
 | `Ctrl G`           | Edit in the editor on a machine (below)       |
 | `Ctrl Shift F`     | Expand the field, and back                    |
+| `Ctrl Shift D`     | Dictate; again to finish                      |
 | `Ctrl J`           | Go to the open question                       |
 | `Ctrl ↑` `Ctrl ↓`  | Walk the prompt history                       |
 | `Ctrl R`           | Search the prompt history                     |

@@ -57,6 +57,11 @@
 		</div>
 	{/if}
 	{#if said.ids.length}
-		<Attachments ids={said.ids} failed={said.failed} align={sent ? 'end' : 'start'} />
+		<Attachments
+			ids={said.ids}
+			failed={said.failed}
+			made={said.made}
+			align={sent ? 'end' : 'start'}
+		/>
 	{/if}
 </div>

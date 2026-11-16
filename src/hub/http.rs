@@ -205,6 +205,10 @@ pub async fn serve(
                 .patch(attachments::patch)
                 .delete(attachments::remove),
         )
+        .route(
+            "/attachments/{id}/transcribe",
+            post(attachments::transcribe),
+        )
         .route("/push", get(push_info))
         .route(
             "/push/subscriptions",

@@ -20,6 +20,12 @@ const UNDELIVERED = new RegExp(
 	'g'
 );
 
+/** NOTE: what a machine made of a recording or a video (`attachments::derived`). */
+const DERIVED = new RegExp(
+	`\\n?\\[(Frames|Transcript|Note) (?:of|on) (${ID}): ([^\\]\\n]*)\\]`,
+	'g'
+);
+
 export const marker = (id: string) => `[ccdash-attachment ${id}]`;
 
 /** A prompt's attachments apart from its words. */
@@ -29,6 +35,8 @@ export type Parsed = {
 	ids: string[];
 	/** Why an attachment did not reach the session's machine, by id. */
 	failed: Record<string, string>;
+	/** What Claude got in a recording's or a video's stead, by id. */
+	made: Record<string, string[]>;
 };
 
 /**
@@ -41,18 +49,34 @@ export type Parsed = {
 export function parse(text: string): Parsed {
 	const ids: string[] = [];
 	const failed: Record<string, string> = {};
+	const made: Record<string, string[]> = {};
 	const note = (id: string) => {
 		if (!ids.includes(id)) ids.push(id);
 		return '';
 	};
 	const rest = text
+		.replace(DERIVED, (_, what: string, id: string, rest: string) => {
+			const said =
+				what === 'Frames'
+					? `Claude got ${rest.match(/^\d+ stills/)?.[0] ?? 'stills'} of it`
+					: what === 'Transcript'
+						? 'Claude got what is said in it'
+						: rest.charAt(0).toUpperCase() + rest.slice(1);
+			(made[id] ??= []).push(said);
+			return '';
+		})
 		.replace(UNDELIVERED, (_, id: string, why: string) => {
 			failed[id] = why;
 			return note(id);
 		})
 		.replace(DELIVERED, (_, id: string) => note(id))
 		.replace(MARKER, (_, id: string) => note(id));
-	return { text: ids.length ? rest.replace(/\n{3,}/g, '\n\n').trim() : text, ids, failed };
+	return {
+		text: ids.length ? rest.replace(/\n{3,}/g, '\n\n').trim() : text,
+		ids,
+		failed,
+		made
+	};
 }
 
 /** The prompt as sent: the words, then a marker line per attachment. */

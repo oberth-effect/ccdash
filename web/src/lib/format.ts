@@ -55,6 +55,7 @@ export function plain(text: string | null | undefined): string {
 	if (!text) return '';
 	return text
 		.replace(/\[Attached [^\]\n]*?: [^\]\n]*\/([^\]\n/]+)\]/g, '(attached $1)')
+		.replace(/\[(Frames|Transcript|Note) (of|on) [0-9a-f]{24}: [^\]\n]*\]/g, '')
 		.replace(/\[ccdash-attachment [0-9a-f]{24}\]/g, '(attachment)')
 		.replace(/\[An attachment \([0-9a-f]{24}\) did not reach[^\]\n]*\]/g, '(attachment missing)')
 		.replace(/```[\s\S]*?```/g, ' ')

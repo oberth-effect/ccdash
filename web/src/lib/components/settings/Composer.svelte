@@ -22,6 +22,8 @@
 	let templates = $state(prefs.templates.map((t) => ({ ...t })));
 	let vimrcText = $state(prefs.vimrc);
 	let vimrcErrors = $state<string[] | null>(null);
+	/** Machines that put recordings into words. */
+	const transcribers = $derived(live.hosts.filter((h) => h.features.transcribe));
 	/** Machines whose collector opens an editor from the panel. */
 	const editors = $derived(live.hosts.filter((h) => h.features.edit));
 	/** Where Ctrl G would open the editor from this device right now. */
@@ -237,6 +239,35 @@
 	{:else}
 		<p class="text-sm text-muted-foreground">
 			Attachments are off on this hub (<code class="font-mono">[attachments] enable</code>).
+		</p>
+	{/if}
+</section>
+
+<section class="flex flex-col gap-2">
+	<h2 class="text-base font-semibold">Dictation</h2>
+	<p class="text-sm text-muted-foreground">
+		The microphone in a message field records; a machine puts the recording into words, which land
+		in the field for you to read over and send. The recording is not kept.
+	</p>
+	{#if transcribers.length}
+		<label class="flex flex-col gap-1 text-sm">
+			<span>Words are made on</span>
+			<select
+				class="{selectClass} max-w-md"
+				value={prefs.dictationHost}
+				onchange={(e) => prefs.setDictationHost(e.currentTarget.value)}
+			>
+				<option value="">Auto: the session's machine, else any that can</option>
+				{#each transcribers as h (h.name)}
+					<option value={h.name}>{live.hostLabel(h.name)}</option>
+				{/each}
+			</select>
+		</label>
+	{:else}
+		<p class="text-sm text-muted-foreground">
+			No machine puts recordings into words yet: set
+			<code class="font-mono">services.ccdash.transcribe.enable</code> on one (or
+			<code class="font-mono">[transcribe] command</code> in its collector's configuration).
 		</p>
 	{/if}
 </section>

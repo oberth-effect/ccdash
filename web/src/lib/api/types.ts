@@ -675,7 +675,12 @@ workspace: boolean,
  * Fetches the files attached to a prompt for its sessions
  * (`[attachments] enable`).
  */
-attachments: boolean, };
+attachments: boolean, 
+/**
+ * Puts recordings into words, for dictation in the panel
+ * (`[transcribe] command`).
+ */
+transcribe: boolean, };
 
 /**
  * A machine whose collector reports to the hub. The hub keeps every one

@@ -8,13 +8,20 @@
 //! what was not touched for `[attachments] keep_days` is dropped. A file
 //! that cannot be fetched becomes a line saying so, so the prompt still
 //! goes out and Claude can tell the owner.
+//!
+//! Claude cannot hear or watch: a recording gets its words in a file
+//! (`[transcribe] command`, which the panel's dictation uses too) and a
+//! video still frames cut evenly across it (`[video] ffmpeg`) plus its
+//! words, under `<id>/derived/`, made once and named in lines after the
+//! file's own.
 
 use std::{
     fs,
     io::Read,
     os::unix::fs::{OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
-    time::{Duration, SystemTime},
+    process::{Command, Stdio},
+    time::{Duration, Instant, SystemTime},
 };
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -22,7 +29,7 @@ use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD as B64};
 use tracing::{info, warn};
 
 use crate::{
-    attachments::{self as shared, Kind},
+    attachments::{self as shared, Derived, Kind},
     config::CollectorConfig,
     paths,
     sync::collector::{base_url, hub_http_config},
@@ -64,12 +71,246 @@ pub fn materialize(cfg: &CollectorConfig, text: &str) -> String {
     }
     let root = dir(cfg);
     shared::resolve(text, |id| match local(cfg, &root, id) {
-        Ok((kind, path)) => shared::delivered(kind, &path.to_string_lossy()),
+        Ok((kind, path)) => {
+            let mut line = shared::delivered(kind, &path.to_string_lossy());
+            if matches!(kind, Kind::Audio | Kind::Video) {
+                line.push_str(&shared::derived(id, kind, &derive(cfg, kind, &path)));
+            }
+            line
+        }
         Err(e) => {
             warn!("attachment {id}: {e:#}");
             shared::undelivered(id, &format!("{e:#}"))
         }
     })
+}
+
+/// What is said in attachment `id` (a recording), for the panel's
+/// dictation. Blocking: it may fetch, and it runs the command.
+pub fn transcribe(cfg: &CollectorConfig, id: &str) -> Result<String, String> {
+    if !shared::valid_id(id) {
+        return Err(format!("{id:?} is not an attachment"));
+    }
+    if cfg.transcribe.command.is_empty() {
+        return Err("this machine puts no recordings into words (`[transcribe] command`)".into());
+    }
+    let (_, path) = local(cfg, &dir(cfg), id).map_err(|e| format!("{e:#}"))?;
+    let text = words(cfg, &path)?;
+    if text.is_empty() {
+        return Err("nothing was heard in the recording".into());
+    }
+    Ok(text)
+}
+
+/// Runs `[transcribe] command` on `file`; its standard output, tidied.
+fn words(cfg: &CollectorConfig, file: &Path) -> Result<String, String> {
+    let (program, args) = cfg
+        .transcribe
+        .command
+        .split_first()
+        .ok_or("`[transcribe] command` is empty")?;
+    let path = file.to_string_lossy();
+    let args: Vec<String> = args.iter().map(|a| a.replace("{file}", &path)).collect();
+    let out = run(
+        program,
+        &args,
+        Duration::from_secs(cfg.transcribe.timeout_secs.max(1)),
+    )?;
+    // NOTE: whisper prints a line per stretch of speech, each led by a space
+    Ok(out
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n"))
+}
+
+/// Runs a command to its end or `timeout`, whichever is first; its
+/// standard output, or why it failed (the end of its standard error).
+fn run(program: &str, args: &[String], timeout: Duration) -> Result<String, String> {
+    let mut child = Command::new(program)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("{program} did not start: {e}"))?;
+    // NOTE: read off this thread, or a full pipe would stall the child
+    let pipe = |mut from: Box<dyn Read + Send>| {
+        std::thread::spawn(move || {
+            let mut all = Vec::new();
+            let _ = from.read_to_end(&mut all);
+            String::from_utf8_lossy(&all).into_owned()
+        })
+    };
+    let stdout = pipe(Box::new(child.stdout.take().expect("piped")));
+    let stderr = pipe(Box::new(child.stderr.take().expect("piped")));
+    let started = Instant::now();
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if started.elapsed() >= timeout => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!(
+                    "{program} was stopped after {} s",
+                    timeout.as_secs()
+                ));
+            }
+            Ok(None) => std::thread::sleep(Duration::from_millis(50)),
+            Err(e) => return Err(format!("waiting for {program}: {e}")),
+        }
+    };
+    let (out, err) = (
+        stdout.join().unwrap_or_default(),
+        stderr.join().unwrap_or_default(),
+    );
+    if status.success() {
+        return Ok(out);
+    }
+    let last = err.lines().rev().find(|l| !l.trim().is_empty());
+    Err(format!(
+        "{program} failed ({status}){}",
+        last.map(|l| format!(": {}", crate::util::truncate(l.trim(), 200)))
+            .unwrap_or_default()
+    ))
+}
+
+/// What this machine makes of a recording or a video for Claude: made on
+/// the first delivery, read back after.
+fn derive(cfg: &CollectorConfig, kind: Kind, file: &Path) -> Derived {
+    let mut made = Derived::default();
+    let Some(folder) = file.parent().map(|f| f.join("derived")) else {
+        return made;
+    };
+    if kind == Kind::Video && !cfg.video.ffmpeg.is_empty() {
+        match frames(cfg, file, &folder.join("frames")) {
+            Ok(found) => made.frames = Some(found),
+            Err(e) => {
+                warn!("frames of {}: {e}", file.display());
+                made.notes
+                    .push(format!("no frames could be cut from it ({e})"));
+            }
+        }
+    }
+    if cfg.transcribe.attachments && !cfg.transcribe.command.is_empty() {
+        let path = folder.join("transcript.txt");
+        let known = fs::read_to_string(&path).ok();
+        let text = match known {
+            Some(text) => Ok(text),
+            None => words(cfg, file).inspect(|text| {
+                let _ = fs::create_dir_all(&folder);
+                let _ = write_private(&path, text.as_bytes());
+            }),
+        };
+        match text {
+            Ok(text) if text.trim().is_empty() => {
+                made.notes.push("nothing is said in it".into());
+            }
+            Ok(_) => made.transcript = Some(path.to_string_lossy().into_owned()),
+            Err(e) => {
+                warn!("words of {}: {e}", file.display());
+                made.notes
+                    .push(format!("what is said in it could not be made out ({e})"));
+            }
+        }
+    }
+    made
+}
+
+fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(path)?
+        .write_all(bytes)
+}
+
+/// Still frames of `video` in `into`, spread evenly over it: the
+/// directory, how many, the seconds between two. Kept once cut (`info`
+/// beside them holds the count and the step).
+fn frames(cfg: &CollectorConfig, video: &Path, into: &Path) -> Result<(String, u32, f64), String> {
+    let shown = into.to_string_lossy().into_owned();
+    let info = into.join("info");
+    if let Some((count, step)) = fs::read_to_string(&info).ok().and_then(|text| {
+        let (count, step) = text.trim().split_once(' ')?;
+        Some((count.parse().ok()?, step.parse().ok()?))
+    }) {
+        return Ok((shown, count, step));
+    }
+    let ffmpeg = &cfg.video.ffmpeg;
+    let ffprobe = Path::new(ffmpeg)
+        .parent()
+        .filter(|dir| !dir.as_os_str().is_empty())
+        .map_or_else(|| "ffprobe".into(), |dir| dir.join("ffprobe"))
+        .to_string_lossy()
+        .into_owned();
+    let timeout = Duration::from_secs(cfg.video.timeout_secs.max(1));
+    let file = video.to_string_lossy().into_owned();
+    let probe: Vec<String> = [
+        "-v",
+        "error",
+        "-show_entries",
+        "format=duration",
+        "-of",
+        "default=noprint_wrappers=1:nokey=1",
+        &file,
+    ]
+    .map(str::to_owned)
+    .to_vec();
+    let seconds: f64 = run(&ffprobe, &probe, timeout)?
+        .trim()
+        .parse()
+        .ok()
+        .filter(|s: &f64| s.is_finite() && *s > 0.0)
+        .ok_or("its length is unknown")?;
+    // NOTE: a clip of a few seconds has no dozen frames worth reading
+    let count = cfg
+        .video
+        .frames
+        .clamp(1, 60)
+        .min((seconds * 2.0).ceil().max(1.0) as u32);
+    let step = seconds / f64::from(count);
+    let edge = cfg.video.edge.max(64);
+    let _ = fs::remove_dir_all(into);
+    fs::create_dir_all(into).map_err(|e| format!("creating {}: {e}", into.display()))?;
+    let args: Vec<String> = [
+        "-v".to_owned(),
+        "error".into(),
+        "-y".into(),
+        "-i".into(),
+        file,
+        "-vf".into(),
+        format!(
+            "fps={count}/{seconds},scale=w={edge}:h={edge}:force_original_aspect_ratio=decrease:force_divisible_by=2"
+        ),
+        "-frames:v".into(),
+        count.to_string(),
+        "-q:v".into(),
+        "4".into(),
+        into.join("%03d.jpg").to_string_lossy().into_owned(),
+    ]
+    .to_vec();
+    if let Err(e) = run(ffmpeg, &args, timeout) {
+        let _ = fs::remove_dir_all(into);
+        return Err(e);
+    }
+    let cut = fs::read_dir(into)
+        .map(|d| {
+            d.filter_map(Result::ok)
+                .filter(|e| e.path().extension().is_some_and(|x| x == "jpg"))
+                .count() as u32
+        })
+        .unwrap_or(0);
+    if cut == 0 {
+        let _ = fs::remove_dir_all(into);
+        return Err("it has no picture".into());
+    }
+    let _ = write_private(&info, format!("{cut} {step}").as_bytes());
+    Ok((shown, cut, step))
 }
 
 /// The attachment's file here, fetched unless it already is.
@@ -353,6 +594,166 @@ mod tests {
         served.join().unwrap();
         assert!(out.contains("the hub no longer has it"), "{out}");
         assert!(!root.join(ID).exists());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    fn sh(script: &str) -> Vec<String> {
+        ["sh", "-c", script, "sh", "{file}"]
+            .map(str::to_owned)
+            .to_vec()
+    }
+
+    #[test]
+    fn commands_end_with_their_output_their_error_or_the_clock() {
+        let args = |script: &str| vec!["-c".to_owned(), script.to_owned()];
+        let second = Duration::from_secs(5);
+        assert_eq!(
+            run("sh", &args("printf hi; echo noise >&2"), second).unwrap(),
+            "hi"
+        );
+        let failed = run(
+            "sh",
+            &args("echo first >&2; echo 'no model' >&2; exit 3"),
+            second,
+        );
+        assert!(
+            failed.as_ref().unwrap_err().ends_with(": no model"),
+            "{failed:?}"
+        );
+        let slow = run("sh", &args("sleep 30"), Duration::from_millis(200)).unwrap_err();
+        assert!(slow.contains("was stopped after"), "{slow}");
+        let missing = run("/nonexistent/whisper", &[], second).unwrap_err();
+        assert!(missing.contains("did not start"), "{missing}");
+        // NOTE: more than a pipe holds: the reader threads keep the child going
+        let big = run("sh", &args("head -c 300000 /dev/zero | tr '\\0' x"), second).unwrap();
+        assert_eq!(big.len(), 300_000);
+    }
+
+    #[test]
+    fn a_recording_is_put_into_words_once_and_named_in_the_prompt() {
+        let (mut cfg, root) = cfg("words");
+        let folder = root.join(ID);
+        fs::create_dir_all(&folder).unwrap();
+        fs::write(folder.join("memo.wav"), b"RIFF\0\0\0\0WAVEfmt ").unwrap();
+        let count = root.join("runs");
+        cfg.transcribe.command = sh(&format!(
+            "echo x >> {}; printf '\\n Check the second board.\\n  It reads too high. \\n' ; test -f \"$1\"",
+            count.display()
+        ));
+        // dictation: the words alone
+        assert_eq!(
+            transcribe(&cfg, ID).unwrap(),
+            "Check the second board.\nIt reads too high."
+        );
+        // as an attachment: the words in a file beside it, made once
+        let text = format!("listen\n{}", marker(ID));
+        let out = materialize(&cfg, &text);
+        let transcript = folder.join("derived/transcript.txt");
+        assert_eq!(
+            out,
+            format!(
+                "listen\n[Attached audio recording, which you cannot hear: {}]\n[Transcript of \
+                {ID}: what is said in it is in {}]",
+                folder.join("memo.wav").display(),
+                transcript.display()
+            )
+        );
+        assert_eq!(
+            fs::read_to_string(&transcript).unwrap(),
+            "Check the second board.\nIt reads too high."
+        );
+        assert_eq!(materialize(&cfg, &text), out);
+        assert_eq!(fs::read_to_string(&count).unwrap().lines().count(), 2);
+        // NOTE: the derived files do not hide the recording from the cache
+        assert_eq!(cached(&folder).unwrap(), folder.join("memo.wav"));
+
+        cfg.transcribe.attachments = false;
+        assert!(materialize(&cfg, &text).contains("no transcript was made"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn what_cannot_be_heard_is_said_not_hidden() {
+        let (mut cfg, root) = cfg("unheard");
+        let folder = root.join(ID);
+        fs::create_dir_all(&folder).unwrap();
+        fs::write(folder.join("memo.wav"), b"RIFF\0\0\0\0WAVEfmt ").unwrap();
+        assert!(
+            transcribe(&cfg, ID)
+                .unwrap_err()
+                .contains("[transcribe] command")
+        );
+        assert!(
+            transcribe(&cfg, "../x")
+                .unwrap_err()
+                .contains("not an attachment")
+        );
+        cfg.transcribe.command = sh("echo 'model missing' >&2; exit 1");
+        assert!(
+            transcribe(&cfg, ID)
+                .unwrap_err()
+                .ends_with(": model missing")
+        );
+        let out = materialize(&cfg, &marker(ID));
+        assert!(
+            out.contains("what is said in it could not be made out"),
+            "{out}"
+        );
+        assert!(out.contains("model missing"), "{out}");
+        cfg.transcribe.command = sh("true");
+        assert_eq!(
+            transcribe(&cfg, ID).unwrap_err(),
+            "nothing was heard in the recording"
+        );
+        assert!(materialize(&cfg, &marker(ID)).contains("nothing is said in it"));
+        // a video with no ffmpeg named: said as well
+        fs::remove_dir_all(&folder).unwrap();
+        fs::create_dir_all(&folder).unwrap();
+        fs::write(folder.join("clip.mp4"), b"\0\0\0\x18ftypmp42").unwrap();
+        cfg.transcribe.command = Vec::new();
+        let out = materialize(&cfg, &marker(ID));
+        assert!(out.contains("which you cannot watch"), "{out}");
+        assert!(out.contains("no frames or transcript were made"), "{out}");
+        cfg.video.ffmpeg = "/nonexistent/ffmpeg".into();
+        assert!(materialize(&cfg, &marker(ID)).contains("no frames could be cut from it"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// With real tools: `CCDASH_TEST_FFMPEG=/…/bin/ffmpeg CCDASH_TEST_VIDEO=clip.mp4
+    /// cargo test real_frames -- --ignored`.
+    #[test]
+    #[ignore = "needs ffmpeg and a video named in the environment"]
+    fn real_frames_are_cut_evenly_and_kept() {
+        let (mut cfg, root) = cfg("frames");
+        cfg.video.ffmpeg = std::env::var("CCDASH_TEST_FFMPEG").unwrap();
+        cfg.video.frames = 5;
+        let folder = root.join(ID);
+        fs::create_dir_all(&folder).unwrap();
+        fs::copy(
+            std::env::var("CCDASH_TEST_VIDEO").unwrap(),
+            folder.join("clip.mp4"),
+        )
+        .unwrap();
+        let out = materialize(&cfg, &marker(ID));
+        println!("{out}");
+        let frames = folder.join("derived/frames");
+        assert!(out.contains(&format!("[Frames of {ID}: 5 stills")), "{out}");
+        for n in 1..=5 {
+            assert!(frames.join(format!("{n:03}.jpg")).is_file());
+        }
+        assert!(!frames.join("006.jpg").exists());
+        let stamp = fs::metadata(frames.join("001.jpg"))
+            .unwrap()
+            .modified()
+            .unwrap();
+        assert_eq!(materialize(&cfg, &marker(ID)), out);
+        assert_eq!(
+            fs::metadata(frames.join("001.jpg"))
+                .unwrap()
+                .modified()
+                .unwrap(),
+            stamp
+        );
         let _ = fs::remove_dir_all(root);
     }
 

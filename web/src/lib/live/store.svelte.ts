@@ -26,7 +26,8 @@ const NO_FEATURES: HostFeatures = {
 	channel: false,
 	sync: false,
 	workspace: false,
-	attachments: false
+	attachments: false,
+	transcribe: false
 };
 
 export type ConnKind = 'connecting' | 'live' | 'reconnecting' | 'offline';

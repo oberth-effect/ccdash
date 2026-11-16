@@ -406,6 +406,19 @@ pub enum Cmd {
         id: String,
         error: Option<String>,
     },
+    /// Asks `host` for what is said in recording `attachment`.
+    Transcribe {
+        host: String,
+        attachment: String,
+        reply: oneshot::Sender<Result<String, String>>,
+    },
+    /// The words of transcription `id` from `host`, or why there are none.
+    Transcribed {
+        host: String,
+        id: String,
+        text: Option<String>,
+        error: Option<String>,
+    },
     /// Sends magic packets to `host`.
     Wake {
         host: String,
@@ -710,6 +723,8 @@ impl Hub {
             wake_via,
             power_waits: HashMap::new(),
             next_power: 0,
+            transcribe_waits: HashMap::new(),
+            next_transcribe: 0,
         };
         let names: Vec<String> = core.hosts.keys().cloned().collect();
         for name in names {
@@ -1054,6 +1069,9 @@ struct Core {
     /// The power action each host is carrying out, and who waits for it.
     power_waits: HashMap<String, PowerWait>,
     next_power: u64,
+    /// Transcriptions asked of a machine, by id: the machine, and who waits.
+    transcribe_waits: HashMap<String, (String, oneshot::Sender<Result<String, String>>)>,
+    next_transcribe: u64,
 }
 
 /// The session behind a knowledge call, placed in its workspace.
@@ -1351,6 +1369,29 @@ async fn run(mut core: Core, mut rx: mpsc::Receiver<Cmd>) {
                 }
             }
             Cmd::PowerDone { host, id, error } => core.power_done(&host, &id, error),
+            Cmd::Transcribe {
+                host,
+                attachment,
+                reply,
+            } => core.transcribe(&host, attachment, reply),
+            Cmd::Transcribed {
+                host,
+                id,
+                text,
+                error,
+            } => {
+                // NOTE: an answer from another machine than the one asked is not one
+                if let Some((asked, reply)) = core.transcribe_waits.remove(&id) {
+                    if asked == host {
+                        let _ = reply.send(match (text, error) {
+                            (Some(text), None) => Ok(text),
+                            (_, error) => Err(error.unwrap_or_else(|| "no words came back".into())),
+                        });
+                    } else {
+                        core.transcribe_waits.insert(id, (asked, reply));
+                    }
+                }
+            }
             Cmd::Wake { host, reply } => core.wake_machine(&host, reply),
             Cmd::WakeSent { host, reply } => {
                 info!("magic packets sent for {host}");
@@ -3428,6 +3469,17 @@ impl Core {
                 let _ = reply.send(Err(format!("{host} disconnected")));
             }
         }
+        let lost: Vec<String> = self
+            .transcribe_waits
+            .iter()
+            .filter(|(_, (asked, _))| asked == host)
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in lost {
+            if let Some((_, reply)) = self.transcribe_waits.remove(&id) {
+                let _ = reply.send(Err(format!("{host} disconnected")));
+            }
+        }
         let now = now_ms();
         let waiting = self.power_waits.remove(host);
         let asleep = waiting
@@ -3779,6 +3831,36 @@ impl Core {
         );
         self.tell(host, ToCollector::Power { id, action });
         Ok(())
+    }
+
+    /// Asks `host` to put recording `attachment` into words; refused for
+    /// a machine that is offline or has no command for it.
+    fn transcribe(
+        &mut self,
+        host: &str,
+        attachment: String,
+        reply: oneshot::Sender<Result<String, String>>,
+    ) {
+        let refusal = match self.hosts.get(host) {
+            None => Some(format!("no machine called {host}")),
+            Some(s) if !s.connected || !self.links.contains_key(host) => {
+                Some(format!("{host} is not connected"))
+            }
+            Some(s) if !s.features.transcribe => Some(format!(
+                "{host} puts no recordings into words: set `[transcribe] command` in its collector's settings"
+            )),
+            Some(_) => None,
+        };
+        if let Some(why) = refusal {
+            let _ = reply.send(Err(why));
+            return;
+        }
+        self.next_transcribe += 1;
+        let id = format!("transcribe-{}", self.next_transcribe);
+        info!("{id}: {attachment} on {host}, for the panel");
+        self.transcribe_waits
+            .insert(id.clone(), (host.to_owned(), reply));
+        self.tell(host, ToCollector::Transcribe { id, attachment });
     }
 
     fn power_refusal(&self, host: &str, action: PowerAction, force: bool) -> Option<String> {

@@ -253,6 +253,83 @@ in
       '';
     };
 
+    transcribe = {
+      enable = mkEnableOption ''
+        putting recordings into words on this machine with whisper.cpp: the
+        panel's dictation (the microphone in a message field), and what is
+        said in a recording or a video attached to a prompt, which Claude
+        cannot hear. Everything runs here; nothing leaves the machine. Sets
+        {option}`settings.transcribe.command`
+      '';
+
+      package = mkOption {
+        type = types.package;
+        default = pkgs.whisper-cpp;
+        defaultText = literalExpression "pkgs.whisper-cpp";
+        description = "The whisper.cpp package; its `whisper-cli` is run.";
+      };
+
+      model = mkOption {
+        type = types.path;
+        default = pkgs.fetchurl {
+          url = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.bin";
+          hash = "sha256-G+OpsgY4Z7k35k4ux0gzZKeZF+FX+pjF2UtcH//qmHs=";
+        };
+        defaultText = literalExpression ''
+          pkgs.fetchurl {
+            url = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.bin";
+            hash = "sha256-G+OpsgY4Z7k35k4ux0gzZKeZF+FX+pjF2UtcH//qmHs=";
+          }
+        '';
+        description = ''
+          The model file (ggml). The default is `small`, 466 MB, many
+          languages: a sentence takes a few seconds on a desktop's
+          processor. `base` (142 MB) is faster and worse outside English;
+          `medium` and `large-v3-turbo` (1.5 GB each) are better and want a
+          strong machine. Fetch another the same way, with its own hash.
+        '';
+      };
+
+      language = mkOption {
+        type = types.str;
+        default = "auto";
+        example = "cs";
+        description = ''
+          The language spoken, as whisper names it (`en`, `cs`, ...); `auto`
+          lets it tell from the first seconds, which goes wrong more often
+          on a short sentence.
+        '';
+      };
+
+      extraArgs = mkOption {
+        type = types.listOf types.str;
+        default = [ ];
+        example = [
+          "--threads"
+          "8"
+        ];
+        description = "More arguments for `whisper-cli`, before the file.";
+      };
+    };
+
+    video = {
+      enable = mkEnableOption ''
+        cutting still frames from videos attached to a prompt, which Claude
+        cannot watch: the prompt then names the frames (and, with
+        {option}`transcribe.enable`, what is said). Sets
+        {option}`settings.video.ffmpeg`; the number of frames and their
+        size are {option}`settings.video.frames` (12) and
+        {option}`settings.video.edge` (1568)
+      '';
+
+      package = mkOption {
+        type = types.package;
+        default = pkgs.ffmpeg-headless;
+        defaultText = literalExpression "pkgs.ffmpeg-headless";
+        description = "The ffmpeg package; its `ffmpeg` and `ffprobe` are run.";
+      };
+    };
+
     power.lock = mkEnableOption ''
       locking this machine's graphical session from the panel (Machines ›
       the machine › Lock, also on its card while the session is unlocked).
@@ -587,6 +664,26 @@ in
             ]
           )
         );
+        transcribe.command = mkIf cfg.transcribe.enable (
+          mkDefault (
+            [
+              "${cfg.transcribe.package}/bin/whisper-cli"
+              "-m"
+              "${cfg.transcribe.model}"
+              "-l"
+              cfg.transcribe.language
+              # NOTE: the text alone on stdout: no timestamps, no progress
+              "-nt"
+              "-np"
+            ]
+            ++ cfg.transcribe.extraArgs
+            ++ [
+              "-f"
+              "{file}"
+            ]
+          )
+        );
+        video.ffmpeg = mkIf cfg.video.enable (mkDefault "${cfg.video.package}/bin/ffmpeg");
         edit.command = mkIf (terminal != null && cfg.editor != null) (
           mkDefault (
             terminal.command

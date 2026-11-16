@@ -28,6 +28,7 @@ const REPORT_SIZE_KEY = 'ccdash.reportsize';
 const TEXT_SIZE_KEY = 'ccdash.textsize';
 const FORMAT_BAR_KEY = 'ccdash.formatbar';
 const ATTACH_KEY = 'ccdash.attachprefs';
+const DICTATION_HOST_KEY = 'ccdash.dictationhost';
 
 /** How photos are attached from this device. */
 export type AttachPrefs = {
@@ -174,6 +175,9 @@ class Prefs {
 		...DEFAULT_ATTACH,
 		...load<Partial<AttachPrefs>>(ATTACH_KEY, {})
 	});
+	/** The machine that puts dictation into words; empty picks the session's
+	 * host, else the first connected one that can. */
+	dictationHost = $state<string>(browser ? (localStorage.getItem(DICTATION_HOST_KEY) ?? '') : '');
 	/** The composer's formatting bar (the Aa button). */
 	formatBar = $state<boolean>(browser && localStorage.getItem(FORMAT_BAR_KEY) === 'on');
 	/** The full sidebar on wide screens; off, a rail of icons (a narrow
@@ -265,6 +269,12 @@ class Prefs {
 	setAttach(changes: Partial<AttachPrefs>) {
 		this.attach = { ...this.attach, ...changes };
 		localStorage.setItem(ATTACH_KEY, JSON.stringify(this.attach));
+	}
+
+	setDictationHost(host: string) {
+		this.dictationHost = host;
+		if (host) localStorage.setItem(DICTATION_HOST_KEY, host);
+		else localStorage.removeItem(DICTATION_HOST_KEY);
 	}
 
 	setFormatBar(on: boolean) {

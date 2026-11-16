@@ -16,11 +16,14 @@
 	let {
 		ids,
 		failed = {},
+		made = {},
 		align = 'start'
 	}: {
 		ids: string[];
 		/** Why an attachment did not reach the session's machine, by id. */
 		failed?: Record<string, string>;
+		/** What Claude got in a recording's or a video's stead, by id. */
+		made?: Record<string, string[]>;
 		align?: 'start' | 'end';
 	} = $props();
 
@@ -84,6 +87,9 @@
 					<span class="shrink-0 text-xs text-muted-foreground">{fmtBytes(a.bytes)}</span>
 				</a>
 			{/if}
+			{#each made[id] ?? [] as line (line)}
+				<p class="max-w-xs text-xs text-muted-foreground">{line}</p>
+			{/each}
 			{#if failed[id]}
 				<p class="flex max-w-xs items-start gap-1 text-xs text-warning" role="alert">
 					<TriangleAlertIcon class="mt-0.5 size-3 shrink-0" />

@@ -120,7 +120,7 @@
 							</div>
 						{/if}
 						{#if said.ids.length}
-							<Attachments ids={said.ids} failed={said.failed} align="end" />
+							<Attachments ids={said.ids} failed={said.failed} made={said.made} align="end" />
 						{/if}
 						<time class="text-xs text-muted-foreground"
 							>{fmtStamp(ex.at)}{ex.via === 'ccdash' ? ' · sent from ccdash' : ''}</time

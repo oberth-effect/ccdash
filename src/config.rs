@@ -43,6 +43,8 @@ pub struct CollectorConfig {
     pub procs: Procs,
     pub attach: Attach,
     pub attachments: CollectorAttachments,
+    pub transcribe: Transcribe,
+    pub video: Video,
     pub edit: Edit,
     pub launch: Launch,
     pub telemetry: Telemetry,
@@ -428,6 +430,61 @@ impl Default for CollectorAttachments {
             enable: true,
             dir: None,
             keep_days: 7,
+        }
+    }
+}
+
+/// Recordings put into words on this machine: the panel's dictation, and
+/// what is said in a recording or a video attached to a prompt.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Transcribe {
+    /// Prints what is said in a recording; `{file}` is replaced with its
+    /// path (`["whisper-cli", "-m", "/models/ggml-small.bin", "-l",
+    /// "auto", "-nt", "-np", "-f", "{file}"]`). Its standard output is
+    /// the text. Empty (the default) turns dictation off on this machine.
+    pub command: Vec<String>,
+    /// The command is stopped after this many seconds.
+    pub timeout_secs: u64,
+    /// Recordings and videos attached to a prompt get their words in a
+    /// file beside them, named in the prompt. Off, only dictation uses
+    /// the command.
+    pub attachments: bool,
+}
+
+impl Default for Transcribe {
+    fn default() -> Self {
+        Self {
+            command: Vec::new(),
+            timeout_secs: 300,
+            attachments: true,
+        }
+    }
+}
+
+/// Videos attached to a prompt: Claude cannot watch one, so still frames
+/// are cut from it for the prompt to name.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Video {
+    /// The `ffmpeg` to cut frames with; `ffprobe` is taken from beside
+    /// it. Empty (the default) turns the frames off on this machine.
+    pub ffmpeg: String,
+    /// How many frames, spread evenly over the video.
+    pub frames: u32,
+    /// The frames' longest side, in pixels.
+    pub edge: u32,
+    /// Cutting is stopped after this many seconds.
+    pub timeout_secs: u64,
+}
+
+impl Default for Video {
+    fn default() -> Self {
+        Self {
+            ffmpeg: String::new(),
+            frames: 12,
+            edge: 1568,
+            timeout_secs: 300,
         }
     }
 }

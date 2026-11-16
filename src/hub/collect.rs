@@ -279,6 +279,12 @@ fn command(host: &str, msg: ToHub) -> Option<Cmd> {
         ToHub::WorkspaceConfig { config } => Cmd::WorkspaceStarting { host, config },
         ToHub::Machine { report } => Cmd::Machine { host, report },
         ToHub::PowerDone { id, error } => Cmd::PowerDone { host, id, error },
+        ToHub::Transcribed { id, text, error } => Cmd::Transcribed {
+            host,
+            id,
+            text,
+            error,
+        },
     })
 }
 

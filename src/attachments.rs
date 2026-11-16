@@ -279,11 +279,58 @@ pub fn resolve(text: &str, mut line: impl FnMut(&str) -> String) -> String {
 pub fn delivered(kind: Kind, path: &str) -> String {
     let what = match kind {
         Kind::Image => "image",
-        Kind::Audio => "audio recording, which you cannot hear: use tools on the file",
-        Kind::Video => "video, which you cannot watch: use tools on the file",
+        Kind::Audio => "audio recording, which you cannot hear",
+        Kind::Video => "video, which you cannot watch",
         Kind::File => "file",
     };
     format!("[Attached {what}: {path}]")
+}
+
+/// What was made of a recording or a video on the session's machine, for
+/// Claude to read in the file's stead.
+#[derive(Debug, Default, PartialEq)]
+pub struct Derived {
+    /// The directory of still frames, how many, and the seconds between two.
+    pub frames: Option<(String, u32, f64)>,
+    /// The file with what is said.
+    pub transcript: Option<String>,
+    /// What could not be made, and why.
+    pub notes: Vec<String>,
+}
+
+/// The lines after `delivered` for a recording or a video: where its
+/// frames and its words are, or that there are none.
+/// NOTE: each starts `[Frames of <id>`, `[Transcript of <id>` or `[Note on
+/// <id>`: the panel takes these lines out of the chat by that.
+pub fn derived(id: &str, kind: Kind, d: &Derived) -> String {
+    let mut out = String::new();
+    if let Some((dir, count, step)) = &d.frames {
+        out.push_str(&format!(
+            "\n[Frames of {id}: {count} stills, one every {step:.1} s from its start to its end, \
+            are in {dir}/ as 001.jpg to {count:03}.jpg. Read the ones you need.]"
+        ));
+    }
+    if let Some(path) = &d.transcript {
+        out.push_str(&format!(
+            "\n[Transcript of {id}: what is said in it is in {path}]"
+        ));
+    }
+    for note in &d.notes {
+        out.push_str(&format!("\n[Note on {id}: {note}]"));
+    }
+    if d.frames.is_none() && d.transcript.is_none() && d.notes.is_empty() {
+        let lack = match kind {
+            Kind::Video => {
+                "no frames or transcript were made of it on this machine; use tools on the file if you have them"
+            }
+            Kind::Audio => {
+                "no transcript was made of it on this machine; use tools on the file if you have them"
+            }
+            Kind::Image | Kind::File => return out,
+        };
+        out.push_str(&format!("\n[Note on {id}: {lack}]"));
+    }
+    out
 }
 
 /// What Claude reads when the file could not be put on its machine.
@@ -520,6 +567,21 @@ mod tests {
             "[Attached image: /home/u/.local/state/ccdash/attachments/x/a.jpg]"
         );
         assert!(delivered(Kind::Video, "/p").contains("cannot watch"));
+        let made = Derived {
+            frames: Some(("/s/x/frames".into(), 12, 3.5)),
+            transcript: Some("/s/x/transcript.txt".into()),
+            notes: vec!["it has no sound".into()],
+        };
+        assert_eq!(
+            derived(A, Kind::Video, &made),
+            format!(
+                "\n[Frames of {A}: 12 stills, one every 3.5 s from its start to its end, are in \
+                /s/x/frames/ as 001.jpg to 012.jpg. Read the ones you need.]\n[Transcript of \
+                {A}: what is said in it is in /s/x/transcript.txt]\n[Note on {A}: it has no sound]"
+            )
+        );
+        assert!(derived(A, Kind::Audio, &Derived::default()).contains("no transcript was made"));
+        assert_eq!(derived(A, Kind::Image, &Derived::default()), "");
         assert!(undelivered(A, "the hub is unreachable").contains(A));
     }
 }

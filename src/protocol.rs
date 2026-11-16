@@ -23,6 +23,8 @@ use crate::{
     },
 };
 
+/// 18: recordings put into words on a machine (`Transcribe` down,
+/// `Transcribed` up).
 /// 17: the effort a session starts on (`Launch.effort`).
 /// 16: what a collector does (`Hello.features`, replacing `Hello.edit`).
 /// 15: drafts opened in an editor on a machine (`Hello.edit`, `Edit` and
@@ -47,7 +49,7 @@ use crate::{
 /// `Stop`, `Open` down; `Launched`, `Stopped` up), `branch` and `launched`
 /// on sessions, `branch` on agents entries and envelopes, `launch` on
 /// envelopes.
-pub const VERSION: u32 = 17;
+pub const VERSION: u32 = 18;
 
 /// Collector → hub.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -223,6 +225,14 @@ pub enum ToHub {
     /// sent before the freeze), or why not.
     PowerDone {
         id: String,
+        #[serde(default)]
+        error: Option<String>,
+    },
+    /// What came of `Transcribe` `id`: the words, or why not.
+    Transcribed {
+        id: String,
+        #[serde(default)]
+        text: Option<String>,
         #[serde(default)]
         error: Option<String>,
     },
@@ -541,6 +551,12 @@ pub enum ToCollector {
     Power {
         id: String,
         action: PowerAction,
+    },
+    /// Put what is said in attachment `attachment` (a recording) into
+    /// words with `[transcribe] command`; answered by `Transcribed`.
+    Transcribe {
+        id: String,
+        attachment: String,
     },
 }
 

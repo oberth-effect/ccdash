@@ -244,6 +244,9 @@ fn features(cfg: &CollectorConfig) -> HostFeatures {
         sync: cfg.sync.enable,
         workspace: cfg.workspace.enable,
         attachments: cfg.attachments.enable && cfg.hub.token_file.is_some(),
+        transcribe: cfg.attachments.enable
+            && cfg.hub.token_file.is_some()
+            && !cfg.transcribe.command.is_empty(),
     }
 }
 
@@ -1402,6 +1405,25 @@ impl Actor {
             ToCollector::Edit { id, key, text } => self.edit(id, key, text),
             ToCollector::EditCancel { id } => self.cancel_edit(&id),
             ToCollector::Power { id, action } => self.power(id, action),
+            ToCollector::Transcribe { id, attachment } => {
+                let (hub, cfg) = (self.hub.clone(), self.cfg.clone());
+                tokio::spawn(async move {
+                    let result = tokio::task::spawn_blocking(move || {
+                        attachments::transcribe(&cfg, &attachment)
+                    })
+                    .await
+                    .unwrap_or_else(|e| Err(format!("the transcription broke off: {e}")));
+                    match &result {
+                        Ok(text) => info!("{id}: {} characters heard", text.chars().count()),
+                        Err(e) => warn!("{id}: {e}"),
+                    }
+                    let _ = hub.send(ToHub::Transcribed {
+                        id,
+                        text: result.as_ref().ok().cloned(),
+                        error: result.err(),
+                    });
+                });
+            }
             ToCollector::SyncChanged { .. } => self.kick_sync(SyncCmd::Changed),
             ToCollector::SyncResync => self.kick_sync(SyncCmd::Resync),
             ToCollector::WorkspaceSetup { setup } => self.kick_workspace(WsCmd::Setup(*setup)),

@@ -34,7 +34,8 @@ export const KEY_GROUPS: KeyGroup[] = [
 			['Ctrl Shift F', 'Expand the field to the screen, and back'],
 			['/', 'Skills, at the start of the message'],
 			['[[', 'Link a note'],
-			['Ctrl V, or a drop', 'Attach a copied screenshot or file']
+			['Ctrl V, or a drop', 'Attach a copied screenshot or file'],
+			['Ctrl Shift D', 'Dictate: record, then Done; the words land at the cursor']
 		]
 	},
 	{

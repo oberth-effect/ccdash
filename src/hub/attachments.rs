@@ -547,6 +547,63 @@ pub(crate) async fn remove(
     Ok(Json(json!({ "removed": id })))
 }
 
+#[derive(Deserialize)]
+pub(crate) struct TranscribeBody {
+    /// The machine whose `[transcribe] command` does it.
+    host: String,
+    /// The recording stays on the hub afterwards (default: it goes, the
+    /// words were what was wanted).
+    #[serde(default)]
+    keep: bool,
+}
+
+/// How long the panel waits for a machine to put a recording into words.
+const TRANSCRIBE_WAIT: std::time::Duration = std::time::Duration::from_secs(600);
+
+/// `POST /attachments/<id>/transcribe`: what is said in a recording, by
+/// `host`; the panel's dictation.
+pub(crate) async fn transcribe(
+    State(app): State<App>,
+    AxPath(id): AxPath<String>,
+    Json(body): Json<TranscribeBody>,
+) -> Result<Json<Value>, ApiError> {
+    let files = store_of(&app)?;
+    let row = row_of(&app, &id).await?;
+    if !matches!(row.kind, Kind::Audio | Kind::Video) {
+        return Err(ApiError(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            format!("{} is not a recording", row.name),
+        ));
+    }
+    let (reply, rx) = tokio::sync::oneshot::channel();
+    app.hub
+        .send(crate::hub::core::Cmd::Transcribe {
+            host: body.host.clone(),
+            attachment: id.clone(),
+            reply,
+        })
+        .await?;
+    let heard = tokio::time::timeout(TRANSCRIBE_WAIT, rx)
+        .await
+        .map_err(|_| {
+            ApiError(
+                StatusCode::GATEWAY_TIMEOUT,
+                format!("{} did not answer in time", body.host),
+            )
+        })?
+        .context("hub stopped")?;
+    // NOTE: whatever came of it, a dictation's recording is not kept
+    if !body.keep {
+        let key = id.clone();
+        if let Err(e) = app.store.exec(move |conn| rows::remove(conn, &key)).await {
+            warn!("attachments: dropping the recording {id}: {e:#}");
+        }
+        files.remove_file(&id);
+    }
+    let text = heard.map_err(|e| ApiError(StatusCode::CONFLICT, e))?;
+    Ok(Json(json!({ "text": text })))
+}
+
 /// `first-last` of a `Range: bytes=…` header within `len` bytes; None
 /// for no header or one this does not serve (several ranges).
 fn range_of(headers: &HeaderMap, len: u64) -> Option<(u64, u64)> {

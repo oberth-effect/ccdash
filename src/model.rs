@@ -537,6 +537,9 @@ pub struct HostFeatures {
     /// Fetches the files attached to a prompt for its sessions
     /// (`[attachments] enable`).
     pub attachments: bool,
+    /// Puts recordings into words, for dictation in the panel
+    /// (`[transcribe] command`).
+    pub transcribe: bool,
 }
 
 /// A prompt being written in the panel, kept on the hub so it survives a
