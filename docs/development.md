@@ -67,6 +67,31 @@ for them only.
 `nix flake check` sees only files git knows; check a fresh clone or a copy
 before pushing new files.
 
+**Windows.** None of the above builds the `cfg(windows)` half of the crate
+([a Windows workstation](windows.md)). The `windows` workflow
+(`.github/workflows/windows.yml`) lints and tests it on GitHub with both
+Windows toolchains, on every push and pull request that touches the crate.
+From the dev shell, a cross `cargo check` type-checks it without a Windows
+machine (it runs nothing):
+
+```sh
+nix build --impure -o target/win-toolchain --expr 'let f = builtins.getFlake "github:nix-community/fenix"; p = f.packages.x86_64-linux; in p.combine [ p.stable.cargo p.stable.rustc p.targets.x86_64-pc-windows-gnu.stable.rust-std ]'
+nix shell nixpkgs#pkgsCross.mingwW64.stdenv.cc -c sh -c \
+  'PATH="$PWD/target/win-toolchain/bin:$PATH" CARGO_TARGET_DIR=target/windows cargo check --target x86_64-pc-windows-gnu --all-targets'
+```
+
+Code that touches the operating system goes through what both sides
+share, so it builds on Windows too:
+
+| For                              | Use                                           |
+| -------------------------------- | --------------------------------------------- |
+| file modes (0700, 0600)          | `fsx::set_mode`, `fsx::ModeExt`               |
+| the collector's sockets          | `ipc`                                         |
+| starting a program               | `util::program`, `util::output_within`        |
+| the home directory, ccdash's own | `paths`                                       |
+| comparing directories and cwds   | `workspace::path_key`                         |
+| what only Linux has              | `#[cfg(unix)]`, also on tests that drive `sh` |
+
 ## 4. The demo
 
 ```sh

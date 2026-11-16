@@ -1,0 +1,66 @@
+# The Windows workstation side (docs/windows.md). ccdash is developed on
+# NixOS, where nothing builds the `cfg(windows)` half: this job is what says
+# a change broke it. Lints and tests the crate with both Windows toolchains.
+name: windows
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "src/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "windows/**"
+      - "claude-plugin/**"
+      - "web/src/lib/api/types.ts"
+      - ".github/workflows/windows.yml"
+  pull_request:
+    paths:
+      - "src/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "windows/**"
+      - "claude-plugin/**"
+      - "web/src/lib/api/types.ts"
+      - ".github/workflows/windows.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # NOTE: the dev shell's rustc (nixpkgs), so clippy knows the same lints here
+  # as on NixOS; raise it with flake.lock
+  RUST_VERSION: "1.98.1"
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: ${{ matrix.host }}
+    runs-on: windows-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        # NOTE: gnu links with the runner's MinGW (gcc and dlltool on PATH)
+        host: [x86_64-pc-windows-gnu, x86_64-pc-windows-msvc]
+    defaults:
+      run:
+        # NOTE: Git Bash: tests run `true` and `false`
+        shell: bash
+    steps:
+      - uses: actions/checkout@v5
+      - name: Rust ${{ env.RUST_VERSION }} for ${{ matrix.host }}
+        run: |
+          rustup toolchain install "$RUST_VERSION-${{ matrix.host }}" \
+            --profile minimal --component clippy --no-self-update
+          rustup default "$RUST_VERSION-${{ matrix.host }}"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.host }}
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test
