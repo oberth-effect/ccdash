@@ -34,8 +34,8 @@ use crate::{
     machine::{self, MachineReport, Power, PowerAction, Wake},
     messages,
     model::{
-        Activity, Ask, Draft, Editing, HostFeatures, HostStatus, HubFeatures, HubStatus, Launch,
-        LaunchState, Message, RateLimits, ScopedLimit, Session, Snapshot, Update,
+        Activity, Ask, Claim, Draft, Editing, HostFeatures, HostStatus, HubFeatures, HubStatus,
+        Launch, LaunchState, Message, RateLimits, ScopedLimit, Session, Snapshot, Update,
     },
     notify::{self, Category, Composer, Note},
     paths,
@@ -2750,6 +2750,19 @@ impl Core {
         lines
     }
 
+    /// Whether `claim` covers `path`: the path itself, or the same place
+    /// below the workspace on a machine that keeps it under another path.
+    fn claim_covers(&self, claim: &Claim, path: &str) -> bool {
+        claims::covers(claim, path)
+            || self.workspaces.below(path).is_some_and(|at| {
+                claim.paths.iter().any(|held| {
+                    self.workspaces
+                        .below(held)
+                        .is_some_and(|held| at.within(&held))
+                })
+            })
+    }
+
     /// Other live sessions of the caller's workspace whose claim covers
     /// `path`, one line each.
     fn claimed_by_others(&self, c: &Caller, path: &str, now: i64) -> Vec<String> {
@@ -2760,7 +2773,7 @@ impl Core {
                 if Some(&s.id) == c.session.as_ref()
                     || s.activity == Activity::Gone
                     || s.workspace.as_deref() != Some(c.workspace.as_str())
-                    || !claims::covers(claim, path)
+                    || !self.claim_covers(claim, path)
                 {
                     continue;
                 }
@@ -5747,6 +5760,133 @@ mod tests {
         let note = knowledge::get(&conn, "w", "p--x").unwrap().unwrap();
         assert_eq!(note.project.as_deref(), Some("p"));
         assert!(knowledge::get(&conn, "w", "n--x").unwrap().is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_claim_meets_an_edit_on_a_machine_with_another_layout() {
+        let dir = std::env::temp_dir().join(format!("ccdash-claimlayout-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let hub = Hub::spawn(
+            "hub".into(),
+            "http://hub".into(),
+            Workspaces::configured(&["~/w".into()]),
+            Store::open(&dir.join("t.db"), 30).unwrap(),
+            None,
+            KnowledgeCfg::default(),
+            0,
+            None,
+            BTreeMap::new(),
+            false,
+        );
+        let machines = [
+            (
+                "navi",
+                "/home/n",
+                "/home/n/w/p",
+                "5e3f1c2a-0000-4000-8000-0000000000a1",
+            ),
+            (
+                "win",
+                r"C:\Users\F",
+                r"C:\Users\F\w\p",
+                "5e3f1c2a-0000-4000-8000-0000000000a2",
+            ),
+        ];
+        let mut rxs = HashMap::new();
+        for (conn, (host, home, cwd, sid)) in machines.into_iter().enumerate() {
+            let (tx, rx) = mpsc::channel(64);
+            hub.send(Cmd::CollectorOpen {
+                host: host.into(),
+                conn: conn as u64,
+                terminals: Vec::new(),
+                features: HostFeatures::default(),
+                place: Place {
+                    home: Some(home.into()),
+                    root: None,
+                },
+                addr: None,
+                tx,
+            })
+            .await
+            .unwrap();
+            let start = envelope(
+                Source::Hook,
+                None,
+                json!({"session_id": sid, "cwd": cwd, "hook_event_name": "SessionStart"}),
+            );
+            hub.send(Cmd::Input(host.into(), Input::Envelope(start)))
+                .await
+                .unwrap();
+            rxs.insert(host, rx);
+        }
+        let who = |sid: &str| Who {
+            session: Some(sid.into()),
+            pid: None,
+            cwd: None,
+        };
+        async fn result(rx: &mut mpsc::Receiver<ToCollector>, want: u64) -> Result<Reply, String> {
+            match next(
+                rx,
+                |m| matches!(m, ToCollector::Result { id, .. } if *id == want),
+            )
+            .await
+            {
+                ToCollector::Result { result, .. } => result,
+                _ => unreachable!(),
+            }
+        }
+        // NOTE: navi claims `src` of the project, as it has it
+        hub.send(Cmd::Call {
+            host: "navi".into(),
+            id: 1,
+            call: Call::Claim {
+                who: who(machines[0].3),
+                what: "the hub".into(),
+                paths: vec!["src".into()],
+                until: None,
+                issue: None,
+                project: None,
+            },
+        })
+        .await
+        .unwrap();
+        match result(rxs.get_mut("navi").unwrap(), 1).await.unwrap() {
+            Reply::Claimed(Some(c)) => assert_eq!(c.paths, ["/home/n/w/p/src"]),
+            other => panic!("{other:?}"),
+        }
+        // NOTE: an edit of the same place on the Windows machine is told of it
+        let edit = |id: u64, path: &str| Cmd::Call {
+            host: "win".into(),
+            id,
+            call: Call::Inject {
+                who: who(machines[1].3),
+                what: Injection::Edit { path: path.into() },
+            },
+        };
+        hub.send(edit(2, r"C:\Users\F\w\p\SRC\hub\core.rs"))
+            .await
+            .unwrap();
+        match result(rxs.get_mut("win").unwrap(), 2).await.unwrap() {
+            Reply::Context(Some(text)) => {
+                assert!(text.contains("claimed by another session"), "{text}");
+                assert!(text.contains("\"the hub\" (src)"), "{text}");
+            }
+            other => panic!("{other:?}"),
+        }
+        hub.send(edit(3, r"C:\Users\F\w\p\docs\x.md"))
+            .await
+            .unwrap();
+        match result(rxs.get_mut("win").unwrap(), 3).await.unwrap() {
+            Reply::Context(text) => assert!(
+                !text
+                    .unwrap_or_default()
+                    .contains("claimed by another session"),
+                "another place"
+            ),
+            other => panic!("{other:?}"),
+        }
+        drop(hub);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

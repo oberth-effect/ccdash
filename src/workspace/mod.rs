@@ -295,6 +295,40 @@ impl Table {
     }
 }
 
+/// Where a path sits in its workspace, whatever machine it is on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Below {
+    pub workspace: String,
+    /// The path below the workspace's directory, `/` separated; empty for
+    /// the directory itself.
+    pub rest: String,
+    /// A Windows path: its letters' case does not count.
+    folds: bool,
+}
+
+impl Below {
+    /// Whether this is `held` or below it, in the same workspace: the same
+    /// place on two machines that keep the workspace under other paths.
+    /// Case counts only when both are on a file system where it does.
+    pub fn within(&self, held: &Self) -> bool {
+        if self.workspace != held.workspace {
+            return false;
+        }
+        let under = |rest: &str, held: &str| {
+            held.is_empty()
+                || rest == held
+                || rest
+                    .strip_prefix(held)
+                    .is_some_and(|more| more.starts_with('/'))
+        };
+        if self.folds || held.folds {
+            under(&self.rest.to_lowercase(), &held.rest.to_lowercase())
+        } else {
+            under(&self.rest, &held.rest)
+        }
+    }
+}
+
 /// What follows the directory `found` in `cwd`, without its leading slash.
 fn rest_below<'a>(cwd: &'a str, found: &Dir) -> &'a str {
     after_key(trimmed(cwd), found.key.len())
@@ -501,6 +535,20 @@ impl Workspaces {
                 rest => join(&there.dir, rest),
             },
             None => cwd.to_owned(),
+        })
+    }
+
+    /// Where `path` sits in its workspace; none outside every workspace.
+    pub fn below(&self, path: &str) -> Option<Below> {
+        let table = self.read();
+        let found = table.matching(path)?;
+        let folds = windows_path(path);
+        let path = slashed(path);
+        let rest = rest_below(&path, found).trim_end_matches('/').to_owned();
+        Some(Below {
+            workspace: found.name.clone(),
+            rest,
+            folds,
         })
     }
 
@@ -1744,6 +1792,30 @@ mod tests {
             Some("/srv/shared/p")
         );
         assert_eq!(ws.on("win", "/elsewhere"), None);
+
+        // NOTE: the same place below a workspace, on machines that keep it elsewhere
+        let below = |path: &str| ws.below(path).unwrap();
+        assert_eq!(below("/home/alice/code/work").rest, "");
+        assert_eq!(below("/home/alice/code/work/p/src/").rest, "p/src");
+        assert!(
+            below(r"C:\Users\Bob\code\work\p\src\hub.rs")
+                .within(&below("/home/alice/code/work/p/src"))
+        );
+        assert!(
+            below("/home/alice/code/work/p/src").within(&below(r"c:\users\bob\code\work\P\SRC"))
+        );
+        assert!(below("/home/alice/code/work/p").within(&below("/home/alice/code/work")));
+        assert!(
+            !below("/home/alice/code/work/p/srcs/x")
+                .within(&below(r"C:\Users\Bob\code\work\p\src"))
+        );
+        assert!(!below("/home/alice/code/work/p").within(&below("/home/alice/code/work/p/src")));
+        assert!(!below("/srv/shared/p/src").within(&below("/home/alice/code/work/p/src")));
+        assert!(
+            !below("/home/alice/code/work/P").within(&below("/home/alice/code/work/p")),
+            "case counts on Linux"
+        );
+        assert_eq!(ws.below("/elsewhere/p"), None);
 
         // NOTE: a second machine with the same layout: no new directory, but its own
         assert!(!ws.place("twin", place("/home/alice", None)));

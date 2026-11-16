@@ -172,7 +172,6 @@ collector's log names its pipes.
 | workspace sync     | one recursive watch on the root; no open-file check for quiescence; git dirs outside a unit unwatched |
 | network shares     | not watched (no extended change records): a root on one is swept every 30 min                         |
 | npm's `claude.cmd` | runs, through `cmd.exe`; a batch file takes no multi-line argument, so such prompts need `claude.exe` |
-| claims             | compared as absolute paths: they only meet on machines with the same paths                            |
 
 A session's transcripts live under its directory's name
 (`C--Users-me-code-x`), which no Linux machine has. Claude Code finds a

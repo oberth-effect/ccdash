@@ -56,7 +56,9 @@ what you had before with `ccdash import` ([below](#6-import-and-export)).
 <name>` asks for, or the owner picks on its page (Details), else
   the directory it runs in, else none. Claude Code runs at the workspace
   root as a rule, so a session there is told at its start to claim its
-  project; claim `paths` resolve under the project's directory. Only the
+  project; claim `paths` resolve under the project's directory, and a
+  claim covers the same place on a machine that keeps the workspace under
+  another path. Only the
   launch and `claude --project` place a session before its first context,
   so only they scope the notes it starts with. Claude reads the project as
   that context's heading (`## ccdash knowledge: workspace / project`); the
