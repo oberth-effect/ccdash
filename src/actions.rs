@@ -33,6 +33,8 @@ const POWER_TIMEOUT: Duration = Duration::from_secs(15);
 const SETTINGS_KEEP: Duration = Duration::from_secs(30 * 24 * 3600);
 /// What a launch may ask for besides the configured default.
 pub const PERMISSION_MODES: &[&str] = &["plan", "acceptEdits"];
+/// The effort levels a launch may ask for (`claude --effort`).
+pub const EFFORTS: &[&str] = &["low", "medium", "high", "xhigh", "max"];
 /// Longest prompt a launch takes, in characters.
 pub const MAX_PROMPT: usize = 20_000;
 
@@ -217,6 +219,8 @@ pub struct LaunchSpec {
     pub model: Option<String>,
     /// One of [`PERMISSION_MODES`]; the configured default when None.
     pub permission_mode: Option<String>,
+    /// One of [`EFFORTS`]; the model's or the session's own when None.
+    pub effort: Option<String>,
     /// The session to continue.
     pub resume: Option<String>,
     /// Handed to the session's hooks as `CCDASH_LAUNCH`.
@@ -245,6 +249,11 @@ impl LaunchSpec {
         {
             return Err(format!("permission mode {mode:?} is not offered"));
         }
+        if let Some(effort) = &self.effort
+            && !EFFORTS.contains(&effort.as_str())
+        {
+            return Err(format!("effort {effort:?} is not offered"));
+        }
         if let Some(id) = &self.resume
             && !paths::plain_session_id(id)
         {
@@ -268,6 +277,9 @@ impl LaunchSpec {
         }
         if let Some(mode) = &self.permission_mode {
             args.extend(["--permission-mode".into(), mode.clone()]);
+        }
+        if let Some(effort) = &self.effort {
+            args.extend(["--effort".into(), effort.clone()]);
         }
         if channel {
             args.extend(["--channels".into(), "plugin:ccdash@inline".into()]);
@@ -296,10 +308,16 @@ impl LaunchSpec {
     /// The session's settings: the launch id and the direnv variables as
     /// `env`. Settings, not the process environment: the background daemon
     /// spawns the session with its own.
-    pub fn settings(&self, env: &BTreeMap<String, String>) -> Value {
+    /// `allow` are permission rules the session gets besides its own
+    /// (reading the fetched attachments).
+    pub fn settings(&self, env: &BTreeMap<String, String>, allow: &[String]) -> Value {
         let mut all = env.clone();
         all.insert("CCDASH_LAUNCH".into(), self.nonce.clone());
-        json!({ "env": all })
+        if allow.is_empty() {
+            json!({ "env": all })
+        } else {
+            json!({ "env": all, "permissions": { "allow": allow } })
+        }
     }
 }
 
@@ -437,11 +455,13 @@ pub fn valid_model(model: &str) -> bool {
 /// Starts the session with `cfg.command` (the Claude Code executable and
 /// its leading arguments) in its directory, with the directory's direnv
 /// variables when configured; the short id `claude --bg` printed, or why
-/// it failed (its stderr). `jobs` are the jobs Claude Code lists here.
+/// it failed (its stderr). `jobs` are the jobs Claude Code lists here,
+/// `allow` permission rules the session gets besides its own.
 pub async fn launch(
     cfg: &config::Launch,
     spec: &LaunchSpec,
     jobs: &HashSet<String>,
+    allow: &[String],
 ) -> Result<String, String> {
     let (program, lead) = cfg
         .command
@@ -470,7 +490,7 @@ pub async fn launch(
             names.join(", ")
         );
     }
-    let settings = write_settings(&spec.nonce, &spec.settings(&env), jobs)?;
+    let settings = write_settings(&spec.nonce, &spec.settings(&env, allow), jobs)?;
     let short = started(
         run(Command::new(util::program(program))
             .args(lead)
@@ -986,6 +1006,7 @@ mod tests {
             prompt: "-v fix it".into(),
             model: Some("haiku".into()),
             permission_mode: Some("plan".into()),
+            effort: Some("xhigh".into()),
             resume: None,
             nonce: "0123abcd".into(),
             saved: false,
@@ -997,8 +1018,16 @@ mod tests {
         let file = Path::new("/state/launch/0123abcd.json");
         let args = spec().args(file, true);
         assert_eq!(
-            &args[..5],
-            ["--bg", "--model", "haiku", "--permission-mode", "plan"]
+            &args[..7],
+            [
+                "--bg",
+                "--model",
+                "haiku",
+                "--permission-mode",
+                "plan",
+                "--effort",
+                "xhigh"
+            ]
         );
         assert!(
             args.windows(2)
@@ -1008,12 +1037,16 @@ mod tests {
         assert_eq!(&args[args.len() - 2..], ["--", "-v fix it"]);
         let settings = args.iter().position(|a| a == "--settings").unwrap();
         assert_eq!(args[settings + 1], "/state/launch/0123abcd.json");
-        let env = spec().settings(&BTreeMap::from([(
-            "CLAUDE_META_X".to_owned(),
-            "1".to_owned(),
-        )]));
+        let vars = BTreeMap::from([("CLAUDE_META_X".to_owned(), "1".to_owned())]);
+        let env = spec().settings(&vars, &[]);
         assert_eq!(env["env"]["CCDASH_LAUNCH"], "0123abcd");
         assert_eq!(env["env"]["CLAUDE_META_X"], "1");
+        assert!(env.get("permissions").is_none());
+        let reading = spec().settings(&vars, &["Read(//state/attachments/**)".to_owned()]);
+        assert_eq!(
+            reading["permissions"]["allow"][0],
+            "Read(//state/attachments/**)"
+        );
         let resumed = LaunchSpec {
             resume: Some("9c4719e5-9508-461b-b1f4-e7b5a4c26f9d".into()),
             model: None,
@@ -1067,7 +1100,7 @@ mod tests {
                 saved: true,
                 ..spec()
             };
-            async move { launch(&cfg, &spec, &HashSet::new()).await }
+            async move { launch(&cfg, &spec, &HashSet::new(), &[]).await }
         };
         // NOTE: `echo` prints what it was given, which then fails as no id
         let echoed = waking(&["echo", "--plugin-dir", "/p"]).await.unwrap_err();
@@ -1212,6 +1245,10 @@ mod tests {
             },
             LaunchSpec {
                 permission_mode: Some("bypassPermissions".into()),
+                ..spec()
+            },
+            LaunchSpec {
+                effort: Some("--bare".into()),
                 ..spec()
             },
             LaunchSpec {

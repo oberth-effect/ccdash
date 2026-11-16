@@ -293,6 +293,14 @@ pub struct Session {
     pub kind: Kind,
     /// Session that started this one (a fork, or `claude --bg` run by Claude).
     pub parent: Option<String>,
+    /// The session whose conversation this one continues: Claude Code
+    /// resumed it as a copy under a new id (other options, or it was still
+    /// running). The chat shows that session's part first.
+    #[serde(default)]
+    pub continues: Option<String>,
+    /// The newest session that continues this one as a copy.
+    #[serde(default)]
+    pub continued_as: Option<String>,
     pub pid: Option<u32>,
     pub cwd: String,
     /// Configured workspace holding `cwd`.
@@ -391,6 +399,8 @@ impl Session {
             short_id: None,
             kind: Kind::Interactive,
             parent: None,
+            continues: None,
+            continued_as: None,
             pid: None,
             cwd: cwd.into(),
             workspace: None,
@@ -524,6 +534,12 @@ pub struct HostFeatures {
     pub sync: bool,
     /// Keeps the workspace root in step through the hub (`[workspace] enable`).
     pub workspace: bool,
+    /// Fetches the files attached to a prompt for its sessions
+    /// (`[attachments] enable`).
+    pub attachments: bool,
+    /// Puts recordings into words, for dictation in the panel
+    /// (`[transcribe] command`).
+    pub transcribe: bool,
 }
 
 /// A prompt being written in the panel, kept on the hub so it survives a
@@ -576,6 +592,8 @@ pub struct HubStatus {
 pub struct HubFeatures {
     /// The workspace sync (`[workspace] enable`).
     pub workspace: bool,
+    /// Files attached to prompts are kept here (`[attachments] enable`).
+    pub attachments: bool,
 }
 
 /// Colours generated from a machine's wallpaper, which a panel can follow.

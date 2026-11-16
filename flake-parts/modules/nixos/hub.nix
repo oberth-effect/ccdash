@@ -206,6 +206,70 @@ in
       };
     };
 
+    attachments = {
+      enable = mkOption {
+        type = types.bool;
+        default = true;
+        description = ''
+          Whether the panel can attach files to prompts (photos, recordings,
+          documents): the hub keeps them as plain files until a session's
+          machine fetches them, within the bounds below. Off, the panel
+          offers no attaching and its Files area is gone.
+        '';
+      };
+
+      directory = mkOption {
+        type = types.str;
+        default = "${stateDir}/attachments";
+        description = ''
+          Where the hub keeps attached files, outside the database and its
+          nightly copies.
+        '';
+      };
+
+      maxImageMb = mkOption {
+        type = types.ints.positive;
+        default = 25;
+        description = "The largest picture taken, in MiB.";
+      };
+
+      maxAudioMb = mkOption {
+        type = types.ints.positive;
+        default = 50;
+        description = "The largest sound recording taken, in MiB.";
+      };
+
+      maxVideoMb = mkOption {
+        type = types.ints.positive;
+        default = 300;
+        description = "The largest video taken, in MiB.";
+      };
+
+      maxFileMb = mkOption {
+        type = types.ints.positive;
+        default = 50;
+        description = "The largest file of any other kind taken, in MiB.";
+      };
+
+      quotaMb = mkOption {
+        type = types.ints.unsigned;
+        default = 5120;
+        description = ''
+          All attachments together, in MiB: over it the oldest ones not
+          marked Keep go first. 0 sets no quota.
+        '';
+      };
+
+      retentionDays = mkOption {
+        type = types.ints.unsigned;
+        default = 30;
+        description = ''
+          Attachments not marked Keep are dropped this many days after their
+          upload. 0 keeps them until the quota or the owner removes them.
+        '';
+      };
+    };
+
     workspace = {
       enable = mkEnableOption ''
         the workspace sync: every collector's workspace root (its
@@ -268,6 +332,16 @@ in
         workspace.enable = mkDefault cfg.workspace.enable;
         reports.dir = mkDefault cfg.reports.directory;
         reports.max_mb = mkDefault cfg.reports.maxMb;
+        attachments = {
+          enable = mkDefault cfg.attachments.enable;
+          dir = mkDefault cfg.attachments.directory;
+          max_image_mb = mkDefault cfg.attachments.maxImageMb;
+          max_audio_mb = mkDefault cfg.attachments.maxAudioMb;
+          max_video_mb = mkDefault cfg.attachments.maxVideoMb;
+          max_file_mb = mkDefault cfg.attachments.maxFileMb;
+          quota_mb = mkDefault cfg.attachments.quotaMb;
+          retention_days = mkDefault cfg.attachments.retentionDays;
+        };
       };
 
       users.users.ccdash = {
@@ -337,7 +411,10 @@ in
           StateDirectoryMode = "0700";
           ReadWritePaths =
             lib.optional (!lib.hasPrefix "${stateDir}/" cfg.sync.directory) cfg.sync.directory
-            ++ lib.optional (!lib.hasPrefix "${stateDir}/" cfg.reports.directory) cfg.reports.directory;
+            ++ lib.optional (!lib.hasPrefix "${stateDir}/" cfg.reports.directory) cfg.reports.directory
+            ++ lib.optional (
+              cfg.attachments.enable && !lib.hasPrefix "${stateDir}/" cfg.attachments.directory
+            ) cfg.attachments.directory;
           Restart = "on-failure";
           RestartSec = 2;
           # hardening
@@ -385,6 +462,38 @@ in
             proxy_request_buffering off;
             proxy_read_timeout 5m;
             proxy_send_timeout 5m;
+          '';
+        };
+        # NOTE: an attachment is one body of up to the largest cap, streamed to disk
+        "= /api/v1/attachments" = mkIf cfg.attachments.enable {
+          proxyPass = "http://${proxyEndpoint}";
+          extraConfig = ''
+            client_max_body_size ${
+              toString (
+                1
+                + lib.foldl' lib.max 0 (
+                  with cfg.attachments;
+                  [
+                    maxImageMb
+                    maxAudioMb
+                    maxVideoMb
+                    maxFileMb
+                  ]
+                )
+              )
+            }m;
+            proxy_request_buffering off;
+            proxy_read_timeout 10m;
+            proxy_send_timeout 10m;
+          '';
+        };
+        # NOTE: view links and the collectors' fetch: a video goes out as it is read
+        "/attachments/" = mkIf cfg.attachments.enable {
+          proxyPass = "http://${proxyEndpoint}";
+          extraConfig = ''
+            proxy_buffering off;
+            proxy_read_timeout 10m;
+            proxy_send_timeout 10m;
           '';
         };
         # NOTE: a report arrives as one JSON body around its HTML

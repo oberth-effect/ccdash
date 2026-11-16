@@ -5,15 +5,20 @@
 	// interrupt; and the replies Claude has not taken yet.
 	import OctagonXIcon from '@lucide/svelte/icons/octagon-x';
 	import type { Session } from '#lib/api/types.js';
+	import { parse } from '#lib/attachments.svelte.js';
 	import { fmtDuration, plural, toolLabel, toolTitle } from '#lib/format.js';
 	import { live } from '#lib/live/store.svelte.js';
 	import Clock from '#lib/components/app/Clock.svelte';
 	import Meter from '#lib/components/app/Meter.svelte';
 	import StateBadge from '#lib/components/app/StateBadge.svelte';
+	import Attachments from './Attachments.svelte';
 	import SubagentList from './SubagentList.svelte';
 	import TaskList from './TaskList.svelte';
 
 	const UNDELIVERED_MS = 20_000;
+	/** NOTE: a prompt with files waits while its machine fetches them, cuts a
+	 * video's frames and puts a recording into words. */
+	const UNDELIVERED_FILES_MS = 300_000;
 
 	let { session: s, messageShown = false }: { session: Session; messageShown?: boolean } = $props();
 
@@ -36,13 +41,18 @@
 {#if s.activity !== 'gone' && s.outbox?.length}
 	<!-- NOTE: by position: two sends can share a millisecond; it is a queue -->
 	{#each s.outbox as m, i (i)}
-		{@const stuck = !busy && live.now - m.at > UNDELIVERED_MS}
+		{@const sent = parse(m.text)}
+		{@const stuck =
+			!busy && live.now - m.at > (sent.ids.length ? UNDELIVERED_FILES_MS : UNDELIVERED_MS)}
 		<div class="flex flex-col items-end gap-1">
-			<div
-				class="max-w-[90%] rounded-lg bg-primary/80 px-3 py-2 text-sm whitespace-pre-wrap text-primary-foreground"
-			>
-				{m.text}
-			</div>
+			{#if sent.text}
+				<div
+					class="max-w-[90%] rounded-lg bg-primary/80 px-3 py-2 text-sm whitespace-pre-wrap text-primary-foreground"
+				>
+					{sent.text}
+				</div>
+			{/if}
+			{#if sent.ids.length}<Attachments ids={sent.ids} align="end" />{/if}
 			<time class="text-xs {stuck ? 'text-warning' : 'text-muted-foreground'}"
 				>{stuck ? 'Not picked up yet: check the terminal' : 'Sent · waiting for Claude'}</time
 			>

@@ -129,10 +129,41 @@ when one does not suffice) while the rest of the text dims and a line
 under the text echoes what was typed; the label puts the cursor there,
 or in visual mode extends the selection through it; Escape or any other
 key cancels.
-The composer walks the prompt history, inserts `[[note]]` links,
-and when a message starts with `/` offers the skills Claude Code loads for
-that session (the machine's, the plugins', the workspace's), as the
-terminal does. Its keyboard button lists the shortcuts:
+When a message starts with `/` the composer offers the skills Claude Code
+loads for that session (the machine's, the plugins', the workspace's), as
+the terminal does.
+
+The field and its buttons are one frame, and the buttons are one row on
+every screen, so the chat keeps the height:
+
+- **+** adds to the prompt: a photo or a file
+  ([attachments](attachments.md); pasting a screenshot or dropping files
+  on the field does the same), a template (Settings › Composer holds
+  them), a `[[note]]` link, a skill, the text opened in your editor on a
+  machine (below), and the panel's keys.
+- The **microphone** dictates (`Ctrl Shift D`): it records, a machine
+  puts the recording into words, and they land at the cursor to read
+  over ([dictation](attachments.md#7-dictation)). It shows when a
+  connected machine offers it; on a phone it takes Expand's place in the
+  row, and Expand moves into **+**.
+- **Aa** shows the formatting bar above the text: bold, italic,
+  strikethrough, code, a code block, a link, lists, a quote, a heading,
+  and **Preview**, which renders the markdown in place. Each button works
+  on the selection and takes its mark away again when it is there. The
+  bar stays as you left it on each device; it is off at first, since with
+  vim keys or on a phone it is rarely worth its row.
+- **Prompt history** (`Ctrl R`) is a dialog over every prompt of the
+  session and its workspace. The search takes several words in any order
+  and asks the hub, so it reaches past the recent prompts; matches are
+  set apart. Each prompt shows its session, its time and its length, a
+  wide screen shows the picked one in full beside the list, a phone opens
+  it in place. `Enter` or a tap uses it instead of the text (undo brings
+  the draft back), `Shift Enter` inserts it at the cursor.
+- **Expand** (`Ctrl Shift F`), then the session's own buttons: Stop while
+  Claude works, Send, Next prompt.
+
+`?` anywhere outside a field, or **Keys and help** at the end of the
+sidebar, lists every key:
 
 | Keys               | Does                                          |
 | ------------------ | --------------------------------------------- |
@@ -142,12 +173,16 @@ terminal does. Its keyboard button lists the shortcuts:
 | `Ctrl .`           | Stop the turn                                 |
 | `Ctrl G`           | Edit in the editor on a machine (below)       |
 | `Ctrl Shift F`     | Expand the field, and back                    |
+| `Ctrl Shift D`     | Dictate; again to finish                      |
 | `Ctrl J`           | Go to the open question                       |
 | `Ctrl ↑` `Ctrl ↓`  | Walk the prompt history                       |
 | `Ctrl R`           | Search the prompt history                     |
-| `Ctrl E`           | Code fence around the selection               |
+| `Ctrl B` `Ctrl I`  | Bold, italic (with vim keys: in insert mode)  |
+| `Ctrl E`           | Code block around the selection               |
 | `Ctrl P`           | Preview                                       |
 | `Esc`, then `i`    | Leave the field (vim: normal mode), come back |
+| `?`                | Every key, outside a field                    |
+| `Ctrl K`           | Search everything                             |
 
 **The Firefox helper.** Firefox lets only extensions read the clipboard
 without its Paste button (the `clipboardRead` permission is checked on
@@ -287,6 +322,13 @@ redacted, as Claude Code sends it by default.
 
 ## 5. Machines, Claude state and Workspace
 
+The sidebar has three groups, a line between them: the work (Now,
+Sessions, Projects, Reports), what is kept and measured around it (Files,
+History, Analytics, Machines, Claude state, Workspace) and the panel's
+own (Settings, Keys and help). **Files** lists what was attached to
+prompts and is still on the hub, with Keep and Delete
+([attachments](attachments.md#4-files-what-is-kept-and-for-how-long)).
+
 ![Machines: the hub's own machine and two nodes with uptime, CPU, temperature, memory, battery, the screen's lock state, their sessions and a Lock button](images/machines.png)
 
 **Machines** shows the hub's own machine (uptime, CPU, temperature,
@@ -340,6 +382,14 @@ travelling name keeps home, previewed by the hub as you type; then the
 coverage: what travels and what stays home on every machine, and why).
 
 ## 6. Themes
+
+Settings › Appearance › **Size** sets how big the panel is on this device:
+text, buttons and spacing change together, in five steps from Smallest
+(80 %) to Largest (125 %). Auto, the default, is Small (87.5 %) on a phone
+and Normal on a tablet or a computer: a phone's own apps set their text a
+size under a web page's, and at Normal the panel's bars take the room the
+chat needs. A zoom set in the browser, or in an installed app's site
+settings, applies on top; set it back to 100 % before judging the sizes.
 
 The theme menu in the top bar and Settings › Colours pick the mode (system,
 light, dark) and the colour scheme, per device: Neutral, ccdash, Catppuccin,

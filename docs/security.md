@@ -12,13 +12,14 @@ token like an SSH key and keep the hub on your LAN or VPN.
 
 ## 1. Tokens
 
-| Token            | Held by                         | Checked as                                                                          |
-| ---------------- | ------------------------------- | ----------------------------------------------------------------------------------- |
-| bootstrap        | `tokenFile` on the hub          | compared in constant time                                                           |
-| device           | each paired browser             | random, stored as SHA-256, revocable                                                |
-| collector        | each workstation (`collectors`) | names the machine; only `/collect`, `/sync/`, `/git/` and the report upload take it |
-| notification key | one prompt's buttons            | random, dies with the prompt                                                        |
-| view link        | one report's frame              | HMAC-signed, an hour, key drawn at start ([reports](reports.md#6-security))         |
+| Token            | Held by                         | Checked as                                                                                                |
+| ---------------- | ------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| bootstrap        | `tokenFile` on the hub          | compared in constant time                                                                                 |
+| device           | each paired browser             | random, stored as SHA-256, revocable                                                                      |
+| collector        | each workstation (`collectors`) | names the machine; only `/collect`, `/sync/`, `/git/`, the report upload and the attachment fetch take it |
+| notification key | one prompt's buttons            | random, dies with the prompt                                                                              |
+| view link        | one report's frame              | HMAC-signed, an hour, key drawn at start ([reports](reports.md#6-security))                               |
+| attachment link  | one attached file               | HMAC-signed, six hours, key drawn at start                                                                |
 
 Rotating `tokenFile` (and restarting the hub) signs out only the devices
 still on the bootstrap token.
@@ -49,6 +50,14 @@ token" there and can take one of its own.
   takes a signed view link and serves the report as a sandboxed, opaque
   origin that loads nothing from the network, so a report's scripts never
   see the panel's token ([reports](reports.md#6-security)).
+- `/attachments/-/fetch/<id>` takes a collector's token;
+  `/attachments/-/view/<key>` takes a signed link and serves the file with
+  its kind read from its bytes, `nosniff` and a sandboxing policy:
+  pictures, recordings and PDFs show in place, everything else is a
+  download, so an uploaded page or SVG never runs in the panel's origin.
+  File names are reduced to letters, digits, `.`, `_` and `-` before they
+  reach a disk or a prompt. On a workstation the fetched files are the
+  owner's alone (0600 under a 0700 directory).
 - The OpenTelemetry receiver on a workstation takes no token, so the
   collector binds it to loopback only.
 - Lock and suspend reach only a machine whose collector has `power.lock`

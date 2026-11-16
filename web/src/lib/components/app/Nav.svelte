@@ -1,7 +1,11 @@
 <script lang="ts">
-	// The areas, from the registry; a count where the area has one; the
-	// links keep the range. `compact`: icons only, for the collapsed sidebar.
+	// The areas, from the registry, a line between its groups; a count
+	// where the area has one; the links keep the range, and the help ends
+	// the panel's own group. `compact`: icons
+	// only, for the collapsed sidebar.
 	import { page } from '$app/state';
+	import KeyboardIcon from '@lucide/svelte/icons/keyboard';
+	import { help } from '#lib/help.svelte.js';
 	import { offered } from '#lib/nav.js';
 	import { live } from '#lib/live/store.svelte.js';
 	import { scope } from '#lib/scope.svelte.js';
@@ -14,8 +18,11 @@
 </script>
 
 <nav class="flex flex-col gap-0.5 p-2" aria-label="Areas">
-	{#each offered() as area (area.href)}
+	{#each offered() as area, i (area.href)}
 		{@const active = area.match(page.url.pathname)}
+		{#if i > 0 && offered()[i - 1].group !== area.group}
+			<hr class="my-1.5 border-sidebar-border" />
+		{/if}
 		{@const badge = area.badge?.(inScope)}
 		<a
 			href={range ? `${area.href}?range=${encodeURIComponent(range)}` : area.href}
@@ -47,4 +54,24 @@
 			{/if}
 		</a>
 	{/each}
+	<button
+		type="button"
+		title={compact ? 'Keys and help (?)' : undefined}
+		class={cn(
+			'flex items-center gap-2.5 rounded-md py-2 text-sm text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground',
+			compact ? 'justify-center px-2' : 'px-2.5'
+		)}
+		onclick={() => {
+			onnavigate?.();
+			help.show();
+		}}
+	>
+		<KeyboardIcon class="size-4 shrink-0 opacity-80" />
+		{#if compact}
+			<span class="sr-only">Keys and help</span>
+		{:else}
+			<span class="flex-1 text-left">Keys and help</span>
+			<kbd class="hidden font-mono text-xs md:inline">?</kbd>
+		{/if}
+	</button>
 </nav>

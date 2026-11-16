@@ -1,5 +1,5 @@
 // Preferences that stay on the device: theme, colour scheme and the machine
-// whose wallpaper it follows, the sidebar, the board grid, composer drafts,
+// whose wallpaper it follows, the text size, the sidebar, the board grid, composer drafts,
 // quick replies and templates, the last host, model and permission mode a
 // session was started with.
 
@@ -25,6 +25,39 @@ const EDIT_HOST_KEY = 'ccdash.edithost';
 const START_KEY = 'ccdash.start';
 const GRAPH_KEY = 'ccdash.graph';
 const REPORT_SIZE_KEY = 'ccdash.reportsize';
+const TEXT_SIZE_KEY = 'ccdash.textsize';
+const FORMAT_BAR_KEY = 'ccdash.formatbar';
+const ATTACH_KEY = 'ccdash.attachprefs';
+const DICTATION_HOST_KEY = 'ccdash.dictationhost';
+
+/** How photos are attached from this device. */
+export type AttachPrefs = {
+	/** Photos are made smaller before the upload. */
+	resize: boolean;
+	/** Their longest side then, in pixels: what Claude sees at most. */
+	edge: number;
+};
+/** NOTE: Claude 4.7 and later see up to 2576 px on the long side, earlier models 1568. */
+export const ATTACH_EDGES = [1568, 2576] as const;
+export const DEFAULT_ATTACH: AttachPrefs = { resize: true, edge: 2576 };
+
+/** The panel's size on this device, in percent of the browser's own text
+ * size: text, buttons and spacing follow it together, as a browser zoom
+ * does. `auto` is `PHONE_TEXT_SIZE` on a phone and 100 elsewhere. */
+export type TextSize = 'auto' | number;
+export const TEXT_SIZES = [
+	{ value: 80, label: 'Smallest' },
+	{ value: 87.5, label: 'Small' },
+	{ value: 100, label: 'Normal' },
+	{ value: 112.5, label: 'Large' },
+	{ value: 125, label: 'Largest' }
+] as const;
+/** NOTE: native phone apps set body text at 14 sp; a page's 16 px reads a size too big next to them. */
+export const PHONE_TEXT_SIZE = 87.5;
+/** A screen whose short side is under this many CSS pixels is a phone. */
+const PHONE_SHORT_SIDE = 600;
+const isTextSize = (x: unknown): x is number =>
+	typeof x === 'number' && TEXT_SIZES.some((s) => s.value === x);
 
 export const DEFAULT_QUICK = [
 	'Continue',
@@ -83,7 +116,7 @@ nmap <Space>q :q<CR>
 nmap <Space>r :noh<CR>`;
 
 /** What the start sheet picked last; empty strings are the host's defaults. */
-export type StartChoice = { host: string; model: string; mode: string };
+export type StartChoice = { host: string; model: string; mode: string; effort: string };
 
 /** The text size a framed report shows; the report's own switch sets it. */
 export type ReportSize = 'small' | 'normal' | 'big';
@@ -135,6 +168,18 @@ class Prefs {
 	/** The machine the wallpaper scheme follows; empty, the first that reports. */
 	wallHost = $state<string>(browser ? (localStorage.getItem(WALL_HOST_KEY) ?? '') : '');
 	followed = $state.raw<Followed | null>(load<Followed | null>(PALETTE_KEY, null));
+	textSize = $state<TextSize>(
+		((stored) => (isTextSize(stored) ? stored : 'auto'))(load<unknown>(TEXT_SIZE_KEY, 'auto'))
+	);
+	attach = $state<AttachPrefs>({
+		...DEFAULT_ATTACH,
+		...load<Partial<AttachPrefs>>(ATTACH_KEY, {})
+	});
+	/** The machine that puts dictation into words; empty picks the session's
+	 * host, else the first connected one that can. */
+	dictationHost = $state<string>(browser ? (localStorage.getItem(DICTATION_HOST_KEY) ?? '') : '');
+	/** The composer's formatting bar (the Aa button). */
+	formatBar = $state<boolean>(browser && localStorage.getItem(FORMAT_BAR_KEY) === 'on');
 	/** The full sidebar on wide screens; off, a rail of icons (a narrow
 	 * vertical monitor). */
 	sidebar = $state<boolean>(!browser || localStorage.getItem(SIDEBAR_KEY) !== 'off');
@@ -155,7 +200,13 @@ class Prefs {
 	/** The machine whose editor "Edit in the editor" opens; empty picks the
 	 * session's host, else the first connected one that can. */
 	editHost = $state<string>(browser ? (localStorage.getItem(EDIT_HOST_KEY) ?? '') : '');
-	start = $state<StartChoice>(load(START_KEY, { host: '', model: '', mode: '' }));
+	start = $state<StartChoice>({
+		host: '',
+		model: '',
+		mode: '',
+		effort: '',
+		...load<Partial<StartChoice>>(START_KEY, {})
+	});
 	graph = $state<GraphLook>({ ...DEFAULT_GRAPH, ...load<Partial<GraphLook>>(GRAPH_KEY, {}) });
 	/** Reports in the panel's frame have no storage of their own (an opaque
 	 * origin), so the pick made in one report is kept here for all. */
@@ -188,6 +239,47 @@ class Prefs {
 			meta.dataset.stock ??= meta.content;
 			meta.content = vars?.['--background'] ?? meta.dataset.stock;
 		}
+	}
+
+	/** The size `auto` stands for on this device. */
+	get autoTextSize(): number {
+		if (!browser) return 100;
+		return Math.min(screen.width, screen.height) < PHONE_SHORT_SIDE ? PHONE_TEXT_SIZE : 100;
+	}
+
+	/** The size in use, in percent. */
+	get textScale(): number {
+		return this.textSize === 'auto' ? this.autoTextSize : this.textSize;
+	}
+
+	setTextSize(size: TextSize) {
+		this.textSize = size;
+		if (size === 'auto') localStorage.removeItem(TEXT_SIZE_KEY);
+		else localStorage.setItem(TEXT_SIZE_KEY, JSON.stringify(size));
+		this.applyTextSize();
+	}
+
+	/** NOTE: every size in the panel is in rem, so the root's font size scales it whole. */
+	applyTextSize() {
+		if (!browser) return;
+		const scale = this.textScale;
+		document.documentElement.style.fontSize = scale === 100 ? '' : `${scale}%`;
+	}
+
+	setAttach(changes: Partial<AttachPrefs>) {
+		this.attach = { ...this.attach, ...changes };
+		localStorage.setItem(ATTACH_KEY, JSON.stringify(this.attach));
+	}
+
+	setDictationHost(host: string) {
+		this.dictationHost = host;
+		if (host) localStorage.setItem(DICTATION_HOST_KEY, host);
+		else localStorage.removeItem(DICTATION_HOST_KEY);
+	}
+
+	setFormatBar(on: boolean) {
+		this.formatBar = on;
+		localStorage.setItem(FORMAT_BAR_KEY, on ? 'on' : 'off');
 	}
 
 	setScheme(scheme: string) {
@@ -296,3 +388,5 @@ class Prefs {
 }
 
 export const prefs = new Prefs();
+// NOTE: before the first render, so the page never draws at the wrong size
+prefs.applyTextSize();

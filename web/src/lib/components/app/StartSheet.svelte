@@ -3,7 +3,9 @@
 	// the workspace's root, under a project with notes and a directory on
 	// that host) or continues an ended one, on the host it ran on or
 	// another that syncs it: host, workspace and project, the model, the
-	// permission mode, the prompt. A dialog over most of the page, the
+	// permission mode, the prompt. For a running session it switches the
+	// model and effort: the hub stops it and continues it as a copy, which
+	// the sheet says before its button does it. A dialog over most of the page, the
 	// prompt's editor filling it: the longest prompts are written here. For
 	// an issue the prompt is written already, to edit. The draft lives on
 	// the hub, so closing the dialog loses nothing. Waits for the session to
@@ -25,7 +27,9 @@
 	import type { StartPreset } from '#lib/starter.svelte.js';
 	import { Button } from '#lib/components/ui/button/index.js';
 	import * as Dialog from '#lib/components/ui/dialog/index.js';
+	import { SmartSelect, type Choice } from '#lib/components/ui/smart-select/index.js';
 	import PromptField from '#lib/components/session/PromptField.svelte';
+	import { Tray } from '#lib/attachments.svelte.js';
 	import {
 		clearDraft,
 		editHostFor,
@@ -35,24 +39,20 @@
 		noteDraft,
 		remoteDraft
 	} from '#lib/drafts.js';
-	import { place } from '#lib/format.js';
+	import { fmtBytes, place, plural } from '#lib/format.js';
 	import { live } from '#lib/live/store.svelte.js';
+	import { fmtPct } from '#lib/machines.js';
+	import { customModel, EFFORTS, MODELS } from '#lib/models.js';
 	import { issuePrompt } from '#lib/notes.js';
 	import { prefs } from '#lib/prefs.svelte.js';
 	import { scope } from '#lib/scope.svelte.js';
+	import { busy as sessionBusy } from '#lib/session.js';
 	import { starter } from '#lib/starter.svelte.js';
 
-	const MODELS: [string, string][] = [
-		['', 'Default'],
-		['fable', 'Fable'],
-		['opus', 'Opus'],
-		['sonnet', 'Sonnet'],
-		['haiku', 'Haiku']
-	];
-	const MODES: [string, string][] = [
-		['', 'Default'],
-		['plan', 'Plan'],
-		['acceptEdits', 'Accept edits']
+	const MODES: Choice[] = [
+		{ value: '', label: 'Default', hint: "The host's own setting" },
+		{ value: 'plan', label: 'Plan', hint: 'Reads and plans, changes nothing' },
+		{ value: 'acceptEdits', label: 'Accept edits', hint: 'Edits files without asking' }
 	];
 	/** The project select's value for no project (workspace-wide). */
 	const ROOT = '/';
@@ -63,6 +63,7 @@
 	let project = $state('');
 	let model = $state('');
 	let mode = $state('');
+	let effort = $state('');
 	let text = $state('');
 	let field = $state<PromptField | null>(null);
 	/** Where sessions can start; null until loaded. */
@@ -90,12 +91,85 @@
 	const workspacesHere = $derived(targets?.find((t) => t.host === host)?.workspaces ?? []);
 	const names = $derived(workspacesHere.find((w) => w.name === ws)?.projects);
 	const launch = $derived<Launch | undefined>(pending ? live.launches.get(pending) : undefined);
+	/** The running session whose model and effort are switched. */
+	const switching = $derived(starter.preset.switching ? resume : undefined);
+	const target = $derived(switching ? live.sessions.get(switching.id) : undefined);
+	/** Stopped already (an earlier try's resume failed): only the copy is left to start. */
+	const stopped = $derived(Boolean(switching) && (!target || target.activity === 'gone'));
+	/** The files the first prompt carries. */
+	const tray = new Tray();
+	/** The hub keeps attachments and the picked machine fetches them. */
+	const canAttach = $derived(
+		Boolean(live.hub?.features.attachments) && Boolean(host) && live.features(host).attachments
+	);
 	const ready = $derived(
 		Boolean(
-			host && ws && (resume || project) && text.trim() && !busy && !pending && !draft?.editing
+			host &&
+			ws &&
+			(resume || project) &&
+			(!switching || ((model || effort) && host === switching.host)) &&
+			(text.trim() || (canAttach && tray.ids.length)) &&
+			!tray.busy &&
+			!busy &&
+			!pending &&
+			!draft?.editing
 		)
 	);
 	const vimEsc = $derived(prefs.vimOn);
+
+	/** The lists of a session to resume: no pick keeps what it ran on. */
+	const kept = (list: Choice[], now?: string | null): Choice[] =>
+		resume
+			? list.map((c) =>
+					c.value
+						? c
+						: { ...c, label: switching ? 'As it is' : 'As it was', hint: now ?? undefined }
+				)
+			: list;
+	const modelChoices = $derived(kept(MODELS, resume?.model));
+	const effortChoices = $derived(kept(EFFORTS, resume?.effort));
+	const modeChoices = $derived(kept(MODES));
+
+	/** "3 sessions", or nothing for none: a row's figure. */
+	const open = (n: number) => (n ? plural(n, 'session') : undefined);
+	const running = $derived(live.list.filter((s) => s.activity !== 'gone'));
+	const hostChoices = $derived<Choice[]>(
+		connected.map((h) => {
+			const m = live.hosts.find((x) => x.name === h)?.machine;
+			const parts = [
+				h === live.here ? 'this device' : null,
+				m && m.cpu.usage_pct !== null ? `CPU ${fmtPct(m.cpu.usage_pct)}` : null,
+				m?.memory.total ? `mem ${fmtBytes(m.memory.used)} of ${fmtBytes(m.memory.total)}` : null
+			];
+			return {
+				value: h,
+				label: h,
+				hint: parts.filter(Boolean).join(' · ') || undefined,
+				meta: open(running.filter((s) => s.host === h).length)
+			};
+		})
+	);
+	const wsChoices = $derived<Choice[]>(
+		workspacesHere.map((w) => ({
+			value: w.name,
+			label: w.name,
+			hint: plural(w.projects.length, 'project'),
+			meta: open(running.filter((s) => s.workspace === w.name).length)
+		}))
+	);
+	const projectChoices = $derived<Choice[]>([
+		...(names ?? []).map((p) => ({
+			value: p,
+			label: p,
+			meta: open(running.filter((s) => s.workspace === ws && s.project === p).length)
+		})),
+		{
+			value: ROOT,
+			label: '(no project)',
+			hint: 'The workspace itself',
+			meta: open(running.filter((s) => s.workspace === ws && !s.project).length)
+		}
+	]);
 	let fieldFocused = $state(false);
 
 	// A fresh sheet: where sessions can start, then the preset, else the
@@ -104,8 +178,10 @@
 		if (!starter.open) return;
 		const preset = starter.preset;
 		untrack(() => {
-			model = prefs.start.model;
-			mode = prefs.start.mode;
+			// a session to resume keeps its own options unless one is picked
+			model = preset.resume ? '' : prefs.start.model;
+			mode = preset.resume ? '' : prefs.start.mode;
+			effort = preset.resume ? '' : prefs.start.effort;
 			pending = null;
 			error = '';
 			targets = null;
@@ -193,6 +269,7 @@
 		if (current.state === 'started') {
 			pending = null;
 			text = '';
+			tray.clear();
 			clearDraft(draftKey);
 			starter.open = false;
 			goto(`/sessions/${current.session}`);
@@ -202,12 +279,12 @@
 		}
 	});
 
-	async function prompts() {
-		return ws ? (await fetchPrompts({ workspace: ws, limit: 50 })).prompts : [];
+	async function prompts(q?: string) {
+		return ws ? (await fetchPrompts({ workspace: ws, q, limit: q ? 100 : 50 })).prompts : [];
 	}
 
 	async function start() {
-		const body = text.trim();
+		const body = canAttach ? tray.compose(text) : text.trim();
 		if (!ready) return;
 		busy = true;
 		error = '';
@@ -219,10 +296,12 @@
 				prompt: body,
 				model: model || undefined,
 				permission_mode: mode || undefined,
+				effort: effort || undefined,
 				resume: resume?.id,
+				restart: switching ? true : undefined,
 				issue: issue?.slug
 			});
-			prefs.setStart({ host, model, mode });
+			if (!resume) prefs.setStart({ host, model, mode, effort });
 			field?.remember(body);
 			// NOTE: the stream may have moved the launch on before this answer came
 			if (!live.launches.has(launch.id)) live.launches.set(launch.id, launch);
@@ -259,8 +338,6 @@
 		}
 	}
 
-	const selectClass =
-		'h-8 w-full min-w-0 rounded-lg border border-input bg-transparent px-2 text-sm text-foreground dark:bg-input/30';
 	const choiceClass = 'flex min-w-0 flex-col gap-1 text-xs text-muted-foreground';
 </script>
 
@@ -271,16 +348,21 @@
 	>
 		<Dialog.Header class="gap-1 pr-8">
 			<Dialog.Title
-				>{resume
-					? 'Resume the session'
-					: issue
-						? 'Work on this issue'
-						: 'Start a session'}</Dialog.Title
+				>{switching
+					? 'Switch model & effort'
+					: resume
+						? 'Resume the session'
+						: issue
+							? 'Work on this issue'
+							: 'Start a session'}</Dialog.Title
 			>
 			<Dialog.Description>
 				{#if issue}
 					Starts a session on “{issue.title}”. It claims the issue when it reports, so the board
 					shows it in progress.
+				{:else if switching}
+					A running session takes no other model or effort from outside, so “{switching.title}” is
+					stopped and its conversation continues on {switching.host} as a copy, on what you pick.
 				{:else if resume}
 					Resumes “{resume.title}” in the background on {host || resume.host}, in
 					{place(resume.cwd)}: its conversation goes on from where it stopped.
@@ -302,29 +384,30 @@
 		{:else}
 			<div class="flex flex-wrap items-end gap-2">
 				{#if !resume}
-					<label class="{choiceClass} w-36">
+					<div class="{choiceClass} w-36">
 						Host
-						<select class={selectClass} bind:value={host} onchange={pickHost}>
-							{#each connected as h (h)}<option value={h}>{h}</option>{/each}
-						</select>
-					</label>
-					<label class="{choiceClass} w-40">
+						<SmartSelect label="Host" bind:value={host} options={hostChoices} onchange={pickHost} />
+					</div>
+					<div class="{choiceClass} w-40">
 						Workspace
-						<select class={selectClass} bind:value={ws} onchange={() => (project = '')}>
-							{#each workspacesHere as w (w.name)}<option value={w.name}>{w.name}</option>{/each}
-						</select>
-					</label>
-					<label class="{choiceClass} w-56 flex-1">
+						<SmartSelect
+							label="Workspace"
+							bind:value={ws}
+							options={wsChoices}
+							onchange={() => (project = '')}
+						/>
+					</div>
+					<div class="{choiceClass} min-w-56 flex-1">
 						Project
-						<select class={selectClass} bind:value={project}>
-							<option value="" disabled
-								>{names?.length ? 'Pick a project' : 'No project here'}</option
-							>
-							{#each names ?? [] as p (p)}<option value={p}>{p}</option>{/each}
-							<option value={ROOT}>(no project: the workspace itself)</option>
-						</select>
-					</label>
-				{:else}
+						<SmartSelect
+							label="Project"
+							bind:value={project}
+							options={projectChoices}
+							placeholder={names?.length ? 'Pick a project' : 'No project here'}
+							searchPlaceholder="Filter projects"
+						/>
+					</div>
+				{:else if !switching}
 					<div class="{choiceClass} flex-1" role="group" aria-label="Machine">
 						Machine
 						<div class="flex flex-wrap gap-1.5">
@@ -346,20 +429,54 @@
 						</div>
 					</div>
 				{/if}
-				<label class="{choiceClass} w-32">
+				<div class="{choiceClass} w-36">
 					Model
-					<select class={selectClass} bind:value={model}>
-						{#each MODELS as [value, name] (value)}<option {value}>{name}</option>{/each}
-					</select>
-				</label>
-				<label class="{choiceClass} w-36">
-					Permission mode
-					<select class={selectClass} bind:value={mode}>
-						{#each MODES as [value, name] (value)}<option {value}>{name}</option>{/each}
-					</select>
-				</label>
+					<SmartSelect
+						label="Model"
+						bind:value={model}
+						options={modelChoices}
+						custom={customModel}
+						searchPlaceholder="Opus, 4.8, a full name…"
+					/>
+				</div>
+				<div class="{choiceClass} w-32">
+					Effort
+					<SmartSelect label="Effort" bind:value={effort} options={effortChoices} />
+				</div>
+				{#if !switching}
+					<div class="{choiceClass} w-36">
+						Permission mode
+						<SmartSelect label="Permission mode" bind:value={mode} options={modeChoices} />
+					</div>
+				{/if}
 			</div>
-			{#if resume}
+			{#if switching}
+				{#if host !== switching.host}
+					<p class="text-xs text-critical">
+						{switching.host} is not connected or starts no sessions, so it cannot be restarted there.
+					</p>
+				{:else if stopped}
+					<p class="text-xs text-muted-foreground" data-slot="switch-warning">
+						The session is stopped. Its conversation continues in the background as a copy under a
+						new id, starting with the prompt below.
+					</p>
+				{:else}
+					<p
+						class="rounded-lg border border-warning/50 bg-warning/10 px-3 py-2 text-xs"
+						data-slot="switch-warning"
+					>
+						<strong class="font-medium">This stops the session and starts it again.</strong>
+						<code class="font-mono">claude stop</code> ends it on {switching.host}, then its
+						conversation continues in the background as a copy under a new id, starting with the
+						prompt below; the stopped one stays in the list as it was.
+						{#if target && sessionBusy(target)}
+							<strong class="font-medium"
+								>It is working now: the turn in progress is cut off.</strong
+							>
+						{/if}
+					</p>
+				{/if}
+			{:else if resume}
 				{#if !resumeHosts.length}
 					<p class="text-xs text-critical">
 						No connected machine has the workspace {resume.workspace}.
@@ -368,6 +485,11 @@
 					<p class="text-xs text-muted-foreground">
 						It last ran on {resume.host}; {host} fetches its transcript from the hub first, then resumes
 						it as a copy under a new id (the old one stays as it was).
+					</p>
+				{:else if model || effort || mode}
+					<p class="text-xs text-muted-foreground">
+						With another model, effort or permission mode Claude Code continues it as a copy under a
+						new id; the old one stays as it was.
 					</p>
 				{/if}
 			{/if}
@@ -383,12 +505,17 @@
 					historyNote="The workspace's prompts."
 					{host}
 					workspace={ws || null}
-					placeholder={resume ? 'What next?' : 'What should Claude do?'}
+					placeholder={switching
+						? 'What should it do next, on the new model or effort?'
+						: resume
+							? 'What next?'
+							: 'What should Claude do?'}
 					label="Prompt"
 					rows={6}
 					fill
 					disabled={busy || Boolean(pending)}
 					editing={draft?.editing ?? null}
+					tray={canAttach ? tray : null}
 					{editHost}
 					notice={draft?.notice ?? null}
 					onsubmit={start}
@@ -397,9 +524,21 @@
 					onsave={() => flushDraft(draftKey)}
 				>
 					{#snippet actions()}
-						<Button type="submit" size="sm" disabled={!ready} title="Ctrl Enter">
+						<Button
+							type="submit"
+							size="sm"
+							variant={switching && !stopped ? 'destructive' : 'default'}
+							disabled={!ready}
+							title="Ctrl Enter"
+						>
 							{#if busy || pending}<LoaderCircleIcon class="animate-spin" />{/if}
-							{resume ? 'Resume' : 'Start'}
+							{switching
+								? stopped
+									? 'Continue as a copy'
+									: 'Stop and switch'
+								: resume
+									? 'Resume'
+									: 'Start'}
 						</Button>
 					{/snippet}
 				</PromptField>

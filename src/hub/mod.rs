@@ -2,6 +2,7 @@
 //! workstation report over `/collect`; the web UI, the API and the
 //! notifications are served from here.
 
+pub mod attachments;
 pub mod backup;
 pub mod collect;
 pub mod core;
@@ -107,6 +108,7 @@ pub async fn serve(cfg: Arc<HubConfig>, demo: Option<Demo>) -> Result<()> {
         cfg.store.tool_output_bytes,
         repos.clone(),
         cfg.wake.via.clone(),
+        cfg.attachments.enable,
     );
     let git = repos.map(|repos| crate::workspace::hub::GitState {
         repos,
@@ -129,6 +131,17 @@ pub async fn serve(cfg: Arc<HubConfig>, demo: Option<Demo>) -> Result<()> {
     let reports = Arc::new(
         reports::Reports::open(&cfg.reports_dir(), cfg.reports.max_mb).context("reports")?,
     );
+    let attachments = if cfg.attachments.enable {
+        let files = Arc::new(
+            attachments::Attachments::open(&cfg.attachments_dir(), cfg.attachments.clone())
+                .context("attachments")?,
+        );
+        attachments::spawn_sweep(store.clone(), files.clone());
+        info!("keeping attachments in {}", cfg.attachments_dir().display());
+        Some(files)
+    } else {
+        None
+    };
     let catalog = crate::catalog::Catalog::open(&cfg.catalog_path(), &cfg.store_path())
         .context("session catalog")?;
     crate::catalog::spawn(catalog.clone(), cfg.sync_dir(), sync.changed.subscribe());
@@ -159,6 +172,7 @@ pub async fn serve(cfg: Arc<HubConfig>, demo: Option<Demo>) -> Result<()> {
             sync.clone(),
             git.clone(),
             reports.clone(),
+            attachments.clone(),
             catalog.clone(),
         ));
     }

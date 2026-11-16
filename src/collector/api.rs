@@ -465,7 +465,14 @@ async fn inject(
         local.offline_inject(who, what).await?
     };
     Ok(match text {
-        Some(text) => (json!({ "type": "context", "text": text }), ack),
+        Some(text) => {
+            // NOTE: a note for the next prompt may carry attachments too
+            let cfg = cfg.clone();
+            let text =
+                tokio::task::spawn_blocking(move || super::attachments::materialize(&cfg, &text))
+                    .await?;
+            (json!({ "type": "context", "text": text }), ack)
+        }
         None => (json!({ "type": "none" }), None),
     })
 }

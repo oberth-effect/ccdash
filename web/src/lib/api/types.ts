@@ -114,6 +114,45 @@ input: Array<[string, string]>,
 always: string | null, } | { "kind": "question", questions: Array<Question>, } | { "kind": "plan", plan: string, });
 
 /**
+ * A file kept on the hub for a prompt.
+ */
+export type Attachment = { id: string, 
+/**
+ * The file's name as uploaded, made safe (`safe_name`).
+ */
+name: string, kind: AttachmentKind, 
+/**
+ * From the file's first bytes, never from what the browser said.
+ */
+mime: string, bytes: number, sha256: string, 
+/**
+ * The session it was attached in, when the panel said.
+ */
+session: string | null, workspace: string | null, created_at: number, 
+/**
+ * When a collector last fetched it for a session; None: never sent.
+ */
+fetched_at: number | null, 
+/**
+ * Kept past `attachments.retention_days` and the quota.
+ */
+pinned: boolean, 
+/**
+ * When the retention drops it; None when pinned or kept for good.
+ */
+expires_at?: number, 
+/**
+ * A link the panel can show or play it through for a while, without
+ * its token (`/attachments/-/view/<key>`).
+ */
+url?: string, };
+
+/**
+ * What an attachment is to Claude and to the panel.
+ */
+export type AttachmentKind = "image" | "audio" | "video" | "file";
+
+/**
  * A session that wrote a note.
  */
 export type Author = { session: string, 
@@ -486,7 +525,12 @@ task?: TaskNotification,
 /**
  * What started the exchange instead of a prompt: a subagent's message.
  */
-agent?: AgentMessage, items: Array<Item>, 
+agent?: AgentMessage, 
+/**
+ * The earlier session the exchange happened in, in the chat of a
+ * session that continues it as a copy.
+ */
+session?: string, items: Array<Item>, 
 /**
  * Oldest tool calls left out of `items` in very long exchanges.
  */
@@ -626,7 +670,17 @@ sync: boolean,
 /**
  * Keeps the workspace root in step through the hub (`[workspace] enable`).
  */
-workspace: boolean, };
+workspace: boolean, 
+/**
+ * Fetches the files attached to a prompt for its sessions
+ * (`[attachments] enable`).
+ */
+attachments: boolean, 
+/**
+ * Puts recordings into words, for dictation in the panel
+ * (`[transcribe] command`).
+ */
+transcribe: boolean, };
 
 /**
  * A machine whose collector reports to the hub. The hub keeps every one
@@ -686,7 +740,11 @@ export type HubFeatures = {
 /**
  * The workspace sync (`[workspace] enable`).
  */
-workspace: boolean, };
+workspace: boolean, 
+/**
+ * Files attached to prompts are kept here (`[attachments] enable`).
+ */
+attachments: boolean, };
 
 /**
  * The hub's own machine.
@@ -747,7 +805,20 @@ command?: string,
 /**
  * A Bash call's output, or a failed call's error, capped by the hub.
  */
-output?: string, } | { "kind": "permission", id: number, at: number, tool: string, summary: string, } | { "kind": "answered", id: number, at: number, tool: string, action: string, via: string, } | { "kind": "message", id: number, at: number, html: string, } | { "kind": "reply", id: number, at: number, html: string, } | { "kind": "error", id: number, at: number, error: string, } | { "kind": "subagent", id: number, at: number, agent_type: string, description: string | null, ms: number | null, tools: number | null, html: string, } | { "kind": "compact", id: number, at: number, trigger: string | null, html: string, } | { "kind": "task", id: number, at: number, subject: string, status: string, } | { "kind": "start", id: number, at: number, source: string, } | { "kind": "end", id: number, at: number, reason: string, } | { "kind": "interrupted", id: number, at: number, } | { "kind": "report", id: number, at: number, workspace: string, slug: string, title: string, 
+output?: string, } | { "kind": "permission", id: number, at: number, tool: string, summary: string, } | { "kind": "answered", id: number, at: number, tool: string, action: string, via: string, } | { "kind": "message", id: number, at: number, html: string, } | { "kind": "reply", id: number, at: number, html: string, } | { "kind": "error", id: number, at: number, error: string, } | { "kind": "subagent", id: number, at: number, agent_type: string, description: string | null, ms: number | null, tools: number | null, html: string, } | { "kind": "compact", id: number, at: number, trigger: string | null, html: string, } | { "kind": "task", id: number, at: number, subject: string, status: string, } | { "kind": "start", id: number, at: number, source: string, } | { "kind": "end", id: number, at: number, reason: string, } | { "kind": "continued", id: number, at: number, session: string, 
+/**
+ * The earlier session's title; none without one.
+ */
+title: string | null, 
+/**
+ * The store has the earlier session, so its page opens.
+ */
+known: boolean, 
+/**
+ * What the earlier session ran on and what the copy started on,
+ * as far as the hub knew then.
+ */
+from_model: string | null, from_effort: string | null, model: string | null, effort: string | null, } | { "kind": "interrupted", id: number, at: number, } | { "kind": "report", id: number, at: number, workspace: string, slug: string, title: string, 
 /**
  * An earlier report under the slug was replaced.
  */
@@ -809,9 +880,19 @@ model?: string,
  */
 permission_mode?: string, 
 /**
+ * `low`, `medium`, `high`, `xhigh` or `max`; the session's own when
+ * absent.
+ */
+effort?: string, 
+/**
  * An ended session to continue (on its host, in its directory).
  */
 resume?: string, 
+/**
+ * `resume` may still be running: a background session is stopped
+ * first, then continued (as a copy, when anything about it changes).
+ */
+restart?: boolean, 
 /**
  * An open issue of the workspace the session is started for: it
  * claims it as soon as it reports, so the board shows it working.
@@ -1241,7 +1322,9 @@ model: string | null, branch: string | null, version: string | null,
  */
 entrypoint: string | null, cost_usd: number | null, lines_added: number | null, lines_removed: number | null, 
 /**
- * The session it was continued in (a copy under a new id).
+ * The session it was continued in (a copy under a new id): Claude
+ * Code's mark in the transcript, else the link the hub made when one
+ * of its resumes came back as a copy.
  */
 continued_in: string | null, 
 /**
@@ -1343,7 +1426,11 @@ export type Projects = { workspaces: Array<WorkspaceProjects>, };
 /**
  * A prompt as typed, for the composer's history.
  */
-export type Prompt = { at: number, session: string, text: string, };
+export type Prompt = { at: number, session: string, 
+/**
+ * The session's title, else its name; None when it has neither.
+ */
+title?: string, text: string, };
 
 export type PushOutcome = { "outcome": "sent" } | { "outcome": "dropped", status: number, } | { "outcome": "failed", error: string, };
 
@@ -1475,7 +1562,17 @@ short_id: string | null, kind: Kind,
 /**
  * Session that started this one (a fork, or `claude --bg` run by Claude).
  */
-parent: string | null, pid: number | null, cwd: string, 
+parent: string | null, 
+/**
+ * The session whose conversation this one continues: Claude Code
+ * resumed it as a copy under a new id (other options, or it was still
+ * running). The chat shows that session's part first.
+ */
+continues: string | null, 
+/**
+ * The newest session that continues this one as a copy.
+ */
+continued_as: string | null, pid: number | null, cwd: string, 
 /**
  * Configured workspace holding `cwd`.
  */

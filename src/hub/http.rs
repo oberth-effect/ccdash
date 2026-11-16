@@ -37,12 +37,13 @@ use tracing::warn;
 use ts_rs::TS;
 
 use super::{
+    attachments,
     collect::{self, Tokens},
     core::{Cmd, Dirs, Hub, LaunchIssue, LaunchReq},
     reports, web,
 };
 use crate::{
-    actions::{self, MAX_PROMPT, PERMISSION_MODES},
+    actions::{self, EFFORTS, MAX_PROMPT, PERMISSION_MODES},
     analytics::{self, Analytics, LimitTracks},
     ask::Answer,
     catalog::{self, Catalog},
@@ -57,7 +58,7 @@ use crate::{
     },
     machine::PowerAction,
     messages,
-    model::{Activity, LaunchTarget, Session, Snapshot, TargetWorkspace},
+    model::{Activity, Kind, LaunchTarget, Session, Snapshot, TargetWorkspace},
     paths,
     push::{self, Push},
     store::{self, Store},
@@ -96,6 +97,8 @@ pub struct App {
     pub web_dir: Arc<PathBuf>,
     /// The reports' files and view links (see `reports`).
     pub(crate) reports: Arc<reports::Reports>,
+    /// The files attached to prompts; None when `[attachments] enable` is off.
+    pub(crate) attachments: Option<Arc<attachments::Attachments>>,
     /// Ids of tokens revoked since the start; open streams on them end.
     revoked: broadcast::Sender<i64>,
     /// The workspace repositories, when the workspace sync is on.
@@ -143,6 +146,7 @@ pub async fn serve(
     sync: sync::hub::Mirror,
     git: Option<GitState>,
     reports: Arc<reports::Reports>,
+    attachments: Option<Arc<attachments::Attachments>>,
     catalog: Catalog,
 ) {
     let api = Router::new()
@@ -186,6 +190,20 @@ pub async fn serve(
         .route("/notes/{workspace}/{slug}/op", post(note_op))
         .route("/reports/{workspace}/{slug}/view", post(reports::mint))
         .route("/reports/{workspace}/{slug}/file", get(reports::file))
+        .route(
+            "/attachments",
+            get(attachments::list).post(attachments::upload),
+        )
+        .route(
+            "/attachments/{id}",
+            get(attachments::one)
+                .patch(attachments::patch)
+                .delete(attachments::remove),
+        )
+        .route(
+            "/attachments/{id}/transcribe",
+            post(attachments::transcribe),
+        )
         .route("/push", get(push_info))
         .route(
             "/push/subscriptions",
@@ -222,6 +240,7 @@ pub async fn serve(
         .route("/act/{key}/{action}", post(button))
         .route("/reports/-/view/{key}", get(reports::view))
         .merge(reports::upload_routes(tokens.clone(), reports.max_bytes()))
+        .merge(attachments::routes(tokens.clone()))
         .route(
             "/collect",
             get(collect::collect).with_state((
@@ -247,6 +266,7 @@ pub async fn serve(
             revoked: broadcast::channel(16).0,
             git,
             reports,
+            attachments,
             catalog,
         });
     if let Err(e) = axum::serve(
@@ -575,10 +595,20 @@ pub(crate) struct LaunchBody {
     #[serde(default)]
     #[ts(optional)]
     permission_mode: Option<String>,
+    /// `low`, `medium`, `high`, `xhigh` or `max`; the session's own when
+    /// absent.
+    #[serde(default)]
+    #[ts(optional)]
+    effort: Option<String>,
     /// An ended session to continue (on its host, in its directory).
     #[serde(default)]
     #[ts(optional)]
     resume: Option<String>,
+    /// `resume` may still be running: a background session is stopped
+    /// first, then continued (as a copy, when anything about it changes).
+    #[serde(default)]
+    #[ts(optional)]
+    restart: Option<bool>,
     /// An open issue of the workspace the session is started for: it
     /// claims it as soon as it reports, so the board shows it working.
     #[serde(default)]
@@ -587,7 +617,8 @@ pub(crate) struct LaunchBody {
 }
 
 /// Starts a background session at the workspace's directory under a known
-/// project, or continues an ended one; `202 { launch }`, followed by
+/// project, or continues an ended one (with `restart`, a running background
+/// one, stopped first); `202 { launch }`, followed by
 /// `launch` updates on the stream. The directory is the workspace's (the
 /// harness and direnv live there), never the client's; the project is the
 /// session's label.
@@ -619,19 +650,42 @@ async fn launch(
     {
         return Err(refuse(format!("permission mode {m:?} is not offered")));
     }
+    let effort = body.effort.filter(|e| !e.is_empty());
+    if let Some(e) = &effort
+        && !EFFORTS.contains(&e.as_str())
+    {
+        return Err(refuse(format!("effort {e:?} is not offered")));
+    }
     let ws_dir = app
         .workspaces
         .dir(&body.workspace)
         .ok_or_else(|| refuse(format!("unknown workspace {:?}", body.workspace)))?
         .to_owned();
+    // The running session to stop before it is continued.
+    let mut restart = None;
     let (cwd, resume) = match &body.resume {
         Some(key) => {
             let live = app.hub.resolve(key).await?;
-            if live.as_ref().is_some_and(|s| s.activity != Activity::Gone) {
-                return Err(ApiError(
-                    StatusCode::CONFLICT,
-                    "the session is still running".into(),
-                ));
+            if let Some(s) = live.as_ref().filter(|s| s.activity != Activity::Gone) {
+                if body.restart != Some(true) {
+                    return Err(ApiError(
+                        StatusCode::CONFLICT,
+                        "the session is still running".into(),
+                    ));
+                }
+                if s.kind != Kind::Background {
+                    return Err(refuse(
+                        "only a background session restarts from here: change it in its terminal"
+                            .into(),
+                    ));
+                }
+                if s.host != body.host {
+                    return Err(refuse(format!(
+                        "the session runs on {}: it restarts there",
+                        s.host
+                    )));
+                }
+                restart = Some(s.id.clone());
             }
             let s = match live {
                 Some(s) => s,
@@ -703,6 +757,26 @@ async fn launch(
         Some(slug) => Some(open_issue(&app, &body.workspace, slug).await?),
         None => None,
     };
+    // NOTE: last, so a refused request leaves the session running
+    if let Some(id) = restart {
+        tokio::time::timeout(
+            STOP_WAIT,
+            app.hub.session_cmd(|reply| Cmd::Stop { key: id, reply }),
+        )
+        .await
+        .map_err(|_| {
+            ApiError(
+                StatusCode::GATEWAY_TIMEOUT,
+                "the host did not answer the stop: the session was not restarted".into(),
+            )
+        })??
+        .map_err(|e| {
+            ApiError(
+                StatusCode::CONFLICT,
+                format!("the session was not stopped, so nothing changed: {e}"),
+            )
+        })?;
+    }
     let launch = app
         .hub
         .launch(LaunchReq {
@@ -713,6 +787,7 @@ async fn launch(
             prompt,
             model,
             permission_mode,
+            effort,
             resume,
             issue,
         })
@@ -1207,11 +1282,14 @@ struct PromptsQuery {
     session: Option<String>,
     /// Comma-separated workspace names; every workspace when empty.
     workspace: Option<String>,
+    /// Words the prompt must all hold.
+    q: Option<String>,
     limit: Option<usize>,
 }
 
 /// Recent prompts, newest first and de-duplicated, for the composer's
-/// history: `session=` narrows to one session, `workspace=` to workspaces.
+/// history: `session=` narrows to one session, `workspace=` to workspaces,
+/// `q=` to the prompts holding every word.
 async fn prompts(
     State(app): State<App>,
     Query(query): Query<PromptsQuery>,
@@ -1229,8 +1307,15 @@ async fn prompts(
     };
     let limit = query.limit.unwrap_or(50).clamp(1, 200);
     let store = app.store.clone();
+    let words = query.q.filter(|q| !q.trim().is_empty());
     let prompts = tokio::task::spawn_blocking(move || {
-        conversation::prompts(&store.reader()?, session.as_deref(), dirs.as_deref(), limit)
+        conversation::prompts(
+            &store.reader()?,
+            session.as_deref(),
+            dirs.as_deref(),
+            words.as_deref(),
+            limit,
+        )
     })
     .await
     .map_err(anyhow::Error::from)??;

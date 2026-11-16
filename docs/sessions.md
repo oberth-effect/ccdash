@@ -18,7 +18,10 @@ sessions that need you, and the session page pins **Open on** and
 
 **Start a session** on Now (or **Start** on a project page) asks for a
 connected host, a workspace and one of its projects, the model, the
-permission mode (the host's default, plan, accept edits) and the prompt.
+effort (the default, or low to max), the permission mode (the host's
+default, plan, accept edits) and the prompt. The lists narrow as you type:
+the model's has the aliases (`opus` follows the newest release) and the
+versions by name, and takes any other name `claude --model` knows.
 The panel waits until the session reports and opens its page; its prompts
 reach the phone like any other's, and a finished turn notifies "Finished".
 
@@ -34,7 +37,7 @@ on the chosen host. The collector then runs, in the workspace's directory:
 
 ```sh
 <launch.command> --bg [--resume <id>] [--model <m>] \
-  [--permission-mode <pm>] --channels plugin:ccdash@inline \
+  [--permission-mode <pm>] [--effort <level>] --channels plugin:ccdash@inline \
   --settings $XDG_STATE_HOME/ccdash/launch/<launch id>.json -- <prompt>
 ```
 
@@ -61,6 +64,32 @@ Any past session resumes on any connected machine that
 [syncs](state-sync.md): the collector fetches the transcript first. An
 ended session's page has **Resume…** at its foot (and in its Actions menu);
 every other one is found under **Sessions › Past**.
+
+Resumed as it was, a background session of the same machine goes on under
+its own id. Pick another model, effort or permission mode and Claude Code
+continues it as a copy under a new id, on those; the old one stays.
+
+A copy is the same conversation under another id, and the panel shows it
+as one. The copy takes the title over, and its chat starts with the
+earlier session's part: a line marks where it went on, with the model and
+effort on either side when they changed (`Opus 5.5 → Fable 5.2`) and a
+link to the earlier session. Its header and card say what it continues;
+the earlier session's say what it was continued as, and its page offers
+**Open the copy**. An ended session leaves the **Ended** list to its copy,
+and Past marks it **continued**. Cost, context, the process and Kill stay
+each session's own, and a session that was copied while it ran goes on by
+itself: the copy's chat shows it up to the moment of the copy.
+
+A running session takes no other model or effort from outside, only
+`/model` and `/effort` typed into it. For a background session the panel
+does the next best thing in one step: **Switch model & effort…** in its
+Actions menu asks for the two and the next prompt, says what it is about
+to do, and on **Stop and switch** the hub stops the session
+(`claude stop`) and continues its conversation as a copy on what you
+picked. A turn in progress is cut off. If the stop fails nothing changes;
+if the copy fails to start, the session stays stopped and the same sheet
+(or **Resume…** on its page) starts it. A session in a terminal is not
+offered this: change it there.
 
 ### Finding it: Sessions › Past
 

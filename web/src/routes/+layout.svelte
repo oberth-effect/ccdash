@@ -18,6 +18,7 @@
 	import { TooltipProvider } from '#lib/components/ui/tooltip/index.js';
 	import CommandPalette from '#lib/components/app/CommandPalette.svelte';
 	import ConnState from '#lib/components/app/ConnState.svelte';
+	import HelpDialog from '#lib/components/app/HelpDialog.svelte';
 	import LoginDialog from '#lib/components/app/LoginDialog.svelte';
 	import Nav from '#lib/components/app/Nav.svelte';
 	import NotePanel from '#lib/components/notes/NotePanel.svelte';
@@ -184,5 +185,6 @@
 
 <LoginDialog />
 <CommandPalette />
+<HelpDialog />
 <NotePanel />
 <StartSheet />

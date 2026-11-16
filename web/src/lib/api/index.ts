@@ -2,6 +2,7 @@
 
 import { api, del, deleteJson, getJson, patchJson, postJson, putJson, query } from './client';
 import type {
+	Attachment,
 	Analytics,
 	Answer,
 	Conversation,
@@ -249,8 +250,33 @@ export const fetchConflictBlob = async (id: number, side: Side) =>
 export const workspaceResync = (host: string, unit?: string) =>
 	postJson<{ ok: boolean }>(`workspace/${encodeURIComponent(host)}/resync`, { unit });
 
-export const fetchPrompts = (params: { session?: string; workspace?: string; limit?: number }) =>
-	getJson<{ prompts: Prompt[] }>(`prompts${query(params)}`);
+/** The attachments kept on the hub, the bytes they take and the hub's bounds. */
+export type AttachmentLimits = {
+	max_image_mb: number;
+	max_audio_mb: number;
+	max_video_mb: number;
+	max_file_mb: number;
+	quota_mb: number;
+	retention_days: number;
+};
+export type Attachments = {
+	attachments: Attachment[];
+	total_bytes: number;
+	limits: AttachmentLimits;
+};
+export const fetchAttachments = (session?: string) =>
+	getJson<Attachments>(`attachments${query({ session })}`);
+export const pinAttachment = (id: string, pinned: boolean) =>
+	patchJson<{ attachment: Attachment }>(`attachments/${id}`, { pinned });
+export const deleteAttachment = (id: string) => del<{ removed: string }>(`attachments/${id}`);
+
+export const fetchPrompts = (params: {
+	session?: string;
+	workspace?: string;
+	/** Words the prompts must all hold. */
+	q?: string;
+	limit?: number;
+}) => getJson<{ prompts: Prompt[] }>(`prompts${query(params)}`);
 
 /** The devices with a token; `bootstrap` when this one is on the configured token. */
 export type Devices = { tokens: Token[]; bootstrap: boolean };

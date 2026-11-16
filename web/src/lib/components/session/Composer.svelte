@@ -3,8 +3,8 @@
 	// a sleeping session with it; Next prompt leaves it as context for the
 	// next prompt (also for sessions without the channel); Stop interrupts a
 	// turn, so the correction typed next is what Claude reads. Quick replies
-	// send at once; the field (history, templates, note links, fence,
-	// preview, vim keys, its shortcuts) is `PromptField`. The draft lives on
+	// send at once; the field (its menu, the formatting bar, the history,
+	// vim keys, its shortcuts) is `PromptField`. The draft lives on
 	// the hub (`drafts.ts`): it survives reloads and follows the owner from
 	// the phone to the desk, and Edit in the editor opens it on a
 	// machine. `i` anywhere on the page goes back to the field, as Esc left it.
@@ -19,6 +19,7 @@
 		replyTo,
 		type Session
 	} from '#lib/api/index.js';
+	import { Tray } from '#lib/attachments.svelte.js';
 	import { Button } from '#lib/components/ui/button/index.js';
 	import {
 		clearDraft,
@@ -41,6 +42,13 @@
 	const key = $derived(sessionDraft(s.id));
 	// svelte-ignore state_referenced_locally
 	let text = $state(initialDraft(sessionDraft(s.id)));
+	// svelte-ignore state_referenced_locally
+	const tray = new Tray(s.id, sessionDraft(s.id));
+	/** The hub keeps attachments and the session's machine fetches them. */
+	const canAttach = $derived(
+		Boolean(live.hub?.features.attachments) && live.features(s.host).attachments
+	);
+	const empty = $derived(!text.trim() && !(canAttach && tray.ids.length));
 	let field = $state<PromptField | null>(null);
 	let busy = $state(false);
 	let error = $state('');
@@ -90,17 +98,22 @@
 		field?.focus();
 	}
 
-	async function prompts() {
-		const own = (await fetchPrompts({ session: s.id, limit: 50 })).prompts;
-		const ws = s.workspace
-			? (await fetchPrompts({ workspace: s.workspace, limit: 50 })).prompts
-			: [];
-		return [...own, ...ws];
+	/** The session's prompts, then the workspace's; with `q`, those that hold its words. */
+	async function prompts(q?: string) {
+		const limit = q ? 100 : 50;
+		const [own, ws] = await Promise.all([
+			fetchPrompts({ session: s.id, q, limit }),
+			s.workspace ? fetchPrompts({ workspace: s.workspace, q, limit }) : { prompts: [] }
+		]);
+		if (!q) return [...own.prompts, ...ws.prompts];
+		const mine: Record<string, true> = {};
+		for (const p of own.prompts) mine[p.text] = true;
+		return [...own.prompts, ...ws.prompts.filter((p) => !mine[p.text])].sort((a, b) => b.at - a.at);
 	}
 
 	async function submit(kind: 'reply' | 'message') {
-		const body = text.trim();
-		if (!body || busy || draft?.editing) return;
+		const body = canAttach ? tray.compose(text) : text.trim();
+		if (!body || busy || tray.busy || draft?.editing) return;
 		// NOTE: the field goes read-only while busy and loses focus; it gets it back
 		// where it had it (not on a phone that tapped the button)
 		const refocus = field?.hasFocus() ?? false;
@@ -110,6 +123,7 @@
 			if (kind === 'reply') live.put((await replyTo(s.id, body)).session);
 			else await messageTo(s.id, body);
 			text = '';
+			tray.clear();
 			clearDraft(key);
 			field?.remember(body);
 			onsent?.(kind);
@@ -180,6 +194,7 @@
 		label="Message to Claude"
 		disabled={busy}
 		editing={draft?.editing ?? null}
+		tray={canAttach ? tray : null}
 		{editHost}
 		notice={draft?.notice ?? null}
 		onsubmit={() => submit(canReply ? 'reply' : 'message')}
@@ -201,22 +216,23 @@
 					title={s.interrupting
 						? 'Asked already: Claude stops at its next step'
 						: 'Interrupt the turn: Claude stops at its next step, then reads what you send'}
-					onclick={stop}><OctagonXIcon /> Stop</Button
+					aria-label="Stop"
+					onclick={stop}><OctagonXIcon /> <span class="max-sm:hidden">Stop</span></Button
 				>
 			{/if}
 			{#if canReply}
 				<Button
 					type="submit"
 					size="sm"
-					disabled={busy || !text.trim() || Boolean(draft?.editing)}
-					title="Send (Ctrl Enter)">Send</Button
+					disabled={busy || tray.busy || empty || Boolean(draft?.editing)}
+					title={tray.busy ? 'Waiting for the upload' : 'Send (Ctrl Enter)'}>Send</Button
 				>
 			{/if}
 			<Button
 				type="button"
 				size="sm"
 				variant={canReply ? 'outline' : 'default'}
-				disabled={busy || !text.trim() || Boolean(draft?.editing)}
+				disabled={busy || tray.busy || empty || Boolean(draft?.editing)}
 				title="Hand the text to Claude as context with its next prompt, without starting a turn (Ctrl Shift Enter)"
 				onclick={() => submit('message')}>Next prompt</Button
 			>

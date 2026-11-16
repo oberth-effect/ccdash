@@ -40,7 +40,7 @@ use crate::{
     notify::{self, Category, Composer, Note},
     paths,
     protocol::{Call, Injection, Reply, TelemetryRecord, ToCollector, Who},
-    state::{AgentEntry, Effects, NiriEvent, PREVIEW_LEN, ProcPoll, State, StoreMsg},
+    state::{AgentEntry, Effects, NiriEvent, PREVIEW_LEN, ProcPoll, RanOn, State, StoreMsg},
     store::{self, Store},
     sync::{SyncHost, SyncStatus},
     util::{self, now_ms},
@@ -406,6 +406,19 @@ pub enum Cmd {
         id: String,
         error: Option<String>,
     },
+    /// Asks `host` for what is said in recording `attachment`.
+    Transcribe {
+        host: String,
+        attachment: String,
+        reply: oneshot::Sender<Result<String, String>>,
+    },
+    /// The words of transcription `id` from `host`, or why there are none.
+    Transcribed {
+        host: String,
+        id: String,
+        text: Option<String>,
+        error: Option<String>,
+    },
     /// Sends magic packets to `host`.
     Wake {
         host: String,
@@ -535,6 +548,7 @@ pub struct LaunchReq {
     pub prompt: String,
     pub model: Option<String>,
     pub permission_mode: Option<String>,
+    pub effort: Option<String>,
     pub resume: Option<String>,
     pub issue: Option<LaunchIssue>,
 }
@@ -602,6 +616,7 @@ impl Hub {
         tool_output_bytes: usize,
         repos: Option<Arc<Repos>>,
         wake_via: BTreeMap<String, String>,
+        attachments: bool,
     ) -> Self {
         let (tx, rx) = mpsc::channel(1024);
         let (updates, _) = broadcast::channel(256);
@@ -675,6 +690,7 @@ impl Hub {
                 machine: None,
                 features: HubFeatures {
                     workspace: workspace.is_some(),
+                    attachments,
                 },
             },
             host,
@@ -707,6 +723,8 @@ impl Hub {
             wake_via,
             power_waits: HashMap::new(),
             next_power: 0,
+            transcribe_waits: HashMap::new(),
+            next_transcribe: 0,
         };
         let names: Vec<String> = core.hosts.keys().cloned().collect();
         for name in names {
@@ -1051,6 +1069,9 @@ struct Core {
     /// The power action each host is carrying out, and who waits for it.
     power_waits: HashMap<String, PowerWait>,
     next_power: u64,
+    /// Transcriptions asked of a machine, by id: the machine, and who waits.
+    transcribe_waits: HashMap<String, (String, oneshot::Sender<Result<String, String>>)>,
+    next_transcribe: u64,
 }
 
 /// The session behind a knowledge call, placed in its workspace.
@@ -1348,6 +1369,29 @@ async fn run(mut core: Core, mut rx: mpsc::Receiver<Cmd>) {
                 }
             }
             Cmd::PowerDone { host, id, error } => core.power_done(&host, &id, error),
+            Cmd::Transcribe {
+                host,
+                attachment,
+                reply,
+            } => core.transcribe(&host, attachment, reply),
+            Cmd::Transcribed {
+                host,
+                id,
+                text,
+                error,
+            } => {
+                // NOTE: an answer from another machine than the one asked is not one
+                if let Some((asked, reply)) = core.transcribe_waits.remove(&id) {
+                    if asked == host {
+                        let _ = reply.send(match (text, error) {
+                            (Some(text), None) => Ok(text),
+                            (_, error) => Err(error.unwrap_or_else(|| "no words came back".into())),
+                        });
+                    } else {
+                        core.transcribe_waits.insert(id, (asked, reply));
+                    }
+                }
+            }
             Cmd::Wake { host, reply } => core.wake_machine(&host, reply),
             Cmd::WakeSent { host, reply } => {
                 info!("magic packets sent for {host}");
@@ -3001,6 +3045,7 @@ impl Core {
                 prompt: req.prompt,
                 model: req.model,
                 permission_mode: req.permission_mode,
+                effort: req.effort,
                 resume: req.resume,
             },
         );
@@ -3063,6 +3108,10 @@ impl Core {
         let woken = slot
             .and_then(|s| s.wakes.clone())
             .filter(|old| old != session);
+        // NOTE: Claude Code continues a session as a copy when options change or it still runs
+        let copied = slot
+            .and_then(|s| s.launch.resume.clone())
+            .filter(|old| old != session);
         let claim = slot.and_then(|s| s.issue.as_ref()).and_then(|issue| {
             let what = util::truncate(&issue.title, MAX_CLAIM_TITLE);
             claims::new(&what, &[], None, Some(&issue.slug), "", "", now_ms())
@@ -3082,12 +3131,71 @@ impl Core {
         });
         self.flush(host, fx);
         if known {
+            if let Some(old) = copied {
+                self.continued(host, session, &old);
+            }
             self.settle(
                 launch,
                 LaunchState::Started {
                     session: session.to_owned(),
                 },
             );
+        }
+    }
+
+    /// `session` on `host` is the copy a resume of `old` came back as:
+    /// links the two (the old one may be another host's, or only the
+    /// store's) and hands the copy the conversation's title, so the
+    /// panel shows one conversation that went on.
+    fn continued(&mut self, host: &str, session: &str, old: &str) {
+        let live = self.states.iter().find_map(|(h, st)| {
+            let s = st.session(old)?;
+            Some((
+                h.clone(),
+                RanOn::from(s),
+                s.title.clone().or(s.name.clone()),
+            ))
+        });
+        let (old_host, ran_on, title) = match live {
+            Some((h, ran_on, title)) => (Some(h), ran_on, title),
+            None => {
+                let stored = self.reader.as_ref().and_then(|conn| {
+                    store::brief(conn, old)
+                        .inspect_err(|e| warn!("reading what {old} ran on: {e:#}"))
+                        .ok()
+                        .flatten()
+                });
+                let (title, ran_on) = stored.unwrap_or_default();
+                (None, ran_on, title)
+            }
+        };
+        let mut fx = Effects::default();
+        let linked = self
+            .states
+            .get_mut(host)
+            .is_some_and(|st| st.continues(session, old, &ran_on, &mut fx));
+        self.flush(host, fx);
+        if !linked {
+            return;
+        }
+        info!("{session} on {host} continues {old} as a copy");
+        if let Some(old_host) = old_host {
+            let mut fx = Effects::default();
+            if let Some(st) = self.states.get_mut(&old_host) {
+                st.continued_as(old, session, &mut fx);
+            }
+            self.flush(&old_host, fx);
+        }
+        let own = self
+            .states
+            .get(host)
+            .and_then(|st| st.session(session))
+            .and_then(|s| s.title.clone());
+        let title = title.map(|t| util::truncate(&t, MAX_TITLE));
+        if let Some(title) = title.filter(|t| own.as_ref() != Some(t))
+            && let Err(e) = self.rename(session, &title)
+        {
+            warn!("{session} keeps its own title: {e}");
         }
     }
 
@@ -3168,6 +3276,7 @@ impl Core {
             prompt: text.to_owned(),
             model: None,
             permission_mode: None,
+            effort: None,
             resume: Some(id.clone()),
             issue: None,
         })?;
@@ -3355,6 +3464,17 @@ impl Core {
             .collect();
         for id in waiting {
             for reply in self.stops.remove(&id).unwrap_or_default() {
+                let _ = reply.send(Err(format!("{host} disconnected")));
+            }
+        }
+        let lost: Vec<String> = self
+            .transcribe_waits
+            .iter()
+            .filter(|(_, (asked, _))| asked == host)
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in lost {
+            if let Some((_, reply)) = self.transcribe_waits.remove(&id) {
                 let _ = reply.send(Err(format!("{host} disconnected")));
             }
         }
@@ -3709,6 +3829,36 @@ impl Core {
         );
         self.tell(host, ToCollector::Power { id, action });
         Ok(())
+    }
+
+    /// Asks `host` to put recording `attachment` into words; refused for
+    /// a machine that is offline or has no command for it.
+    fn transcribe(
+        &mut self,
+        host: &str,
+        attachment: String,
+        reply: oneshot::Sender<Result<String, String>>,
+    ) {
+        let refusal = match self.hosts.get(host) {
+            None => Some(format!("no machine called {host}")),
+            Some(s) if !s.connected || !self.links.contains_key(host) => {
+                Some(format!("{host} is not connected"))
+            }
+            Some(s) if !s.features.transcribe => Some(format!(
+                "{host} puts no recordings into words: set `[transcribe] command` in its collector's settings"
+            )),
+            Some(_) => None,
+        };
+        if let Some(why) = refusal {
+            let _ = reply.send(Err(why));
+            return;
+        }
+        self.next_transcribe += 1;
+        let id = format!("transcribe-{}", self.next_transcribe);
+        info!("{id}: {attachment} on {host}, for the panel");
+        self.transcribe_waits
+            .insert(id.clone(), (host.to_owned(), reply));
+        self.tell(host, ToCollector::Transcribe { id, attachment });
     }
 
     fn power_refusal(&self, host: &str, action: PowerAction, force: bool) -> Option<String> {
@@ -4499,6 +4649,7 @@ mod tests {
             0,
             None,
             BTreeMap::new(),
+            false,
         );
         let mut rxs = HashMap::new();
         for (conn, host) in ["navi", "flat"].into_iter().enumerate() {
@@ -4616,6 +4767,7 @@ mod tests {
             0,
             None,
             BTreeMap::new(),
+            false,
         );
         let (tx, rx) = mpsc::channel(64);
         hub.send(Cmd::CollectorOpen {
@@ -4648,6 +4800,7 @@ mod tests {
                     id: Some("dddd0000".into()),
                     cwd: Some("/w".into()),
                     kind: Some("background".into()),
+                    name: Some("fix the parser".into()),
                     state: Some(state.into()),
                     pid,
                     ..AgentEntry::default()
@@ -4687,13 +4840,18 @@ mod tests {
             prompt,
             model,
             permission_mode,
+            effort,
             resume,
         } = sent
         else {
             unreachable!()
         };
         assert_eq!((cwd.as_str(), prompt.as_str()), ("/w", "carry on"));
-        assert_eq!((model, permission_mode), (None, None), "its saved options");
+        assert_eq!(
+            (model, permission_mode, effort),
+            (None, None, None),
+            "its saved options"
+        );
         assert_eq!(resume.as_deref(), Some(id));
 
         // one wake at a time
@@ -4758,7 +4916,26 @@ mod tests {
             Activity::Gone,
             "the copy goes on, the old row does not hang as working"
         );
-        assert!(hub.resolve("abcd0000").await.unwrap().unwrap().launched);
+        let copy = hub.resolve("abcd0000").await.unwrap().unwrap();
+        assert!(copy.launched);
+        assert_eq!(
+            copy.continues.as_deref(),
+            Some(id),
+            "linked to the session it continues"
+        );
+        assert_eq!(
+            (copy.title.as_deref(), copy.renaming),
+            (Some("fix the parser"), true),
+            "it takes the conversation's title over"
+        );
+        assert!(matches!(
+            next(&mut rx, |m| matches!(m, ToCollector::Title { .. })).await,
+            ToCollector::Title { ref session, ref title } if session == &copy.id && title == "fix the parser"
+        ));
+        assert_eq!(
+            hub.resolve(id).await.unwrap().unwrap().continued_as,
+            Some(copy.id)
+        );
 
         // with no link there is nobody to wake it
         let (tx, mut rx) = mpsc::channel(64);
@@ -4891,6 +5068,7 @@ mod tests {
             0,
             None,
             BTreeMap::new(),
+            false,
         );
         let (tx, _rx) = mpsc::channel(64);
         hub.send(Cmd::CollectorOpen {
@@ -4912,6 +5090,7 @@ mod tests {
                 prompt: "go".into(),
                 model: None,
                 permission_mode: None,
+                effort: None,
                 resume: None,
                 issue: Some(LaunchIssue {
                     slug: "w--fix-it".into(),
@@ -4942,6 +5121,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("ccdash-launch-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let store = Store::open(&dir.join("t.db"), 30).unwrap();
+        let saved = store.clone();
         let hub = Hub::spawn(
             "hub".into(),
             "http://hub".into(),
@@ -4952,6 +5132,7 @@ mod tests {
             0,
             None,
             BTreeMap::new(),
+            false,
         );
         let req = |resume: Option<&str>| LaunchReq {
             host: "navi".into(),
@@ -4961,6 +5142,7 @@ mod tests {
             prompt: "go".into(),
             model: None,
             permission_mode: Some("plan".into()),
+            effort: None,
             resume: resume.map(str::to_owned),
             issue: None,
         };
@@ -5104,6 +5286,15 @@ mod tests {
         );
 
         // continued as a copy under a new id: the printed id names it
+        let prompt = envelope(
+            Source::Hook,
+            None,
+            json!({"session_id": sid, "cwd": "/w", "hook_event_name": "UserPromptSubmit", "prompt": "go"}),
+        );
+        hub.send(Cmd::Input("navi".into(), Input::Envelope(prompt)))
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(5)).await;
         let copy = hub.launch(req(Some(sid))).await.unwrap().unwrap();
         hub.send(Cmd::Launched {
             host: "navi".into(),
@@ -5130,6 +5321,32 @@ mod tests {
             hub.launch_of(&copy.id).await.unwrap().unwrap().state,
             LaunchState::Started { ref session } if session.starts_with("cccc0000")
         ));
+        // the copy is linked to the session it continues, and its chat starts with that one's
+        let continued = hub.resolve("cccc0000").await.unwrap().unwrap();
+        assert_eq!(continued.continues.as_deref(), Some(sid));
+        assert_eq!(
+            hub.resolve(sid).await.unwrap().unwrap().continued_as,
+            Some(continued.id.clone())
+        );
+        saved.exec(|_| ()).await.unwrap();
+        let chat =
+            crate::conversation::conversation(&saved.reader().unwrap(), &continued.id, None, 10)
+                .unwrap();
+        assert_eq!(
+            chat.exchanges
+                .iter()
+                .map(|e| (e.session.as_deref(), e.prompt.as_deref()))
+                .collect::<Vec<_>>(),
+            [(Some(sid), None), (Some(sid), Some("go")), (None, None)]
+        );
+        assert!(matches!(
+            chat.exchanges[2].items[..],
+            [crate::conversation::Item::Continued { ref session, known: true, .. }] if session == sid
+        ));
+        assert_eq!(
+            store::continued_as(&saved.reader().unwrap(), sid).unwrap(),
+            Some(continued.id.clone())
+        );
 
         // stop: the host is asked, the request answers with its report
         let waiting = {
@@ -5208,6 +5425,7 @@ mod tests {
             0,
             None,
             BTreeMap::new(),
+            false,
         );
         // as after a hub restart: in the table, not yet in the live state
         let now = now_ms();
@@ -5294,6 +5512,7 @@ mod tests {
             0,
             None,
             BTreeMap::new(),
+            false,
         );
         let (tx, mut rx) = mpsc::channel(64);
         hub.send(Cmd::CollectorOpen {
@@ -5456,6 +5675,7 @@ mod tests {
                 0,
                 None,
                 via.clone(),
+                false,
             )
         };
         let hub = spawn(store.clone());

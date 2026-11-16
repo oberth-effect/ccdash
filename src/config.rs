@@ -26,6 +26,7 @@ pub struct HubConfig {
     pub sync: HubSync,
     pub workspace: HubWorkspace,
     pub reports: HubReports,
+    pub attachments: HubAttachments,
     pub wake: HubWake,
 }
 
@@ -41,6 +42,9 @@ pub struct CollectorConfig {
     pub niri: Niri,
     pub procs: Procs,
     pub attach: Attach,
+    pub attachments: CollectorAttachments,
+    pub transcribe: Transcribe,
+    pub video: Video,
     pub edit: Edit,
     pub launch: Launch,
     pub telemetry: Telemetry,
@@ -114,6 +118,57 @@ impl Default for HubReports {
             dir: None,
             max_mb: 32,
         }
+    }
+}
+
+/// The files attached to prompts in the panel (photos, recordings,
+/// documents), kept as plain files outside the database until a session's
+/// machine fetches them.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct HubAttachments {
+    /// Off: the panel offers no attaching and the routes answer 404.
+    pub enable: bool,
+    /// Defaults to `attachments/` next to the database. `$VAR` expands.
+    pub dir: Option<PathBuf>,
+    /// The largest image taken, in MiB.
+    pub max_image_mb: u32,
+    /// The largest sound recording taken, in MiB.
+    pub max_audio_mb: u32,
+    /// The largest video taken, in MiB.
+    pub max_video_mb: u32,
+    /// The largest file of any other kind taken, in MiB.
+    pub max_file_mb: u32,
+    /// All attachments together, in MiB: over it the oldest unpinned ones
+    /// go first. 0 sets no quota.
+    pub quota_mb: u64,
+    /// Unpinned attachments older than this many days are dropped. 0
+    /// keeps them until the quota or the owner removes them.
+    pub retention_days: u32,
+}
+
+impl Default for HubAttachments {
+    fn default() -> Self {
+        Self {
+            enable: true,
+            dir: None,
+            max_image_mb: 25,
+            max_audio_mb: 50,
+            max_video_mb: 300,
+            max_file_mb: 50,
+            quota_mb: 5120,
+            retention_days: 30,
+        }
+    }
+}
+
+impl HubAttachments {
+    /// The largest upload of any kind, in MiB.
+    pub fn max_mb(&self) -> u32 {
+        self.max_image_mb
+            .max(self.max_audio_mb)
+            .max(self.max_video_mb)
+            .max(self.max_file_mb)
     }
 }
 
@@ -350,6 +405,89 @@ pub struct Attach {
     /// short id (`["ghostty", "-e", "claude", "attach", "{id}"]`). Empty (the
     /// default) turns the panel's Open off on this machine.
     pub command: Vec<String>,
+}
+
+/// The files attached to prompts in the panel, fetched from the hub for
+/// the sessions of this machine.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct CollectorAttachments {
+    /// Off: a prompt's attachments do not reach this machine's sessions
+    /// (the prompt says so in their place) and the panel offers no
+    /// attaching for them.
+    pub enable: bool,
+    /// Where fetched files are kept. Defaults to `attachments/` in
+    /// ccdash's state directory. `$VAR` expands. Sessions need to read
+    /// here: see `claudeCode.attachments` in the Home Manager module.
+    pub dir: Option<PathBuf>,
+    /// A fetched file nobody used for this many days is dropped here (the
+    /// hub keeps its own copy by its own rules). 0 keeps them.
+    pub keep_days: u32,
+}
+
+impl Default for CollectorAttachments {
+    fn default() -> Self {
+        Self {
+            enable: true,
+            dir: None,
+            keep_days: 7,
+        }
+    }
+}
+
+/// Recordings put into words on this machine: the panel's dictation, and
+/// what is said in a recording or a video attached to a prompt.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Transcribe {
+    /// Prints what is said in a recording; `{file}` is replaced with its
+    /// path (`["whisper-cli", "-m", "/models/ggml-small.bin", "-l",
+    /// "auto", "-nt", "-np", "-f", "{file}"]`). Its standard output is
+    /// the text. Empty (the default) turns dictation off on this machine.
+    pub command: Vec<String>,
+    /// The command is stopped after this many seconds.
+    pub timeout_secs: u64,
+    /// Recordings and videos attached to a prompt get their words in a
+    /// file beside them, named in the prompt. Off, only dictation uses
+    /// the command.
+    pub attachments: bool,
+}
+
+impl Default for Transcribe {
+    fn default() -> Self {
+        Self {
+            command: Vec::new(),
+            timeout_secs: 300,
+            attachments: true,
+        }
+    }
+}
+
+/// Videos attached to a prompt: Claude cannot watch one, so still frames
+/// are cut from it for the prompt to name.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Video {
+    /// The `ffmpeg` to cut frames with; `ffprobe` is taken from beside
+    /// it. Empty (the default) turns the frames off on this machine.
+    pub ffmpeg: String,
+    /// How many frames, spread evenly over the video.
+    pub frames: u32,
+    /// The frames' longest side, in pixels.
+    pub edge: u32,
+    /// Cutting is stopped after this many seconds.
+    pub timeout_secs: u64,
+}
+
+impl Default for Video {
+    fn default() -> Self {
+        Self {
+            ffmpeg: String::new(),
+            frames: 12,
+            edge: 1568,
+            timeout_secs: 300,
+        }
+    }
 }
 
 /// The panel's drafts opened in an editor on this machine (the panel's
@@ -687,6 +825,19 @@ impl HubConfig {
         let db = self.store_path();
         db.parent()
             .map_or_else(|| PathBuf::from("reports"), |dir| dir.join("reports"))
+    }
+
+    /// Where attached files are kept: `attachments.dir`, else
+    /// `attachments/` next to the database.
+    pub fn attachments_dir(&self) -> PathBuf {
+        if let Some(dir) = &self.attachments.dir {
+            return PathBuf::from(crate::util::expand_env(&dir.to_string_lossy()));
+        }
+        let db = self.store_path();
+        db.parent().map_or_else(
+            || PathBuf::from("attachments"),
+            |dir| dir.join("attachments"),
+        )
     }
 
     pub fn push_key_file(&self) -> PathBuf {
