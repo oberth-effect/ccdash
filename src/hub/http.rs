@@ -656,11 +656,20 @@ async fn launch(
     {
         return Err(refuse(format!("effort {e:?} is not offered")));
     }
+    if !app.workspaces.names().contains(&body.workspace) {
+        return Err(refuse(format!("unknown workspace {:?}", body.workspace)));
+    }
+    // NOTE: the machine's own directory of the workspace; its collector looks again
     let ws_dir = app
         .workspaces
-        .dir(&body.workspace)
-        .ok_or_else(|| refuse(format!("unknown workspace {:?}", body.workspace)))?
-        .to_owned();
+        .dir_on(&body.host, &body.workspace)
+        .or_else(|| app.workspaces.dir(&body.workspace))
+        .ok_or_else(|| {
+            refuse(format!(
+                "{} has no directory of the workspace {:?}",
+                body.host, body.workspace
+            ))
+        })?;
     // The running session to stop before it is continued.
     let mut restart = None;
     let (cwd, resume) = match &body.resume {
@@ -723,7 +732,9 @@ async fn launch(
             if (s.workspace.as_ref(), &s.project) != (Some(&body.workspace), &body.project) {
                 return Err(refuse("the session ran in another project".into()));
             }
-            (s.cwd, Some(s.id))
+            // NOTE: where the session ran, as the machine it continues on has it
+            let cwd = app.workspaces.on(&body.host, &s.cwd).unwrap_or(s.cwd);
+            (cwd, Some(s.id))
         }
         None => {
             let targets = targets_of(&app).await?;
@@ -1076,7 +1087,7 @@ async fn targets_of(app: &App) -> Result<Vec<LaunchTarget>, ApiError> {
     })
     .await
     .map_err(anyhow::Error::from)??;
-    Ok(launch_targets_from(hosts, &projects))
+    Ok(launch_targets_from(hosts, &projects, &app.workspaces))
 }
 
 /// Each host's workspaces (in the configured order) with the projects
@@ -1084,11 +1095,11 @@ async fn targets_of(app: &App) -> Result<Vec<LaunchTarget>, ApiError> {
 fn launch_targets_from(
     hosts: Vec<(String, Dirs)>,
     projects: &[(String, Vec<String>)],
+    workspaces: &Workspaces,
 ) -> Vec<LaunchTarget> {
     hosts
         .into_iter()
         .map(|(host, dirs)| LaunchTarget {
-            host,
             workspaces: projects
                 .iter()
                 .filter_map(|(ws, names)| {
@@ -1096,9 +1107,11 @@ fn launch_targets_from(
                     Some(TargetWorkspace {
                         name: ws.clone(),
                         projects: names.iter().filter(|p| here.contains(p)).cloned().collect(),
+                        dir: workspaces.known_dir(&host, ws),
                     })
                 })
                 .collect(),
+            host,
         })
         .collect()
 }
@@ -2694,7 +2707,15 @@ mod tests {
             ),
             ("PesekMudra".to_owned(), vec!["site".to_owned()]),
         ];
-        let targets = launch_targets_from(hosts, &projects);
+        let workspaces = Workspaces::configured(&["meteopress".into(), "/pb/tsandrini".into()]);
+        workspaces.place(
+            "navi",
+            crate::workspace::Place {
+                home: None,
+                root: Some("/home/n/PB".into()),
+            },
+        );
+        let targets = launch_targets_from(hosts, &projects, &workspaces);
         assert_eq!(
             targets[0],
             LaunchTarget {
@@ -2702,11 +2723,13 @@ mod tests {
                 workspaces: vec![
                     TargetWorkspace {
                         name: "meteopress".into(),
-                        projects: Vec::new()
+                        projects: Vec::new(),
+                        dir: Some("/home/n/PB/meteopress".into()),
                     },
                     TargetWorkspace {
                         name: "tsandrini".into(),
-                        projects: vec!["ccdash".into()]
+                        projects: vec!["ccdash".into()],
+                        dir: Some("/pb/tsandrini".into()),
                     },
                 ],
             }

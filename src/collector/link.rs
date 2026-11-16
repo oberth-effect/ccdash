@@ -22,6 +22,7 @@ use crate::{
     model::HostFeatures,
     protocol::{ToCollector, ToHub, VERSION},
     util::expand_env,
+    workspace::Place,
 };
 
 use super::queue::Queue;
@@ -41,6 +42,8 @@ pub struct Link {
     pub terminals: Vec<String>,
     /// What this collector does besides reporting.
     pub features: HostFeatures,
+    /// Where this machine keeps its workspaces.
+    pub place: Place,
     pub queue: Queue,
     /// Fires when the machine woke from a long sleep: the socket is most
     /// likely dead, so the link starts over at once.
@@ -142,6 +145,7 @@ async fn session(
         host: link.host.clone(),
         terminals: link.terminals.clone(),
         features: link.features,
+        place: link.place.clone(),
     };
     ws.send(Message::Text(serde_json::to_string(&hello)?.into()))
         .await?;

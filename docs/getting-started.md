@@ -24,10 +24,20 @@ sees them; `ccdash url` prints the panel's address.
 
 ## 2. Workspaces and projects
 
-A **workspace** is a directory you listed in the hub's `workspaces`, such as
-`/home/me/code`; it is named by its last component (`code`). A **project**
-is a directory directly under it, a repository clone as a rule:
-`/home/me/code/shop` is the project `shop` of the workspace `code`.
+A **workspace** is a directory you listed in the hub's `workspaces`; it is
+named by its last component. A **project** is a directory directly under
+it, a repository clone as a rule. An entry is written one of three ways:
+
+| Entry                  | The directory on a machine                                                     |
+| ---------------------- | ------------------------------------------------------------------------------ |
+| `~/code`               | under its user's home: `/home/me/code`, `C:\Users\me\code`                     |
+| `work`, `clients/acme` | under its workspace root: `services.ccdash.workspace.root`, `[workspace] root` |
+| `/srv/code`, `C:\code` | that path, on every machine that has it                                        |
+
+So `~/code` is the workspace `code` on every machine, whatever its user is
+called, and `/home/me/code/shop` is its project `shop` there. A machine
+with no root has no directory of a relative entry, and no home is needed
+for a path of its own.
 
 - Memories, issues, progress, documents and reports belong to a workspace,
   and to a project of it or to the whole workspace. Every session of the
@@ -39,7 +49,11 @@ is a directory directly under it, a repository clone as a rule:
 - A session outside every workspace still shows in the panel, but the
   knowledge tools refuse it, and the Now page warns while the hub has no
   workspace at all.
-- Keep the paths the same on every machine: the workspace is found by path.
+- The machines' paths may differ: each tells the hub where its home and
+  its root are, and a session's workspace is found in its own machine's
+  directory. Started or resumed from the panel on another machine, a
+  session runs in that machine's directory of the same workspace
+  ([sessions](sessions.md#2-resume)).
 
 ## 3. The knowledge tools and skills
 

@@ -714,7 +714,12 @@ wake: Wake | null,
 /**
  * What its collector does besides reporting; kept while it is offline.
  */
-features: HostFeatures, };
+features: HostFeatures, 
+/**
+ * Where it keeps its workspaces; kept while it is offline, so its
+ * directories stay known.
+ */
+place: Place, };
 
 export type HostTotals = { host: string, sessions: number, working_ms: number, permission_ms: number, 
 /**
@@ -1361,6 +1366,13 @@ blocked: Array<[string, number]>,
 rules: Array<RuleStat>, };
 
 /**
+ * Where a machine keeps its workspaces, as its collector says: its
+ * user's home, for the `~/…` entries, and its workspace root (`[workspace]
+ * root`), for the relative ones.
+ */
+export type Place = { home?: string, root?: string, };
+
+/**
  * Asleep or waking, as far as the hub knows.
  */
 export type Power = { "state": "asleep", since: number, } | { "state": "waking", since: number, };
@@ -1928,7 +1940,12 @@ export type SyncView = { hosts: Array<SyncHost>,
  */
 files: number, bytes: number, conflicts: Array<SyncConflict>, };
 
-export type TargetWorkspace = { name: string, projects: Array<string>, };
+export type TargetWorkspace = { name: string, projects: Array<string>, 
+/**
+ * The host's directory of the workspace, where a session starts; none
+ * when the hub cannot tell which of several it is.
+ */
+dir: string | null, };
 
 /**
  * An entry of Claude's task list (TaskCreate/TaskUpdate or TodoWrite).

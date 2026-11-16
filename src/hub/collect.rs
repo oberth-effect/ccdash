@@ -103,12 +103,13 @@ async fn link(
         .await
         .context("no hello")?
         .context("closed before hello")??;
-    let (terminals, features) = match parse(&hello)? {
+    let (terminals, features, place) = match parse(&hello)? {
         Some(ToHub::Hello {
             v,
             host: claimed,
             terminals,
             features,
+            place,
         }) => {
             let refused = if v != VERSION {
                 Some(format!("the hub speaks protocol {VERSION}, not {v}"))
@@ -125,7 +126,7 @@ async fn link(
                 let _ = sink.send(Message::Text(reason.clone().into())).await;
                 bail!("{reason}");
             }
-            (terminals, features)
+            (terminals, features, place)
         }
         _ => bail!("first message was not a hello"),
     };
@@ -135,6 +136,7 @@ async fn link(
         conn,
         terminals,
         features,
+        place,
         addr,
         tx,
     })

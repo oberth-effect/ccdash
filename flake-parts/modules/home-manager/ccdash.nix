@@ -376,7 +376,12 @@ in
         type = types.nullOr types.str;
         default = null;
         example = "~/code";
-        description = "The workspace root, needed with {option}`enable`. `~/` and `$VAR` expand.";
+        description = ''
+          The workspace root; `~/` and `$VAR` expand. The hub's relative
+          workspaces (`work`, `clients/acme` in its `workspaces`) are
+          directories under it on this machine, with the sync or without;
+          {option}`enable` needs it.
+        '';
       };
 
       depth = mkOption {

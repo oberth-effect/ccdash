@@ -52,7 +52,8 @@ in
         enable = true;
         user = "alice";
       };
-      workspaces = [ "/home/alice/code" ];
+      # NOTE: under the home alice's collector reports, not a path of the hub's
+      workspaces = [ "~/code" ];
     };
 
     home-manager = {

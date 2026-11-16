@@ -16,7 +16,12 @@ mod watch;
 #[cfg(windows)]
 mod watch_windows;
 
-use std::{borrow::Cow, collections::BTreeMap, path::Path};
+use std::{
+    borrow::Cow,
+    collections::BTreeMap,
+    path::Path,
+    sync::{Arc, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard},
+};
 
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -93,140 +98,183 @@ pub fn after_key(path: &str, key_len: usize) -> Option<&str> {
     (len == key_len).then_some("")
 }
 
-/// Configured workspace directories, named by their last path component.
+/// The workspaces: the entries the hub is configured with (`[workspaces]
+/// dirs`) and every directory they stand for. An entry is a path of its
+/// own (`/srv/work`, `C:\work`), a path under each machine's home
+/// (`~/code/work`), or a path under each machine's workspace root (`work`,
+/// `clients/acme`). A workspace is named by its entry's last component,
+/// and a machine that says where its home and its root are ([`Place`]) has
+/// its own directory of it. Clones share one table: the hub's holders all
+/// see a machine arrive.
 #[derive(Debug, Clone, Default)]
 pub struct Workspaces {
+    table: Arc<RwLock<Table>>,
+}
+
+#[derive(Debug, Default)]
+struct Table {
+    /// As configured, in their order.
+    entries: Vec<Entry>,
+    /// Where each machine keeps what is not a path of its own.
+    places: BTreeMap<String, Place>,
+    /// Every directory, in the entries' order.
     dirs: Vec<Dir>,
 }
 
-/// One configured directory, with its [`path_key`] worked out once.
+/// One entry of `[workspaces] dirs`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Entry {
+    /// A path of its own, for every machine that has it.
+    Path(String),
+    /// What follows `~/`: under each machine's home.
+    Home(String),
+    /// A relative path: under each machine's workspace root.
+    Root(String),
+}
+
+impl Entry {
+    /// An entry as configured, or why it names no workspace.
+    fn parse(text: &str) -> Result<Self, String> {
+        let text = text.trim();
+        if let Some(rest) = text.strip_prefix("~/") {
+            return below(rest).map(Self::Home);
+        }
+        // NOTE: a share is written as Windows writes it (`\\nas\x`): a POSIX `//x` is `/x`
+        if text.starts_with("//") {
+            let path = format!("/{}", text.trim_start_matches('/'));
+            return Ok(Self::Path(trimmed(&path).to_owned()));
+        }
+        if text.starts_with('/') || windows_path(text) {
+            return Ok(Self::Path(trimmed(&slashed(text)).to_owned()));
+        }
+        below(text).map(Self::Root)
+    }
+
+    /// The workspace's name: the last component.
+    fn name(&self) -> String {
+        let (Self::Path(path) | Self::Home(path) | Self::Root(path)) = self;
+        Path::new(path)
+            .file_name()
+            .map_or_else(|| path.clone(), |n| n.to_string_lossy().into_owned())
+    }
+}
+
+/// A path below a home or a root, with `/` separators; refused when it is
+/// empty or leaves the directory it is under.
+fn below(text: &str) -> Result<String, String> {
+    let parts: Vec<&str> = text
+        .split(['/', '\\'])
+        .filter(|part| !part.is_empty() && *part != ".")
+        .collect();
+    if parts.is_empty() {
+        return Err(format!("{text:?} names no directory"));
+    }
+    if parts.contains(&"..") || text.starts_with('~') {
+        return Err(format!(
+            "{text:?} is neither a path, a path under `~/`, nor one below a machine's root"
+        ));
+    }
+    Ok(parts.join("/"))
+}
+
+/// Where a machine keeps its workspaces, as its collector says: its
+/// user's home, for the `~/…` entries, and its workspace root (`[workspace]
+/// root`), for the relative ones.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export_to = "types.ts")]
+#[serde(default)]
+pub struct Place {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub home: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub root: Option<String>,
+}
+
+impl Place {
+    /// `text` as a directory entries resolve under: an absolute path with
+    /// `/` separators; none otherwise.
+    fn base(text: Option<&str>) -> Option<String> {
+        let text = text?.trim();
+        (text.starts_with('/') || windows_path(text)).then(|| trimmed(&slashed(text)).to_owned())
+    }
+}
+
+/// One directory, with its [`path_key`] worked out once.
 #[derive(Debug, Clone)]
 struct Dir {
     name: String,
     dir: String,
     key: String,
+    /// The machines whose directory it is; none for a path of its own.
+    hosts: Vec<String>,
 }
 
 impl Dir {
     fn new(name: String, dir: String) -> Self {
         let key = path_key(&dir).into_owned();
-        Self { name, dir, key }
+        Self {
+            name,
+            dir,
+            key,
+            hosts: Vec::new(),
+        }
+    }
+
+    /// Whether `host` may look for it: its own, or a path of its own.
+    fn serves(&self, host: &str) -> bool {
+        self.hosts.is_empty() || self.hosts.iter().any(|h| h == host)
     }
 }
 
-impl Workspaces {
-    /// `~/` expands to `home`; trailing slashes are dropped (a root keeps
-    /// its own); Windows paths take `/` separators. A share is written as
-    /// Windows writes it (`\\nas\x`): a POSIX `//x` is `/x`.
-    pub fn new(dirs: &[String], home: &str) -> Self {
-        let dirs = dirs
-            .iter()
-            .map(|dir| {
-                let dir = match dir.strip_prefix("~/") {
-                    Some(rest) => format!("{}/{rest}", home.trim_end_matches('/')),
-                    None if dir.starts_with("//") => format!("/{}", dir.trim_start_matches('/')),
-                    None => dir.clone(),
-                };
-                let dir = trimmed(&slashed(&dir)).to_owned();
-                let name = Path::new(&dir)
-                    .file_name()
-                    .map_or_else(|| dir.clone(), |n| n.to_string_lossy().into_owned());
-                Dir::new(name, dir)
-            })
-            .collect();
-        Self { dirs }
-    }
-
-    /// Why `path` belongs to no workspace, for an error: with none
-    /// configured, also how to set one.
-    pub fn outside(&self, path: &str) -> String {
-        if self.dirs.is_empty() {
-            format!(
-                "{path} is outside every ccdash workspace: the hub has none yet \
-                (`[workspaces] dirs`; NixOS: `services.ccdash-hub.workspaces`)"
-            )
-        } else {
-            format!("{path} is outside every ccdash workspace")
-        }
-    }
-
-    /// Each name once: machines may list the same workspace under paths of
-    /// their own (`/home/me/w`, `C:\Users\me\w`).
-    pub fn names(&self) -> Vec<String> {
-        let mut names: Vec<String> = Vec::new();
-        for d in &self.dirs {
-            if !names.contains(&d.name) {
-                names.push(d.name.clone());
+impl Table {
+    /// Works out every directory again from the entries and the places.
+    fn resolve(&mut self) {
+        let mut dirs: Vec<Dir> = Vec::new();
+        let mut add = |name: String, dir: String, host: Option<&str>| {
+            let new = Dir::new(name, dir);
+            let at = dirs
+                .iter()
+                .position(|d| d.name == new.name && d.key == new.key)
+                .unwrap_or_else(|| {
+                    dirs.push(new);
+                    dirs.len() - 1
+                });
+            match host {
+                Some(host) if !dirs[at].hosts.iter().any(|h| h == host) => {
+                    dirs[at].hosts.push(host.to_owned());
+                }
+                _ => {}
+            }
+        };
+        for entry in &self.entries {
+            match entry {
+                Entry::Path(path) => add(entry.name(), path.clone(), None),
+                Entry::Home(rest) | Entry::Root(rest) => {
+                    for (host, place) in &self.places {
+                        let base = match entry {
+                            Entry::Home(_) => place.home.as_deref(),
+                            _ => place.root.as_deref(),
+                        };
+                        if let Some(base) = Place::base(base) {
+                            add(entry.name(), join(&base, rest), Some(host));
+                        }
+                    }
+                }
             }
         }
-        names
-    }
-
-    /// Name and directory of every workspace, for collectors.
-    pub fn entries(&self) -> Vec<crate::protocol::WorkspaceDir> {
-        self.dirs
-            .iter()
-            .map(|d| crate::protocol::WorkspaceDir {
-                name: d.name.clone(),
-                dir: d.dir.clone(),
-            })
-            .collect()
-    }
-
-    /// Rebuilt from what a hub sent.
-    pub fn from_entries(entries: &[crate::protocol::WorkspaceDir]) -> Self {
-        Self {
-            dirs: entries
+        // NOTE: a path of its own serves every machine, named or not
+        for dir in &mut dirs {
+            if self
+                .entries
                 .iter()
-                .map(|e| Dir::new(e.name.clone(), e.dir.clone()))
-                .collect(),
+                .any(|e| matches!(e, Entry::Path(path) if path_key(path) == dir.key))
+            {
+                dir.hosts.clear();
+            }
         }
-    }
-
-    /// The first directory of `name`.
-    pub fn dir(&self, name: &str) -> Option<&str> {
-        self.dirs
-            .iter()
-            .find(|d| d.name == name)
-            .map(|d| d.dir.as_str())
-    }
-
-    /// Every directory of `name`.
-    pub fn dirs(&self, name: &str) -> Vec<String> {
-        self.dirs
-            .iter()
-            .filter(|d| d.name == name)
-            .map(|d| d.dir.clone())
-            .collect()
-    }
-
-    /// The workspace holding `cwd` (the longest matching directory).
-    pub fn of(&self, cwd: &str) -> Option<String> {
-        self.locate(cwd).map(|(name, _)| name)
-    }
-
-    /// `cwd` moved to each other directory of its workspace (a machine
-    /// lists its own): the same place below it.
-    pub fn elsewhere(&self, cwd: &str) -> Vec<String> {
-        let Some(found) = self.matching(cwd) else {
-            return Vec::new();
-        };
-        let cwd = slashed(cwd);
-        let rest = after_key(trimmed(&cwd), found.key.len()).unwrap_or("");
-        let rest = rest.trim_start_matches('/');
-        self.dirs
-            .iter()
-            .filter(|d| d.name == found.name && d.dir != found.dir)
-            .map(|d| match rest {
-                "" => d.dir.clone(),
-                rest => join(&d.dir, rest),
-            })
-            .collect()
-    }
-
-    /// The directory holding `cwd`, of all the workspaces'.
-    pub fn dir_of(&self, cwd: &str) -> Option<&str> {
-        self.matching(cwd).map(|d| d.dir.as_str())
+        self.dirs = dirs;
     }
 
     fn matching(&self, cwd: &str) -> Option<&Dir> {
@@ -237,20 +285,279 @@ impl Workspaces {
             .max_by_key(|d| d.dir.len())
     }
 
+    /// `host`'s directory of the workspace `name`: its own before a path
+    /// of its own.
+    fn dir_on(&self, host: &str, name: &str) -> Option<&Dir> {
+        let named = || self.dirs.iter().filter(|d| d.name == name);
+        named()
+            .find(|d| d.hosts.iter().any(|h| h == host))
+            .or_else(|| named().find(|d| d.hosts.is_empty()))
+    }
+}
+
+/// What follows the directory `found` in `cwd`, without its leading slash.
+fn rest_below<'a>(cwd: &'a str, found: &Dir) -> &'a str {
+    after_key(trimmed(cwd), found.key.len())
+        .unwrap_or("")
+        .trim_start_matches('/')
+}
+
+impl Workspaces {
+    /// The hub's table: `dirs` as configured. `~/…` and relative entries
+    /// stand for nothing until a machine is placed ([`Self::place`]); an
+    /// entry that names no workspace is left out, with a warning.
+    pub fn configured(dirs: &[String]) -> Self {
+        let entries = dirs
+            .iter()
+            .filter_map(|text| {
+                Entry::parse(text)
+                    .inspect_err(|e| tracing::warn!("workspaces: {e}, left out"))
+                    .ok()
+            })
+            .collect();
+        let mut table = Table {
+            entries,
+            ..Table::default()
+        };
+        table.resolve();
+        Self {
+            table: Arc::new(RwLock::new(table)),
+        }
+    }
+
+    /// One machine's table at once: `~/` is `home`, and nothing has a root
+    /// (tests, the demo).
+    pub fn new(dirs: &[String], home: &str) -> Self {
+        let workspaces = Self::configured(dirs);
+        if !home.is_empty() {
+            workspaces.place(
+                "",
+                Place {
+                    home: Some(home.to_owned()),
+                    root: None,
+                },
+            );
+            for dir in &mut workspaces.write().dirs {
+                dir.hosts.clear();
+            }
+        }
+        workspaces
+    }
+
+    fn read(&self) -> RwLockReadGuard<'_, Table> {
+        self.table.read().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn write(&self) -> RwLockWriteGuard<'_, Table> {
+        self.table.write().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Says where `host` keeps its workspaces; true when a directory came
+    /// or went with it.
+    pub fn place(&self, host: &str, place: Place) -> bool {
+        let mut table = self.write();
+        if table.places.get(host) == Some(&place) {
+            return false;
+        }
+        let before = table.listing();
+        table.places.insert(host.to_owned(), place);
+        table.resolve();
+        before != table.listing()
+    }
+
+    /// Forgets where `host` keeps its workspaces; true when a directory
+    /// went with it.
+    pub fn displace(&self, host: &str) -> bool {
+        let mut table = self.write();
+        if table.places.remove(host).is_none() {
+            return false;
+        }
+        let before = table.listing();
+        table.resolve();
+        before != table.listing()
+    }
+
+    /// Why `path` belongs to no workspace, for an error: with none
+    /// configured, also how to set one.
+    pub fn outside(&self, path: &str) -> String {
+        let table = self.read();
+        if table.entries.is_empty() && table.dirs.is_empty() {
+            format!(
+                "{path} is outside every ccdash workspace: the hub has none yet \
+                (`[workspaces] dirs`; NixOS: `services.ccdash-hub.workspaces`)"
+            )
+        } else {
+            format!("{path} is outside every ccdash workspace")
+        }
+    }
+
+    /// Each name once, in the configured order: machines keep the same
+    /// workspace under paths of their own (`/home/me/w`, `C:\Users\me\w`),
+    /// and one no machine has a directory of yet is named too.
+    pub fn names(&self) -> Vec<String> {
+        let table = self.read();
+        let mut names: Vec<String> = Vec::new();
+        let configured = table.entries.iter().map(Entry::name);
+        for name in configured.chain(table.dirs.iter().map(|d| d.name.clone())) {
+            if !names.contains(&name) {
+                names.push(name);
+            }
+        }
+        names
+    }
+
+    /// Name and directory of every workspace on every machine.
+    pub fn entries(&self) -> Vec<crate::protocol::WorkspaceDir> {
+        self.read()
+            .dirs
+            .iter()
+            .map(|d| crate::protocol::WorkspaceDir {
+                name: d.name.clone(),
+                dir: d.dir.clone(),
+            })
+            .collect()
+    }
+
+    /// Rebuilt from what a hub sent.
+    pub fn from_entries(entries: &[crate::protocol::WorkspaceDir]) -> Self {
+        let table = Table {
+            dirs: entries
+                .iter()
+                .map(|e| Dir::new(e.name.clone(), e.dir.clone()))
+                .collect(),
+            ..Table::default()
+        };
+        Self {
+            table: Arc::new(RwLock::new(table)),
+        }
+    }
+
+    /// The first directory of `name`.
+    pub fn dir(&self, name: &str) -> Option<String> {
+        self.read()
+            .dirs
+            .iter()
+            .find(|d| d.name == name)
+            .map(|d| d.dir.clone())
+    }
+
+    /// Every directory of `name`.
+    pub fn dirs(&self, name: &str) -> Vec<String> {
+        self.read()
+            .dirs
+            .iter()
+            .filter(|d| d.name == name)
+            .map(|d| d.dir.clone())
+            .collect()
+    }
+
+    /// `host`'s directory of the workspace `name`: its own, else a path of
+    /// its own, which any machine may have.
+    pub fn dir_on(&self, host: &str, name: &str) -> Option<String> {
+        self.read().dir_on(host, name).map(|d| d.dir.clone())
+    }
+
+    /// `host`'s directory of the workspace `name` when there is no doubt
+    /// which: its own, else the one path of its own (of several, which one
+    /// a machine has only it can tell).
+    pub fn known_dir(&self, host: &str, name: &str) -> Option<String> {
+        let table = self.read();
+        let named = || table.dirs.iter().filter(|d| d.name == name);
+        if let Some(own) = named().find(|d| d.hosts.iter().any(|h| h == host)) {
+            return Some(own.dir.clone());
+        }
+        let mut paths = named().filter(|d| d.hosts.is_empty());
+        let only = paths.next()?;
+        paths.next().is_none().then(|| only.dir.clone())
+    }
+
+    /// `host`'s directories, each with its workspace: its own and the
+    /// paths of their own.
+    pub fn of_host(&self, host: &str) -> Vec<crate::protocol::WorkspaceDir> {
+        self.read()
+            .dirs
+            .iter()
+            .filter(|d| d.serves(host))
+            .map(|d| crate::protocol::WorkspaceDir {
+                name: d.name.clone(),
+                dir: d.dir.clone(),
+            })
+            .collect()
+    }
+
+    /// `cwd` as `host` has it: the same place below `host`'s directory of
+    /// the workspace. `cwd` itself when it is `host`'s already or `host`
+    /// has no directory of the workspace; none outside every workspace.
+    pub fn on(&self, host: &str, cwd: &str) -> Option<String> {
+        let table = self.read();
+        let found = table.matching(cwd)?;
+        if found.serves(host) {
+            return Some(cwd.to_owned());
+        }
+        let path = slashed(cwd);
+        Some(match table.dir_on(host, &found.name) {
+            Some(there) => match rest_below(&path, found) {
+                "" => there.dir.clone(),
+                rest => join(&there.dir, rest),
+            },
+            None => cwd.to_owned(),
+        })
+    }
+
+    /// The workspace holding `cwd` (the longest matching directory).
+    pub fn of(&self, cwd: &str) -> Option<String> {
+        self.locate(cwd).map(|(name, _)| name)
+    }
+
+    /// `cwd` moved to each other directory of its workspace (a machine
+    /// has its own): the same place below it.
+    pub fn elsewhere(&self, cwd: &str) -> Vec<String> {
+        let table = self.read();
+        let Some(found) = table.matching(cwd) else {
+            return Vec::new();
+        };
+        let cwd = slashed(cwd);
+        let rest = rest_below(&cwd, found);
+        table
+            .dirs
+            .iter()
+            .filter(|d| d.name == found.name && d.dir != found.dir)
+            .map(|d| match rest {
+                "" => d.dir.clone(),
+                rest => join(&d.dir, rest),
+            })
+            .collect()
+    }
+
+    /// The directory holding `cwd`, of all the workspaces'.
+    pub fn dir_of(&self, cwd: &str) -> Option<String> {
+        self.read().matching(cwd).map(|d| d.dir.clone())
+    }
+
     /// The workspace holding `cwd` and the project inside it: the first
     /// path component below the workspace directory (a repo clone), None
     /// at the workspace root itself.
     pub fn locate(&self, cwd: &str) -> Option<(String, Option<String>)> {
-        let found = self.matching(cwd)?;
+        let table = self.read();
+        let found = table.matching(cwd)?;
         let cwd = slashed(cwd);
-        let cwd = trimmed(&cwd);
         // NOTE: cut from the cwd itself, so the project keeps its case
-        let project = after_key(cwd, found.key.len())
-            .map(|rest| rest.trim_start_matches('/'))
-            .and_then(|rest| rest.split('/').next())
+        let project = rest_below(&cwd, found)
+            .split('/')
+            .next()
             .filter(|p| !p.is_empty())
             .map(str::to_owned);
         Some((found.name.clone(), project))
+    }
+}
+
+impl Table {
+    /// The directories, to tell one coming or going.
+    fn listing(&self) -> Vec<(String, String)> {
+        self.dirs
+            .iter()
+            .map(|d| (d.name.clone(), d.dir.clone()))
+            .collect()
     }
 }
 
@@ -1266,7 +1573,10 @@ mod tests {
                 .outside("/x")
                 .contains("has none yet")
         );
-        assert_eq!(ws.dir("meteopress"), Some("/home/u/PB/meteopress"));
+        assert_eq!(
+            ws.dir("meteopress").as_deref(),
+            Some("/home/u/PB/meteopress")
+        );
         assert_eq!(
             ws.of("/home/u/PB/meteopress/radar"),
             Some("meteopress".into())
@@ -1290,8 +1600,14 @@ mod tests {
             r"C:\Users\u",
         );
         assert_eq!(ws.names(), ["meteopress", "tsandrini"]);
-        assert_eq!(ws.dir("meteopress"), Some("C:/Users/u/PB/meteopress"));
-        assert_eq!(ws.dir("tsandrini"), Some("C:/Users/u/PB/tsandrini"));
+        assert_eq!(
+            ws.dir("meteopress").as_deref(),
+            Some("C:/Users/u/PB/meteopress")
+        );
+        assert_eq!(
+            ws.dir("tsandrini").as_deref(),
+            Some("C:/Users/u/PB/tsandrini")
+        );
         assert_eq!(
             ws.locate(r"C:\Users\u\PB\meteopress\radar\src"),
             Some(("meteopress".into(), Some("radar".into())))
@@ -1301,8 +1617,11 @@ mod tests {
         let both = Workspaces::new(&["/home/u/w".into(), r"C:\Users\u\w".into()], "/home/u");
         assert_eq!(both.names(), ["w"]);
         assert_eq!(both.dirs("w"), ["/home/u/w", "C:/Users/u/w"]);
-        assert_eq!(both.dir_of(r"C:\Users\u\w\p"), Some("C:/Users/u/w"));
-        assert_eq!(both.dir_of("/home/u/w/p"), Some("/home/u/w"));
+        assert_eq!(
+            both.dir_of(r"C:\Users\u\w\p").as_deref(),
+            Some("C:/Users/u/w")
+        );
+        assert_eq!(both.dir_of("/home/u/w/p").as_deref(), Some("/home/u/w"));
         assert_eq!(both.dir_of("/elsewhere"), None);
         assert_eq!(both.elsewhere("/home/u/w/p"), ["C:/Users/u/w/p"]);
         assert_eq!(both.elsewhere(r"C:\Users\u\w"), ["/home/u/w"]);
@@ -1327,17 +1646,136 @@ mod tests {
         assert_eq!(after_key("/a/b", 2), Some("/b"));
         // NOTE: a drive's root keeps its slash; a POSIX `//` is `/`
         let roots = Workspaces::new(&[r"C:\".into(), "//srv/Data/".into()], "/home/u");
-        assert_eq!(roots.dir_of(r"c:\Users\x"), Some("C:/"));
+        assert_eq!(roots.dir_of(r"c:\Users\x").as_deref(), Some("C:/"));
         assert_eq!(roots.locate(r"C:\Users\x").unwrap().1, Some("Users".into()));
-        assert_eq!(roots.dir_of("/srv/Data/x"), Some("/srv/Data"));
+        assert_eq!(roots.dir_of("/srv/Data/x").as_deref(), Some("/srv/Data"));
         assert_eq!(roots.dir_of("/srv/data/x"), None, "case counts on Linux");
         // NOTE: a project under a root: no doubled slash, which would read as a share
         assert_eq!(join("C:/", "proj"), "C:/proj");
         assert_eq!(join("/", "proj"), "/proj");
         assert_eq!(join("/home/u/w", "proj"), "/home/u/w/proj");
-        let root = join(roots.dir_of(r"C:\proj\src").unwrap(), "proj");
+        let root = join(&roots.dir_of(r"C:\proj\src").unwrap(), "proj");
         assert!(crate::claims::within("C:/proj/src", &root), "{root}");
         assert_eq!(slashed(r"/home/u/a\b"), r"/home/u/a\b");
+    }
+
+    #[test]
+    fn entries_stand_for_each_machine_s_own_directory() {
+        let place = |home: &str, root: Option<&str>| Place {
+            home: Some(home.into()),
+            root: root.map(str::to_owned),
+        };
+        let ws = Workspaces::configured(&[
+            "/srv/shared/".into(),
+            "~/code/work".into(),
+            r"clients\acme".into(),
+            "~".into(),
+            "../up".into(),
+            "  ".into(),
+        ]);
+        // NOTE: before any machine: the path of its own, and every name
+        assert_eq!(ws.names(), ["shared", "work", "acme"]);
+        assert_eq!(ws.of("/srv/shared/p"), Some("shared".into()));
+        assert_eq!(ws.of("/home/alice/code/work/p"), None);
+        assert_eq!(ws.dir("work"), None);
+
+        let alice = place("/home/alice/", Some("/home/alice/src"));
+        assert!(ws.place("alice", alice.clone()));
+        assert!(!ws.place("alice", alice), "said again, nothing moved");
+        assert!(ws.place("win", place(r"C:\Users\Bob", None)));
+        assert_eq!(
+            ws.dirs("work"),
+            ["/home/alice/code/work", "C:/Users/Bob/code/work"]
+        );
+        assert_eq!(ws.dirs("acme"), ["/home/alice/src/clients/acme"]);
+        assert_eq!(
+            ws.locate(r"c:\users\bob\code\work\Proj\src"),
+            Some(("work".into(), Some("Proj".into())))
+        );
+        assert_eq!(
+            ws.locate("/home/alice/src/clients/acme/site"),
+            Some(("acme".into(), Some("site".into())))
+        );
+
+        // NOTE: a machine's directory of a workspace: its own, else a path of its own
+        assert_eq!(
+            ws.dir_on("win", "work").as_deref(),
+            Some("C:/Users/Bob/code/work")
+        );
+        assert_eq!(ws.dir_on("win", "acme"), None, "no root on that machine");
+        assert_eq!(ws.dir_on("win", "shared").as_deref(), Some("/srv/shared"));
+        assert_eq!(ws.dir_on("stranger", "work"), None);
+        assert_eq!(
+            ws.known_dir("win", "work").as_deref(),
+            Some("C:/Users/Bob/code/work")
+        );
+        assert_eq!(
+            ws.known_dir("win", "shared").as_deref(),
+            Some("/srv/shared")
+        );
+        assert_eq!(ws.known_dir("win", "acme"), None);
+        let two = Workspaces::configured(&["/home/a/w".into(), r"C:\Users\b\w".into()]);
+        assert_eq!(two.known_dir("any", "w"), None, "only the machine can tell");
+        let names =
+            |host: &str| -> Vec<String> { ws.of_host(host).into_iter().map(|w| w.name).collect() };
+        assert_eq!(names("alice"), ["shared", "work", "acme"]);
+        assert_eq!(names("win"), ["shared", "work"]);
+
+        // NOTE: where a session ran, as another machine has it
+        assert_eq!(
+            ws.on("win", "/home/alice/code/work/proj/src").as_deref(),
+            Some("C:/Users/Bob/code/work/proj/src")
+        );
+        assert_eq!(
+            ws.on("alice", r"C:\Users\Bob\code\work").as_deref(),
+            Some("/home/alice/code/work")
+        );
+        assert_eq!(
+            ws.on("alice", "/home/alice/code/work/p").as_deref(),
+            Some("/home/alice/code/work/p")
+        );
+        assert_eq!(
+            ws.on("win", "/home/alice/src/clients/acme/x").as_deref(),
+            Some("/home/alice/src/clients/acme/x"),
+            "that machine has no directory to take it to"
+        );
+        assert_eq!(
+            ws.on("win", "/srv/shared/p").as_deref(),
+            Some("/srv/shared/p")
+        );
+        assert_eq!(ws.on("win", "/elsewhere"), None);
+
+        // NOTE: a second machine with the same layout: no new directory, but its own
+        assert!(!ws.place("twin", place("/home/alice", None)));
+        assert_eq!(
+            ws.dir_on("twin", "work").as_deref(),
+            Some("/home/alice/code/work")
+        );
+        // NOTE: a home that is no path names nothing
+        assert!(!ws.place("odd", place("somewhere", Some("rel/root"))));
+        assert_eq!(ws.dir_on("odd", "work"), None);
+
+        // NOTE: every holder sees a machine arrive, and go
+        let held = ws.clone();
+        assert!(held.place("late", place("/home/late", None)));
+        assert_eq!(ws.of("/home/late/code/work/p"), Some("work".into()));
+        assert!(ws.displace("late"));
+        assert_eq!(held.of("/home/late/code/work/p"), None);
+        assert!(!ws.displace("late"));
+        assert!(!ws.displace("twin"), "its directory is alice's too");
+        assert_eq!(ws.of("/home/alice/code/work"), Some("work".into()));
+
+        // NOTE: collectors get every directory, and map one to their own
+        let there = Workspaces::from_entries(&ws.entries());
+        assert_eq!(
+            there.elsewhere("/home/alice/code/work/p"),
+            ["C:/Users/Bob/code/work/p"]
+        );
+        // NOTE: one machine's table at once keeps `~/` as its home
+        let one = Workspaces::new(&["~/w".into(), "rel".into()], "/home/u");
+        assert_eq!(one.dirs("w"), ["/home/u/w"]);
+        assert_eq!(one.dir_on("any", "w").as_deref(), Some("/home/u/w"));
+        assert_eq!(one.dir("rel"), None);
     }
 
     #[test]

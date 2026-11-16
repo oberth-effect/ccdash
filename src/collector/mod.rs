@@ -47,7 +47,7 @@ use crate::{
     util::{self, now_ms, pid_alive},
     wire::{self, Envelope, Source},
     workspace::{
-        Workspaces,
+        Place, Workspaces,
         collector::{self as workspace, Cmd as WsCmd, Handle as WsHandle},
     },
 };
@@ -316,6 +316,17 @@ pub fn background(config: Option<PathBuf>) -> Result<()> {
     Ok(())
 }
 
+/// Where this machine keeps its workspaces: the user's home and the
+/// workspace root (`[workspace] root`), under which the hub's `~/…` and
+/// relative workspaces are directories here.
+fn place(cfg: &CollectorConfig) -> Place {
+    let text = |path: PathBuf| path.to_string_lossy().into_owned();
+    Place {
+        home: paths::home().map(text),
+        root: cfg.workspace_root().map(text),
+    }
+}
+
 pub fn run(cfg: CollectorConfig) -> Result<()> {
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -370,6 +381,7 @@ async fn serve(cfg: Arc<CollectorConfig>) -> Result<()> {
             host: host.clone(),
             terminals: cfg.niri.terminals.clone(),
             features: features(&cfg),
+            place: place(&cfg),
             queue: queue::Queue::open(paths::outbox_file(), cfg.queue.max_bytes),
             resumed: resumed.clone(),
         },
@@ -1270,6 +1282,7 @@ impl Actor {
                 power: None,
                 wake: None,
                 features: self.features,
+                place: Place::default(),
             }],
             sessions,
             rate_limits: self.rate_limits.clone(),

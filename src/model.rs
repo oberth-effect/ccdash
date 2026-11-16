@@ -3,7 +3,10 @@
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use crate::machine::{MachineReport, Power, Wake};
+use crate::{
+    machine::{MachineReport, Power, Wake},
+    workspace::Place,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export_to = "types.ts")]
@@ -513,6 +516,10 @@ pub struct HostStatus {
     /// What its collector does besides reporting; kept while it is offline.
     #[serde(default)]
     pub features: HostFeatures,
+    /// Where it keeps its workspaces; kept while it is offline, so its
+    /// directories stay known.
+    #[serde(default)]
+    pub place: Place,
 }
 
 /// What a machine's collector does besides reporting, as its configuration
@@ -706,6 +713,9 @@ pub struct LaunchTarget {
 pub struct TargetWorkspace {
     pub name: String,
     pub projects: Vec<String>,
+    /// The host's directory of the workspace, where a session starts; none
+    /// when the hub cannot tell which of several it is.
+    pub dir: Option<String>,
 }
 
 /// A slash command a session on a host can run: a skill or command Claude

@@ -54,17 +54,18 @@ As on NixOS, everything beyond reporting and answering prompts is off until
 you turn it on. A switch adds what it needs where it is missing, at the
 first install or any later run; what `config.toml` already says is kept.
 
-| Feature                                      | Switch         | Sets                                                                                      |
-| -------------------------------------------- | -------------- | ----------------------------------------------------------------------------------------- |
-| Replies from the panel (the channel)         | `-Channel`     | `[launch] channel`; the `claude` wrapper in your profile                                  |
-| Open a background session                    | `-Terminal`    | `[attach] command`: `claude attach {id}`                                                  |
-| Edit a prompt in your editor                 | `-Editor nvim` | `[edit] command`: `nvim {file}`                                                           |
-| Sessions and prompt history on every machine | `-Sync`        | `[sync] enable`                                                                           |
-| Model, context, cost and limits per session  | `-StatusLine`  | `ccdash tee` as Claude Code's statusline, in front of yours                               |
-| Tokens, cache hits, commits in Analytics     | `-Telemetry`   | `[telemetry] listen`; the `OTEL_*` variables in Claude's `env`                            |
-| Lock and suspend from the panel              | —              | `[power] lock`, `suspend` in `config.toml`                                                |
-| Dictation, the words of attached recordings  | —              | `[transcribe] command` in `config.toml` ([attachments](attachments.md#7-dictation))       |
-| Still frames of attached videos              | —              | `[video] ffmpeg` in `config.toml` ([attachments](attachments.md#8-recordings-and-videos)) |
+| Feature                                      | Switch         | Sets                                                                                                  |
+| -------------------------------------------- | -------------- | ----------------------------------------------------------------------------------------------------- |
+| Replies from the panel (the channel)         | `-Channel`     | `[launch] channel`; the `claude` wrapper in your profile                                              |
+| Open a background session                    | `-Terminal`    | `[attach] command`: `claude attach {id}`                                                              |
+| Edit a prompt in your editor                 | `-Editor nvim` | `[edit] command`: `nvim {file}`                                                                       |
+| Sessions and prompt history on every machine | `-Sync`        | `[sync] enable`                                                                                       |
+| Workspaces under a directory of this machine | `-Root D:\src` | `[workspace] root`: where the hub's relative workspaces are here ([the hub's side](#4-the-hubs-side)) |
+| Model, context, cost and limits per session  | `-StatusLine`  | `ccdash tee` as Claude Code's statusline, in front of yours                                           |
+| Tokens, cache hits, commits in Analytics     | `-Telemetry`   | `[telemetry] listen`; the `OTEL_*` variables in Claude's `env`                                        |
+| Lock and suspend from the panel              | —              | `[power] lock`, `suspend` in `config.toml`                                                            |
+| Dictation, the words of attached recordings  | —              | `[transcribe] command` in `config.toml` ([attachments](attachments.md#7-dictation))                   |
+| Still frames of attached videos              | —              | `[video] ffmpeg` in `config.toml` ([attachments](attachments.md#8-recordings-and-videos))             |
 
 To turn one off, edit `config.toml` (the channel: also the profile's line)
 and run the script again. Every key: [configuration](configuration.md).
@@ -104,19 +105,23 @@ a pipe it inherited stays open while the collector runs.
 ## 4. The hub's side
 
 A collector token under the machine's host name
-([installation](installation.md#41-the-hub)), and its workspace directories
-as Windows writes them, next to the Linux ones:
+([installation](installation.md#41-the-hub)). The workspaces need nothing
+written for Windows when they are under the home or the root:
 
 ```nix
 services.ccdash-hub = {
   collectors.winbox = "/run/agenix/ccdash-collector-winbox";
-  workspaces = [ "/home/me/code/work" ''C:\Users\me\code\work'' ];
+  workspaces = [ "~/code/work" "clients" ];
 };
 ```
 
-A directory's last component names its workspace, so both are the
-workspace `work`, and a session started from the panel goes to the
-machine's own directory.
+`~/code/work` is `C:\Users\me\code\work` here and `/home/me/code/work` on
+a Linux machine; `clients` is under each machine's workspace root, here
+what `-Root` set (`D:\src\clients`). Both are one workspace on every
+machine, and a session started or resumed from the panel goes to the
+machine's own directory. A path of its own (`''D:\work''`) names the
+workspace `work` on the machines that have that path
+([getting started](getting-started.md#2-workspaces-and-projects)).
 
 ## 5. Updating
 

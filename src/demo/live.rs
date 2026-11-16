@@ -52,6 +52,7 @@ async fn run(hub: Hub, mut limits: Limits) -> anyhow::Result<()> {
                 attachments: true,
                 transcribe: false,
             },
+            place: crate::workspace::Place::default(),
             addr: None,
             tx: link,
         })

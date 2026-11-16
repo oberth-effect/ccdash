@@ -90,6 +90,8 @@
 	);
 	const workspacesHere = $derived(targets?.find((t) => t.host === host)?.workspaces ?? []);
 	const names = $derived(workspacesHere.find((w) => w.name === ws)?.projects);
+	/** The picked machine's directory of the workspace, when the hub can tell. */
+	const wsDir = $derived(workspacesHere.find((w) => w.name === ws)?.dir ?? null);
 	const launch = $derived<Launch | undefined>(pending ? live.launches.get(pending) : undefined);
 	/** The running session whose model and effort are switched. */
 	const switching = $derived(starter.preset.switching ? resume : undefined);
@@ -367,9 +369,10 @@
 					Resumes “{resume.title}” in the background on {host || resume.host}, in
 					{place(resume.cwd)}: its conversation goes on from where it stopped.
 				{:else}
-					Runs <code class="font-mono">claude --bg</code> on the host at the workspace's root (its harness
-					and direnv), placed under the project. Its questions and approvals reach this device; the draft
-					stays on the hub until the session starts.
+					Runs <code class="font-mono">claude --bg</code> on the host at the workspace's root{#if wsDir}
+						, <code class="font-mono">{wsDir}</code>{/if} (its harness and direnv), placed under the project.
+					Its questions and approvals reach this device; the draft stays on the hub until the session
+					starts.
 				{/if}
 			</Dialog.Description>
 		</Dialog.Header>

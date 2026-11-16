@@ -46,8 +46,8 @@ use crate::{
     util::{self, now_ms},
     wire::Envelope,
     workspace::{
-        Cost, HeldAction, NewDir, SeenUnit, Transfer, UnitStatus, WorkspaceConfig, WorkspaceHost,
-        WorkspaceSetup, WorkspaceStatus, Workspaces,
+        Cost, HeldAction, NewDir, Place, SeenUnit, Transfer, UnitStatus, WorkspaceConfig,
+        WorkspaceHost, WorkspaceSetup, WorkspaceStatus, Workspaces,
         hub::{self as wshub, Reported, Repos, TRANSFER_MIN, TrafficDelta},
     },
     wrap_up,
@@ -148,6 +148,8 @@ pub enum Cmd {
         terminals: Vec<String>,
         /// What its collector does besides reporting.
         features: HostFeatures,
+        /// Where it keeps its workspaces.
+        place: Place,
         /// Where it connects from.
         addr: Option<IpAddr>,
         tx: mpsc::Sender<ToCollector>,
@@ -668,6 +670,8 @@ impl Hub {
                     h.since = started;
                 }
                 h.rtt_ms = None;
+                // NOTE: an offline machine's directories stay known
+                workspaces.place(&h.name, h.place.clone());
                 (h.name.clone(), h)
             })
             .collect();
@@ -1219,9 +1223,10 @@ async fn run(mut core: Core, mut rx: mpsc::Receiver<Cmd>) {
                 conn,
                 terminals,
                 features,
+                place,
                 addr,
                 tx,
-            } => core.collector_open(host, conn, terminals, features, addr, tx),
+            } => core.collector_open(host, conn, terminals, features, place, addr, tx),
             Cmd::Here { addr, reply } => {
                 let _ = reply.send(
                     core.links
@@ -1755,17 +1760,30 @@ impl Core {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn collector_open(
         &mut self,
         host: String,
         conn: u64,
         terminals: Vec<String>,
         features: HostFeatures,
+        place: Place,
         addr: Option<IpAddr>,
         tx: mpsc::Sender<ToCollector>,
     ) {
         let now = now_ms();
         info!("collector {host} connected");
+        // NOTE: before its sessions are read: their workspaces come from its directories
+        let moved = self.workspaces.place(&host, place.clone());
+        if moved {
+            let own: Vec<String> = self
+                .workspaces
+                .of_host(&host)
+                .into_iter()
+                .map(|w| format!("{} in {}", w.name, w.dir))
+                .collect();
+            info!("workspaces of {host}: {}", own.join(", "));
+        }
         if !self.states.contains_key(&host) {
             let open = self
                 .reader
@@ -1810,6 +1828,7 @@ impl Core {
                 power: None,
                 wake: None,
                 features,
+                place,
             },
         );
         self.refresh_wake(&host);
@@ -1821,7 +1840,7 @@ impl Core {
             v: crate::protocol::VERSION,
             host: self.host.clone(),
             web_url: self.public_url.clone(),
-            workspaces: self.workspaces.entries(),
+            workspaces: self.workspaces.of_host(&host),
         };
         let snapshot = ToCollector::Snapshot {
             sessions,
@@ -2399,8 +2418,8 @@ impl Core {
         // NOTE: the directory `cwd` is in: a workspace may list one per machine
         match self.workspaces.dir_of(cwd) {
             Some(dir) => match project {
-                Some(p) => crate::workspace::join(dir, p),
-                None => dir.to_owned(),
+                Some(p) => crate::workspace::join(&dir, p),
+                None => dir,
             },
             None => cwd.to_owned(),
         }
@@ -4008,6 +4027,7 @@ impl Core {
         }
         info!("forgetting the machine {host}");
         self.hosts.remove(host);
+        self.workspaces.displace(host);
         self.store.send(host, StoreMsg::ForgetHost);
         self.hosts_changed();
         Ok(())
@@ -4635,6 +4655,117 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_machine_s_hello_places_its_workspaces() {
+        let dir = std::env::temp_dir().join(format!("ccdash-place-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let spawn = || {
+            let workspaces = Workspaces::configured(&["~/code/w".into(), "w2".into()]);
+            let hub = Hub::spawn(
+                "hub".into(),
+                "http://hub".into(),
+                workspaces.clone(),
+                Store::open(&dir.join("t.db"), 30).unwrap(),
+                None,
+                KnowledgeCfg::default(),
+                0,
+                None,
+                BTreeMap::new(),
+                false,
+            );
+            (hub, workspaces)
+        };
+        let open = |hub: &Hub, conn: u64, host: &str, home: &str, root: Option<&str>| {
+            let (tx, rx) = mpsc::channel(256);
+            let cmd = Cmd::CollectorOpen {
+                host: host.into(),
+                conn,
+                terminals: Vec::new(),
+                features: HostFeatures::default(),
+                place: Place {
+                    home: Some(home.into()),
+                    root: root.map(str::to_owned),
+                },
+                addr: None,
+                tx,
+            };
+            let hub = hub.clone();
+            async move {
+                hub.send(cmd).await.unwrap();
+                rx
+            }
+        };
+        let (hub, workspaces) = spawn();
+        assert_eq!(hub.snapshot().await.unwrap().workspaces, ["w", "w2"]);
+        let mut navi = open(&hub, 1, "navi", "/home/n", Some("/home/n/src")).await;
+        let welcome = next(&mut navi, |m| matches!(m, ToCollector::Welcome { .. })).await;
+        let ToCollector::Welcome {
+            workspaces: own, ..
+        } = welcome
+        else {
+            unreachable!()
+        };
+        let dirs: Vec<&str> = own.iter().map(|w| w.dir.as_str()).collect();
+        assert_eq!(dirs, ["/home/n/code/w", "/home/n/src/w2"]);
+
+        // NOTE: its sessions are in the workspace its own directory names
+        let sid = "5e3f1c2a-0000-4000-8000-00000000000a";
+        hub.send(Cmd::Input(
+            "navi".into(),
+            Input::Envelope(envelope(
+                Source::Hook,
+                None,
+                json!({"session_id": sid, "cwd": "/home/n/code/w/proj", "hook_event_name": "SessionStart", "source": "startup"}),
+            )),
+        ))
+        .await
+        .unwrap();
+        let snap = hub.snapshot().await.unwrap();
+        let session = snap.sessions.iter().find(|s| s.id == sid).unwrap();
+        assert_eq!(session.workspace.as_deref(), Some("w"));
+        assert_eq!(session.project.as_deref(), Some("proj"));
+        assert_eq!(snap.hosts[0].place.root.as_deref(), Some("/home/n/src"));
+
+        // NOTE: another machine, another layout: each is told its own directories
+        let mut flat = open(&hub, 2, "flat", r"C:\Users\F", None).await;
+        let welcome = next(&mut flat, |m| matches!(m, ToCollector::Welcome { .. })).await;
+        let ToCollector::Welcome {
+            workspaces: own, ..
+        } = welcome
+        else {
+            unreachable!()
+        };
+        let dirs: Vec<&str> = own.iter().map(|w| w.dir.as_str()).collect();
+        assert_eq!(dirs, ["C:/Users/F/code/w"]);
+        assert_eq!(
+            workspaces.on("flat", "/home/n/code/w/proj").as_deref(),
+            Some("C:/Users/F/code/w/proj")
+        );
+        drop((hub, navi, flat));
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        // NOTE: after a restart, a machine that is off still has its directories
+        let (hub, workspaces) = spawn();
+        hub.snapshot().await.unwrap();
+        assert_eq!(
+            workspaces.of("/home/n/code/w/proj").as_deref(),
+            Some("w"),
+            "kept with the machine"
+        );
+        assert_eq!(workspaces.of(r"c:\users\f\code\w").as_deref(), Some("w"));
+        // NOTE: a forgotten machine takes its directories along
+        ask(&hub, |reply| Cmd::ForgetHost {
+            host: "flat".into(),
+            reply,
+        })
+        .await
+        .unwrap();
+        assert_eq!(workspaces.of(r"C:\Users\F\code\w"), None);
+        assert_eq!(workspaces.of("/home/n/code/w"), Some("w".into()));
+        drop(hub);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
     async fn one_session_runs_on_one_machine() {
         let dir = std::env::temp_dir().join(format!("ccdash-guard-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -4659,6 +4790,7 @@ mod tests {
                 conn: conn as u64,
                 terminals: Vec::new(),
                 features: HostFeatures::default(),
+                place: Place::default(),
                 addr: None,
                 tx,
             })
@@ -4775,6 +4907,7 @@ mod tests {
             conn: 1,
             terminals: Vec::new(),
             features: HostFeatures::default(),
+            place: Place::default(),
             addr: None,
             tx,
         })
@@ -4944,6 +5077,7 @@ mod tests {
             conn: 2,
             terminals: Vec::new(),
             features: HostFeatures::default(),
+            place: Place::default(),
             addr: None,
             tx,
         })
@@ -5076,6 +5210,7 @@ mod tests {
             conn: 1,
             terminals: Vec::new(),
             features: HostFeatures::default(),
+            place: Place::default(),
             addr: None,
             tx,
         })
@@ -5157,6 +5292,7 @@ mod tests {
             conn: 1,
             terminals: Vec::new(),
             features: HostFeatures::default(),
+            place: Place::default(),
             addr: None,
             tx,
         })
@@ -5446,6 +5582,7 @@ mod tests {
             conn: 1,
             terminals: Vec::new(),
             features: HostFeatures::default(),
+            place: Place::default(),
             addr: None,
             tx,
         })
@@ -5520,6 +5657,7 @@ mod tests {
             conn: 1,
             terminals: Vec::new(),
             features: HostFeatures::default(),
+            place: Place::default(),
             addr: None,
             tx,
         })
@@ -5685,6 +5823,7 @@ mod tests {
             conn: 1,
             terminals: Vec::new(),
             features: HostFeatures::default(),
+            place: Place::default(),
             addr: None,
             tx,
         })
@@ -5895,6 +6034,7 @@ mod tests {
                 edit: true,
                 ..HostFeatures::default()
             },
+            place: Place::default(),
             addr: None,
             tx,
         })

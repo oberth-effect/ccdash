@@ -55,8 +55,7 @@ pub type Demo = Box<dyn FnOnce(Hub) + Send>;
 /// Runs the hub until a signal.
 pub async fn serve(cfg: Arc<HubConfig>, demo: Option<Demo>) -> Result<()> {
     let host = cfg.host();
-    let home = std::env::var("HOME").unwrap_or_default();
-    let workspaces = Workspaces::new(&cfg.workspaces.dirs, &home);
+    let workspaces = Workspaces::configured(&cfg.workspaces.dirs);
     if cfg.workspaces.dirs.is_empty() {
         warn!(
             "no workspaces (`[workspaces] dirs`): the knowledge tools refuse every session until one is set"

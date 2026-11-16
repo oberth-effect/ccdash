@@ -111,7 +111,7 @@ panel on a made-up workspace with two stand-in machines at
       desk = "/run/agenix/ccdash-collector-desk";       # one token per machine
       laptop = "/run/agenix/ccdash-collector-laptop";
     };
-    workspaces = [ "/home/me/code/work" "/home/me/code/personal" ];
+    workspaces = [ "~/code/work" "~/code/personal" ];
     nginx = { enable = true; domain = "ccdash.example.org"; };
     backup.enable = true;                               # nightly database copy
   };
@@ -122,9 +122,10 @@ panel on a made-up workspace with two stand-in machines at
 
 A collector token is any secret string in a file the `ccdash` user can
 read (`openssl rand -hex 32`), kept with agenix, sops-nix or by hand. The
-**workspaces** are the directories your projects live in, the same paths
-on every machine: notes, issues and reports belong to one, and the
-knowledge tools refuse sessions outside them. Keep the hub on your LAN or
+**workspaces** are the directories your projects live in, here under each
+machine's own home ([other ways](docs/getting-started.md#2-workspaces-and-projects)):
+notes, issues and reports belong to one, and the knowledge tools refuse
+sessions outside them. Keep the hub on your LAN or
 VPN: see [security](docs/security.md).
 
 ### 3.2 Each workstation
@@ -177,7 +178,7 @@ collector's token and the Home Manager module picks it up.
 services.ccdash-hub = {
   enable = true;
   localCollector = { enable = true; user = "me"; };
-  workspaces = [ "/home/me/code" ];
+  workspaces = [ "~/code" ];
 };
 # Home Manager (user me)
 services.ccdash = {

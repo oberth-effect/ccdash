@@ -19,10 +19,13 @@ use crate::{
     sync::{Keep, SyncStatus},
     wire::Envelope,
     workspace::{
-        HeldAction, SeenUnit, UnitStatus, WorkspaceConfig, WorkspaceSetup, WorkspaceStatus,
+        HeldAction, Place, SeenUnit, UnitStatus, WorkspaceConfig, WorkspaceSetup, WorkspaceStatus,
     },
 };
 
+/// 19: where a machine keeps its workspaces (`place` on `Hello`: its home
+/// and its workspace root); the welcome's `workspaces` are that machine's
+/// own directories.
 /// 18: recordings put into words on a machine (`Transcribe` down,
 /// `Transcribed` up).
 /// 17: the effort a session starts on (`Launch.effort`).
@@ -49,7 +52,7 @@ use crate::{
 /// `Stop`, `Open` down; `Launched`, `Stopped` up), `branch` and `launched`
 /// on sessions, `branch` on agents entries and envelopes, `launch` on
 /// envelopes.
-pub const VERSION: u32 = 18;
+pub const VERSION: u32 = 19;
 
 /// Collector → hub.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -64,6 +67,10 @@ pub enum ToHub {
         /// What this collector does besides reporting.
         #[serde(default)]
         features: HostFeatures,
+        /// Where this machine keeps its workspaces: the hub's `~/…` and
+        /// relative entries are directories under these.
+        #[serde(default)]
+        place: Place,
     },
     /// A hook or statusline payload, as `ccdash emit` sent it.
     Envelope {
@@ -403,6 +410,8 @@ pub enum ToCollector {
         host: String,
         /// Where the web UI lives, for links opened on the collector's host.
         web_url: String,
+        /// This machine's directories of the workspaces: its own, and the
+        /// paths every machine may have.
         workspaces: Vec<WorkspaceDir>,
     },
     /// This host's sessions as the hub sees them; replaces the mirror.
@@ -574,6 +583,10 @@ mod tests {
             features: HostFeatures {
                 edit: true,
                 ..HostFeatures::default()
+            },
+            place: Place {
+                home: Some("/home/me".into()),
+                root: None,
             },
         };
         let text = serde_json::to_string(&hello).unwrap();

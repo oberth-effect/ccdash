@@ -174,6 +174,17 @@
 				The machine has not reported yet (a collector older than this hub reports nothing).
 			</p>
 		{/if}
+		{#if link?.place?.home || link?.place?.root}
+			<p class="text-xs text-muted-foreground">
+				Workspaces here:
+				{#if link.place.home}<code class="font-mono">~/…</code> under
+					<code class="font-mono">{link.place.home}</code
+					>{/if}{#if link.place.home && link.place.root},
+				{/if}
+				{#if link.place.root}relative ones under <code class="font-mono">{link.place.root}</code
+					>{/if}
+			</p>
+		{/if}
 		{#if link}<Power host={link} />{/if}
 	</section>
 

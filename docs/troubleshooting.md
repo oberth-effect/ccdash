@@ -36,7 +36,10 @@ it once the link is back; nothing is lost.
 `… is outside every ccdash workspace`: the session runs in a directory
 under none of the hub's `workspaces`. With `the hub has none yet` the list
 is empty; set `services.ccdash-hub.workspaces`. Otherwise start the session
-inside a workspace, at the same path as on the other machines
+inside a workspace as this machine has it: the hub's log names each
+machine's directories when its collector connects (`workspaces of desk:
+work in /home/me/code/work`). A relative workspace needs the machine's
+`workspace.root`
 ([getting started](getting-started.md#2-workspaces-and-projects)).
 
 ## 3. A session has no ccdash tools or skills

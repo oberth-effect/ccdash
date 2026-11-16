@@ -16,6 +16,7 @@
 #   -Terminal       the panel's Open: a background session attached in a console of its own
 #   -Editor <exe>   the panel's Edit in the editor (`nvim`), in a console of its own
 #   -Sync           ~\.claude in step with the other machines (`[sync] enable`)
+#   -Root <dir>     where this machine keeps the hub's relative workspaces (`[workspace] root`)
 #   -StatusLine     model, context, cost and limits per session (`ccdash tee`)
 #   -Telemetry      Claude Code's OpenTelemetry export into the collector
 #
@@ -29,6 +30,7 @@ param(
   [switch]$Terminal,
   [string]$Editor,
   [switch]$Sync,
+  [string]$Root,
   [switch]$StatusLine,
   [switch]$Telemetry,
   [switch]$Build,
@@ -181,6 +183,7 @@ if ($Channel) { Add-ConfigKey launch channel 'true' }
 if ($Terminal) { Add-ConfigKey attach command "[$(Lit $claudeExe), 'attach', '{id}']" }
 if ($Editor) { Add-ConfigKey edit command "[$(Lit $Editor), '{file}']" }
 if ($Sync) { Add-ConfigKey sync enable 'true' }
+if ($Root) { Add-ConfigKey workspace root (Lit $Root) }
 if ($Telemetry) { Add-ConfigKey telemetry listen '["127.0.0.1:7839"]' }
 if ($config -ne $before -or -not (Test-Path $cfgPath)) { Write-Utf8 $cfgPath $config }
 

@@ -58,7 +58,7 @@ imports = [ inputs.ccdash.nixosModules.hub ];
 services.ccdash-hub = {
   enable = true;
   localCollector = { enable = true; user = "me"; };
-  workspaces = [ "/home/me/code" ];
+  workspaces = [ "~/code" ]; # under the home of each machine's user
 };
 
 # Home Manager, user me
@@ -103,7 +103,7 @@ services.ccdash-hub = {
     desk = "/run/agenix/ccdash-collector-desk"; # host name → its token file
     laptop = "/run/agenix/ccdash-collector-laptop";
   };
-  workspaces = [ "/home/me/code/work" "/home/me/code/personal" ];
+  workspaces = [ "~/code/work" "~/code/personal" ];
   nginx = { enable = true; domain = "ccdash.example.org"; };
   backup.enable = true;
 };
@@ -113,6 +113,11 @@ services.nginx.virtualHosts."ccdash.example.org" = {
   forceSSL = true;
 };
 ```
+
+`~/…` is a directory under each workstation's own home, so the users and
+the homes may differ; an entry with no `/` or `~/` in front (`work`) is
+under each workstation's workspace root, and an absolute path is that
+path everywhere ([getting started](getting-started.md#2-workspaces-and-projects)).
 
 Keep it off the public internet: see [security](security.md).
 
@@ -124,6 +129,7 @@ services.ccdash = {
   enable = true;
   hub.url = "wss://ccdash.example.org/collect";
   hub.tokenFile = "\${XDG_RUNTIME_DIR}/agenix/ccdash-collector-desk";
+  # workspace.root = "/srv/src"; # where the hub's relative workspaces are here
 };
 ```
 

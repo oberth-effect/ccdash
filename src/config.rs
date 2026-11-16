@@ -185,6 +185,8 @@ pub struct HubWorkspace {
 pub struct Workspace {
     pub enable: bool,
     /// The workspace root, e.g. `~/ProjectBundle`. `$VAR` and `~/` expand.
+    /// The hub's relative workspaces are directories under it on this
+    /// machine, whether or not the sync is on.
     pub root: Option<PathBuf>,
     /// The starting configuration (unit globs, excludes, the opted-in
     /// ignored paths), until the hub's takes over.
@@ -382,8 +384,9 @@ pub struct Niri {
     pub terminals: Vec<String>,
 }
 
-/// Top-level directories the UI can filter by, named by their last
-/// component; `~/` is the hub user's home, so prefer absolute paths.
+/// The workspaces, each named by its entry's last component. An entry is
+/// a path of its own, `~/…` (under each machine's home) or a relative path
+/// (under each machine's workspace root): `crate::workspace::Workspaces`.
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Workspaces {

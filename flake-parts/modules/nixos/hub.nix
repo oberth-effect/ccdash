@@ -89,15 +89,25 @@ in
       type = types.listOf types.str;
       default = [ ];
       example = [
-        "/home/me/code/work"
-        "/home/me/code/personal"
+        "~/code/work"
+        "clients"
+        "/srv/shared"
       ];
       description = ''
         The workspaces: top-level directories on the workstations, each
         holding project directories (repository clones). Memories, issues,
         documents and reports belong to a workspace and are shared by its
-        sessions; the panel scopes by them. A workspace is named by its last
-        path component, so keep the paths the same on every machine. The
+        sessions; the panel scopes by them. A workspace is named by its
+        entry's last path component, and an entry is one of:
+
+        - `~/code/work`: a directory under each workstation's home, whatever
+          its user is called;
+        - `clients`, `clients/acme`: a directory under each workstation's
+          workspace root (Home Manager `services.ccdash.workspace.root`,
+          `[workspace] root`); a machine without a root has none of it;
+        - `/srv/shared`, `C:\work`: that path, on every machine that has it.
+
+        So the machines need neither the same user nor the same layout. The
         knowledge tools refuse sessions outside every workspace, so set at
         least one.
       '';
@@ -147,7 +157,7 @@ in
       default = { };
       example = literalExpression ''
         {
-          workspaces.dirs = [ "/home/me/code/work" ];
+          workspaces.dirs = [ "~/code/work" ];
           store.retention_days = 90;
           notify.workspaces = [ "work" ];
         }
