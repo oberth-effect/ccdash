@@ -138,8 +138,9 @@ in
         assert host["features"] == {
             "edit": False, "attach": False, "launch": True,
             "channel": False, "sync": False, "workspace": False,
+            "attachments": True, "transcribe": False,
         }, host["features"]
-        assert snap["hub"]["features"] == {"workspace": False}, snap["hub"]
+        assert snap["hub"]["features"] == {"workspace": False, "attachments": True}, snap["hub"]
         assert snap["workspaces"] == ["code"], snap["workspaces"]
 
     with subtest("the panel is served, and the API wants a token"):
