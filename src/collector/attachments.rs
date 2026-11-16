@@ -339,7 +339,7 @@ fn local(cfg: &CollectorConfig, root: &Path, id: &str) -> Result<(Kind, PathBuf)
     let folder = root.join(id);
     if let Some(path) = cached(&folder) {
         // NOTE: the sweep goes by the folder's time, so a reused file stays
-        let _ = fs::File::open(&folder).and_then(|f| f.set_modified(SystemTime::now()));
+        let _ = fsx::set_dir_modified(&folder, SystemTime::now());
         return Ok((kind_of(&path), path));
     }
     fetch(cfg, &folder, id)
@@ -839,7 +839,7 @@ mod tests {
         }
         let long_ago = SystemTime::now() - DAY * 30;
         for d in [&old, &foreign] {
-            fs::File::open(d).unwrap().set_modified(long_ago).unwrap();
+            fsx::set_dir_modified(d, long_ago).unwrap();
         }
         cfg.attachments.keep_days = 0;
         assert_eq!(sweep(&cfg), 0);
