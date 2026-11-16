@@ -39,6 +39,7 @@ let
   '';
   statusLineCommand = cfg.claudeCode.statusLine.command;
 
+  # NOTE: windows/install.ps1 keeps a copy ($events, $tools)
   hookEvents = [
     "SessionStart"
     "SessionEnd"
@@ -84,7 +85,8 @@ let
   claudeExe =
     if claudeCode.enable && claudeCode.package != null then getExe claudeCode.package else "claude";
   inherit (cfg) terminal;
-  # NOTE: `claude <subcommand>` parsers reject the channel flags (`rc` included)
+  # NOTE: `claude <subcommand>` parsers reject the channel flags (`rc` included);
+  # windows/claude-channel.ps1 keeps a copy of the list
   claudeWrapper = pkgs.writeShellScriptBin "claude" ''
     real=${getExe claudeCode.package}
     case "''${1-}" in

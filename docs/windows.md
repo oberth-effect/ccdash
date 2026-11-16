@@ -5,6 +5,11 @@ the plugin and the channel run there and report to a hub on Linux. The hub
 runs on Linux only, as do `ccdash demo` (a hub), the DankMaterialShell
 plugin and niri.
 
+Windows is kept working by the people who run it. ccdash is developed and
+used on NixOS; a [CI job](development.md#3-checks) builds and tests the
+Windows side on every change, and a new feature may reach Windows later
+than Linux.
+
 1. [Install](#1-install)
 2. [Optional features](#2-optional-features)
 3. [Start at logon](#3-start-at-logon)
@@ -49,15 +54,17 @@ As on NixOS, everything beyond reporting and answering prompts is off until
 you turn it on. A switch adds what it needs where it is missing, at the
 first install or any later run; what `config.toml` already says is kept.
 
-| Feature                                      | Switch         | Sets                                                           |
-| -------------------------------------------- | -------------- | -------------------------------------------------------------- |
-| Replies from the panel (the channel)         | `-Channel`     | `[launch] channel`; the `claude` wrapper in your profile       |
-| Open a background session                    | `-Terminal`    | `[attach] command`: `claude attach {id}`                       |
-| Edit a prompt in your editor                 | `-Editor nvim` | `[edit] command`: `nvim {file}`                                |
-| Sessions and prompt history on every machine | `-Sync`        | `[sync] enable`                                                |
-| Model, context, cost and limits per session  | `-StatusLine`  | `ccdash tee` as Claude Code's statusline, in front of yours    |
-| Tokens, cache hits, commits in Analytics     | `-Telemetry`   | `[telemetry] listen`; the `OTEL_*` variables in Claude's `env` |
-| Lock and suspend from the panel              | —              | `[power] lock`, `suspend` in `config.toml`                     |
+| Feature                                      | Switch         | Sets                                                                                      |
+| -------------------------------------------- | -------------- | ----------------------------------------------------------------------------------------- |
+| Replies from the panel (the channel)         | `-Channel`     | `[launch] channel`; the `claude` wrapper in your profile                                  |
+| Open a background session                    | `-Terminal`    | `[attach] command`: `claude attach {id}`                                                  |
+| Edit a prompt in your editor                 | `-Editor nvim` | `[edit] command`: `nvim {file}`                                                           |
+| Sessions and prompt history on every machine | `-Sync`        | `[sync] enable`                                                                           |
+| Model, context, cost and limits per session  | `-StatusLine`  | `ccdash tee` as Claude Code's statusline, in front of yours                               |
+| Tokens, cache hits, commits in Analytics     | `-Telemetry`   | `[telemetry] listen`; the `OTEL_*` variables in Claude's `env`                            |
+| Lock and suspend from the panel              | —              | `[power] lock`, `suspend` in `config.toml`                                                |
+| Dictation, the words of attached recordings  | —              | `[transcribe] command` in `config.toml` ([attachments](attachments.md#7-dictation))       |
+| Still frames of attached videos              | —              | `[video] ffmpeg` in `config.toml` ([attachments](attachments.md#8-recordings-and-videos)) |
 
 To turn one off, edit `config.toml` (the channel: also the profile's line)
 and run the script again. Every key: [configuration](configuration.md).
@@ -125,15 +132,15 @@ and its collectors must speak the same protocol: update the hub with them
 
 ## 6. Where things are
 
-| What        | Where                                                                      |
-| ----------- | -------------------------------------------------------------------------- |
-| config      | `%APPDATA%\ccdash\config.toml`                                             |
-| state       | `%LOCALAPPDATA%\ccdash\state` (outbox, sync index, notes cache, the log)   |
-| runtime     | `%LOCALAPPDATA%\ccdash\run` (pending titles)                               |
-| sockets     | named pipes `\\.\pipe\ccdash-api-<hash>`, `\\.\pipe\ccdash-ingest-<hash>`  |
-| binary      | `~\.local\bin\ccdash.exe`; `~\.local\share\ccdash\REV` names its commit    |
-| plugin      | `~\.local\share\ccdash\claude-plugin`, linked as `~\.claude\skills\ccdash` |
-| Claude Code | `%USERPROFILE%\.claude`, or `CLAUDE_CONFIG_DIR`                            |
+| What        | Where                                                                                         |
+| ----------- | --------------------------------------------------------------------------------------------- |
+| config      | `%APPDATA%\ccdash\config.toml`                                                                |
+| state       | `%LOCALAPPDATA%\ccdash\state` (outbox, sync index, notes cache, fetched attachments, the log) |
+| runtime     | `%LOCALAPPDATA%\ccdash\run` (pending titles)                                                  |
+| sockets     | named pipes `\\.\pipe\ccdash-api-<hash>`, `\\.\pipe\ccdash-ingest-<hash>`                     |
+| binary      | `~\.local\bin\ccdash.exe`; `~\.local\share\ccdash\REV` names its commit                       |
+| plugin      | `~\.local\share\ccdash\claude-plugin`, linked as `~\.claude\skills\ccdash`                    |
+| Claude Code | `%USERPROFILE%\.claude`, or `CLAUDE_CONFIG_DIR`                                               |
 
 The pipes' names hash the socket path under the runtime directory, so
 `CCDASH_RUNTIME_DIR` still gives a second collector a place of its own.
