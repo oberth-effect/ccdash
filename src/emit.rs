@@ -35,6 +35,12 @@ const HOOK_WAIT: Duration = Duration::from_millis(1800);
 /// next turn ("<hook> hook stopped continuation: …").
 pub const INTERRUPT_REASON: &str =
     "Interrupted from ccdash: the user stopped this turn from their dashboard";
+/// What Claude reads after a failed tool call when the turn was interrupted:
+/// Claude Code takes no stop from that hook (2.1.323, as 2.1.312), and
+/// without a word Claude tries again or goes on, for as long as it writes.
+pub const INTERRUPT_CONTEXT: &str = "The user stopped this turn from their ccdash dashboard. \
+    If a command just ended abruptly, that is why. Stop here: call no more tools, do not go on \
+    with the task, and end your reply in one short line.";
 
 /// Forwards stdin to the daemon. With a `command`, also runs it on the same
 /// stdin and returns its exit code (statusline tee).
@@ -173,6 +179,10 @@ pub fn hook_output(payload: &Value, title: Option<&str>, answer: &Answer) -> Opt
             out["permissionDecision"] = json!("deny");
             out["permissionDecisionReason"] = json!(reason);
         }
+        // NOTE: no stop is taken after a failed tool: Claude is told, and ends the turn
+        if event == "PostToolUseFailure" {
+            out["additionalContext"] = json!(INTERRUPT_CONTEXT);
+        }
     }
     if let Some(title) = title {
         out["sessionTitle"] = json!(title);
@@ -296,7 +306,20 @@ mod tests {
         let out = hook_output(&post, None, &stop).unwrap();
         assert_eq!(out["continue"], false);
         assert!(out.get("hookSpecificOutput").is_none());
-        assert!(tool_hook(&pre) && tool_hook(&post));
+        // NOTE: the stop alone is not taken after a failed tool
+        let failed = json!({"hook_event_name": "PostToolUseFailure", "tool_name": "Bash"});
+        let out = hook_output(&failed, None, &stop).unwrap();
+        assert_eq!(out["continue"], false);
+        assert_eq!(
+            out["hookSpecificOutput"]["additionalContext"],
+            INTERRUPT_CONTEXT
+        );
+        assert!(
+            out["hookSpecificOutput"]
+                .get("permissionDecision")
+                .is_none()
+        );
+        assert!(tool_hook(&pre) && tool_hook(&post) && tool_hook(&failed));
         assert!(!tool_hook(
             &json!({"hook_event_name": "PreToolUse", "agent_id": "a1"})
         ));

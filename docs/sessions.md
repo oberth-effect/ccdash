@@ -195,18 +195,25 @@ confirmation: nothing is lost but the rest of the turn.
 How it lands, through the hooks only (Claude Code's documented way; a
 SIGINT would exit the process):
 
-| The session is                   | What happens                                                              |
-| -------------------------------- | ------------------------------------------------------------------------- |
-| waiting on a permission prompt   | the prompt is denied with Claude Code's stop; the turn ends at once       |
-| about to call a tool             | the PreToolUse hook denies the call and ends the turn (`continue: false`) |
-| running a Bash command           | the command is ended, as Esc does; the turn ends with it                  |
-| running another tool             | it runs to its end; the PostToolUse hook then ends the turn               |
-| writing text, no tool call ahead | the turn ends by itself; the interrupt is dropped with it                 |
-| run by hooks older than ccdash   | the action shows disabled: interrupt it in its terminal                   |
+| The session is                   | What happens                                                                      |
+| -------------------------------- | --------------------------------------------------------------------------------- |
+| waiting on a permission prompt   | the prompt is denied with Claude Code's stop; the turn ends at once               |
+| about to call a tool             | the PreToolUse hook denies the call and ends the turn (`continue: false`)         |
+| running a Bash command           | the command is ended, as Esc does; Claude is told why and ends the turn in a line |
+| running another tool             | it runs to its end; the PostToolUse hook then ends the turn                       |
+| writing text, no tool call ahead | the turn ends by itself; the interrupt is dropped with it                         |
+| run by hooks older than ccdash   | the action shows disabled: interrupt it in its terminal                           |
 
 A running command gets SIGTERM with its whole process group, and SIGKILL 3 s
 later if it ignores that. A shell left running in the background by an earlier
-call stays, as do MCP servers.
+call stays, as do MCP servers. Claude Code takes no stop from a hook after a
+failed tool call, and an ended command is one: the hook tells Claude that
+you stopped the turn, Claude ends it in a line, and a tool call it tries
+anyway is denied.
+
+It is not Esc: nothing reaches Claude while it thinks or writes, so the
+stop lands at its next step, and a long reply runs to its end. **Kill**
+ends a background session at once and keeps its conversation.
 
 Until it lands the live block reads "Interrupting: Claude stops at its next
 step"; then the chat shows **Interrupted from ccdash** where the turn ended.
