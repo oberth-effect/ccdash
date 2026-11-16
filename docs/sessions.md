@@ -61,13 +61,17 @@ Run `claude` once in the workspace's directory on a new machine.
 ## 2. Resume
 
 Any past session resumes on any connected machine that
-[syncs](state-sync.md): the collector fetches the transcript first. An
-ended session's page has **Resume…** at its foot (and in its Actions menu);
-every other one is found under **Sessions › Past**.
+[syncs](state-sync.md): the collector fetches the transcript first, and
+starts the session in that machine's own directory of the workspace, so
+the machines' paths may differ. An ended session's page has **Resume…** at
+its foot (and in its Actions menu); every other one is found under
+**Sessions › Past**.
 
 Resumed as it was, a background session of the same machine goes on under
 its own id. Pick another model, effort or permission mode and Claude Code
-continues it as a copy under a new id, on those; the old one stays.
+continues it as a copy under a new id, on those; the old one stays. A
+session whose transcript two directories hold (a copy made by hand) is
+found by neither: it is continued from the newer one, as a copy.
 
 A copy is the same conversation under another id, and the panel shows it
 as one. The copy takes the title over, and its chat starts with the

@@ -265,12 +265,20 @@ impl LaunchSpec {
         Ok(())
     }
 
+    /// [`Self::args_resuming`] by the session's id.
+    #[cfg(test)]
+    fn args(&self, settings: &Path, channel: bool) -> Vec<String> {
+        self.args_resuming(settings, channel, self.resume.as_deref())
+    }
+
     /// The arguments after the configured command; `settings` is the file
-    /// [`settings`] wrote, `channel` adds the ccdash channel.
-    pub fn args(&self, settings: &Path, channel: bool) -> Vec<String> {
+    /// [`settings`] wrote, `channel` adds the ccdash channel, `resume` is
+    /// what `--resume` takes: the session's id, or a transcript's path
+    /// ([`resume_target`]).
+    fn args_resuming(&self, settings: &Path, channel: bool, resume: Option<&str>) -> Vec<String> {
         let mut args = vec!["--bg".to_owned()];
-        if let Some(id) = &self.resume {
-            args.extend(["--resume".into(), id.clone()]);
+        if let Some(target) = resume {
+            args.extend(["--resume".into(), target.to_owned()]);
         }
         if let Some(model) = &self.model {
             args.extend(["--model".into(), model.clone()]);
@@ -442,6 +450,34 @@ fn prune_settings(dir: &Path, jobs: &HashSet<String>) {
     }
 }
 
+/// What `--resume` takes for the session `id`: the id, which Claude Code
+/// looks up in every project directory, whatever directory the session
+/// first ran in (another machine's, too). When more than one directory
+/// under `claude_dir/projects` holds its transcript, it finds none by id
+/// (2.1.323: the job fails): then the newest one's path, which it
+/// continues as a copy under a new id.
+fn resume_target(claude_dir: &Path, id: &str) -> String {
+    let name = format!("{id}.jsonl");
+    let mut held: Vec<(SystemTime, u64, PathBuf)> = std::fs::read_dir(claude_dir.join("projects"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|dir| {
+            let path = dir.path().join(&name);
+            let meta = path.metadata().ok().filter(std::fs::Metadata::is_file)?;
+            Some((meta.modified().ok()?, meta.len(), path))
+        })
+        .collect();
+    if held.len() < 2 {
+        return id.to_owned();
+    }
+    held.sort();
+    held.pop().map_or_else(
+        || id.to_owned(),
+        |(_, _, path)| path.to_string_lossy().into_owned(),
+    )
+}
+
 /// Aliases (`opus`, `haiku`) and full names (`claude-opus-5-5[1m]`).
 pub fn valid_model(model: &str) -> bool {
     !model.is_empty()
@@ -491,10 +527,21 @@ pub async fn launch(
         );
     }
     let settings = write_settings(&spec.nonce, &spec.settings(&env, allow), jobs)?;
+    let resume = spec
+        .resume
+        .as_deref()
+        .map(|id| resume_target(&crate::sync::collector::default_root(), id));
+    if resume.as_deref() != spec.resume.as_deref() {
+        info!(
+            "launch {}: more than one directory holds the session, resuming {}",
+            spec.nonce,
+            resume.as_deref().unwrap_or_default()
+        );
+    }
     let short = started(
         run(Command::new(util::program(program))
             .args(lead)
-            .args(spec.args(&settings, cfg.channel))
+            .args(spec.args_resuming(&settings, cfg.channel, resume.as_deref()))
             .current_dir(&spec.cwd))
         .await?,
     )?;
@@ -1059,6 +1106,44 @@ mod tests {
             ["--bg", "--resume", "9c4719e5-9508-461b-b1f4-e7b5a4c26f9d"]
         );
         assert!(spec().check().is_ok());
+    }
+
+    #[test]
+    fn a_session_two_directories_hold_is_resumed_by_its_newest_transcript() {
+        let id = "9c4719e5-9508-461b-b1f4-e7b5a4c26f9d";
+        let claude = std::env::temp_dir().join(format!("ccdash-resume-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&claude);
+        let file = |dir: &str| {
+            claude
+                .join("projects")
+                .join(dir)
+                .join(format!("{id}.jsonl"))
+        };
+        // NOTE: nothing here yet: Claude Code says so itself
+        assert_eq!(resume_target(&claude, id), id);
+        let first = file("-home-alice-code-w-p");
+        std::fs::create_dir_all(first.parent().unwrap()).unwrap();
+        std::fs::write(&first, "{}\n").unwrap();
+        std::fs::create_dir_all(claude.join("projects/-home-bob-w-p")).unwrap();
+        // NOTE: one directory, another machine's: by id, the same session goes on
+        assert_eq!(resume_target(&claude, id), id);
+        let copy = file("-home-bob-w-p");
+        std::fs::write(&copy, "{}\n{}\n").unwrap();
+        let old = SystemTime::now() - Duration::from_secs(3600);
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&first)
+            .unwrap()
+            .set_modified(old)
+            .unwrap();
+        assert_eq!(resume_target(&claude, id), copy.to_string_lossy());
+        let args = LaunchSpec {
+            resume: Some(id.into()),
+            ..spec()
+        }
+        .args_resuming(Path::new("/s.json"), false, Some(&copy.to_string_lossy()));
+        assert_eq!(args[..3], ["--bg", "--resume", &*copy.to_string_lossy()]);
+        std::fs::remove_dir_all(&claude).unwrap();
     }
 
     #[test]

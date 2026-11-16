@@ -163,12 +163,15 @@ collector's log names its pipes.
 | editor             | in a console of its own; Windows Terminal keeps the tab open after a non-zero exit (`:cq`)            |
 | machine            | no load average (reads 0) or CPU temperature; wake-on-LAN: the card is armed (`powercfg`, 10 min)     |
 | lock, suspend      | `LockWorkStation`; `SetSuspendState` from a hidden PowerShell (sleep, not hibernation)                |
-| state sync         | `ReadDirectoryChangesW` instead of inotify; sessions do not resume across Linux and Windows           |
+| state sync         | `ReadDirectoryChangesW` instead of inotify                                                            |
 | workspace sync     | one recursive watch on the root; no open-file check for quiescence; git dirs outside a unit unwatched |
 | network shares     | not watched (no extended change records): a root on one is swept every 30 min                         |
 | npm's `claude.cmd` | runs, through `cmd.exe`; a batch file takes no multi-line argument, so such prompts need `claude.exe` |
 | claims             | compared as absolute paths: they only meet on machines with the same paths                            |
 
 A session's transcripts live under its directory's name
-(`C--Users-me-code-x`), which no Linux machine has, so the hub's search
-finds Windows sessions but they resume only on Windows.
+(`C--Users-me-code-x`), which no Linux machine has. Claude Code finds a
+session by its id whatever that name is, so a Windows session should
+resume on Linux and the other way round as between two Linux machines
+whose paths differ ([state sync](state-sync.md#1-turning-it-on)); between
+Windows and Linux nobody has tried it yet.

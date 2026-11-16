@@ -21,8 +21,15 @@ machine you pick ([sessions](sessions.md#2-resume)).
 services.ccdash.sync.enable = true;   # Home Manager, on every workstation
 ```
 
-Claude Code files sessions by directory, so every machine needs the same
-user and the same paths.
+Claude Code files a session under the directory it started in and finds
+it again by its id from any directory. So the machines need neither the
+same user nor the same paths: what has to match is the workspace, of which
+the hub knows each machine's directory
+([installation](installation.md#41-the-hub)), and the layout below it. A
+session resumed on a machine with other paths goes on under its own id, in
+that machine's directory of the workspace; its transcript stays where the
+first machine filed it, and its earlier tool calls keep the paths they ran
+with.
 
 ## 2. What travels
 
