@@ -14,7 +14,6 @@
 use std::{
     fs,
     io::{Read, Seek, SeekFrom, Write},
-    os::unix::fs::{OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
 };
 
@@ -47,6 +46,7 @@ use super::{
 use crate::{
     attachments::{self as rows, Attachment, ID_LEN, Kind},
     config::HubAttachments,
+    fsx::{self, ModeExt},
     store::Store,
     sync::hub::{Host, collector_auth},
     util::now_ms,
@@ -77,7 +77,7 @@ impl Attachments {
     /// Opens `dir` (created private) and draws the view links' key.
     pub fn open(dir: &Path, cfg: HubAttachments) -> Result<Self> {
         fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
-        fs::set_permissions(dir, fs::Permissions::from_mode(0o700))?;
+        fsx::set_mode(dir, 0o700)?;
         let mut seed = [0u8; 32];
         SystemRandom::new()
             .fill(&mut seed)
@@ -844,10 +844,14 @@ mod tests {
             written.sha256,
             hex(digest::digest(&digest::SHA256, b"\xff\xd8\xffrest").as_ref())
         );
-        assert_eq!(
-            fs::metadata(&tmp).unwrap().permissions().mode() & 0o777,
-            0o600
-        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(&tmp).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
         // NOTE: an id is drawn fresh, so a second upload never lands on the first
         let (_tx, rx) = mpsc::channel(1);
         assert!(writer(tmp, rx).is_err());

@@ -18,7 +18,6 @@
 use std::{
     fs,
     io::Read,
-    os::unix::fs::{OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
     process::{Command, Stdio},
     time::{Duration, Instant, SystemTime},
@@ -31,6 +30,7 @@ use tracing::{info, warn};
 use crate::{
     attachments::{self as shared, Derived, Kind},
     config::CollectorConfig,
+    fsx::{self, ModeExt},
     paths,
     sync::collector::{base_url, hub_http_config},
     util::expand_env,
@@ -52,7 +52,25 @@ pub fn dir(cfg: &CollectorConfig) -> PathBuf {
 /// The permission rule that lets a session read the fetched files without
 /// asking, in Claude Code's syntax (`//` starts an absolute path).
 pub fn read_rule(cfg: &CollectorConfig) -> String {
-    format!("Read(/{}/**)", dir(cfg).display())
+    format!("Read(/{}/**)", rule_path(&dir(cfg).to_string_lossy()))
+}
+
+/// `dir` as Claude Code's permission rules match it: a Windows path in
+/// POSIX form (`C:\Users\me` is `/c/Users/me`); any other as it is.
+///
+/// <https://code.claude.com/docs/en/permissions>
+fn rule_path(dir: &str) -> String {
+    let slashed = crate::workspace::slashed(dir);
+    match slashed.as_bytes() {
+        [drive, b':', b'/', ..] if drive.is_ascii_alphabetic() => {
+            format!(
+                "/{}{}",
+                char::from(drive.to_ascii_lowercase()),
+                &slashed[2..]
+            )
+        }
+        _ => slashed.into_owned(),
+    }
 }
 
 /// `text` with every attachment marker replaced by its local file's line.
@@ -128,7 +146,7 @@ fn words(cfg: &CollectorConfig, file: &Path) -> Result<String, String> {
 /// Runs a command to its end or `timeout`, whichever is first; its
 /// standard output, or why it failed (the end of its standard error).
 fn run(program: &str, args: &[String], timeout: Duration) -> Result<String, String> {
-    let mut child = Command::new(program)
+    let mut child = Command::new(crate::util::program(program))
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -150,6 +168,9 @@ fn run(program: &str, args: &[String], timeout: Duration) -> Result<String, Stri
         match child.try_wait() {
             Ok(Some(status)) => break status,
             Ok(None) if started.elapsed() >= timeout => {
+                // NOTE: a `.cmd` shim is `cmd.exe` starting the program
+                #[cfg(windows)]
+                crate::procs::end_group(child.id(), true);
                 let _ = child.kill();
                 let _ = child.wait();
                 return Err(format!(
@@ -386,9 +407,9 @@ fn fetch(cfg: &CollectorConfig, folder: &Path, id: &str) -> Result<(Kind, PathBu
     };
     fs::create_dir_all(folder).with_context(|| format!("creating {}", folder.display()))?;
     if let Some(root) = folder.parent() {
-        fs::set_permissions(root, fs::Permissions::from_mode(0o700))?;
+        fsx::set_mode(root, 0o700)?;
     }
-    fs::set_permissions(folder, fs::Permissions::from_mode(0o700))?;
+    fsx::set_mode(folder, 0o700)?;
     let path = folder.join(&name);
     let tmp = folder.join(format!("{name}.part"));
     let _ = fs::remove_file(&tmp);
@@ -482,8 +503,23 @@ mod tests {
             )
         );
         assert_eq!(materialize(&cfg, "no markers"), "no markers");
+        #[cfg(unix)]
         assert_eq!(read_rule(&cfg), format!("Read(/{}/**)", root.display()));
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn the_read_rule_names_a_windows_folder_as_claude_code_matches_it() {
+        assert_eq!(
+            rule_path(r"C:\Users\me\AppData\Local\ccdash\state\attachments"),
+            "/c/Users/me/AppData/Local/ccdash/state/attachments"
+        );
+        assert_eq!(rule_path("d:/files"), "/d/files");
+        assert_eq!(
+            rule_path("/home/me/.local/state/ccdash"),
+            "/home/me/.local/state/ccdash"
+        );
+        assert_eq!(rule_path(r"/home/me/a\b"), r"/home/me/a\b");
     }
 
     #[test]
@@ -559,14 +595,18 @@ mod tests {
             format!("what is this?\n[Attached image: {}]", path.display())
         );
         assert_eq!(fs::read(&path).unwrap(), b"\xff\xd8\xff\xe0 the photo");
-        assert_eq!(
-            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
-            0o600
-        );
-        assert_eq!(
-            fs::metadata(root.join(ID)).unwrap().permissions().mode() & 0o777,
-            0o700
-        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+            assert_eq!(
+                fs::metadata(root.join(ID)).unwrap().permissions().mode() & 0o777,
+                0o700
+            );
+        }
         let request = served.join().unwrap();
         assert!(
             request.starts_with(&format!("GET /attachments/-/fetch/{ID} ")),
@@ -597,12 +637,15 @@ mod tests {
         let _ = fs::remove_dir_all(root);
     }
 
+    #[cfg(unix)]
     fn sh(script: &str) -> Vec<String> {
         ["sh", "-c", script, "sh", "{file}"]
             .map(str::to_owned)
             .to_vec()
     }
 
+    /// Unix: `sh`.
+    #[cfg(unix)]
     #[test]
     fn commands_end_with_their_output_their_error_or_the_clock() {
         let args = |script: &str| vec!["-c".to_owned(), script.to_owned()];
@@ -629,6 +672,31 @@ mod tests {
         assert_eq!(big.len(), 300_000);
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn a_stopped_batch_file_ends_with_what_it_started() {
+        let dir = std::env::temp_dir().join(format!("ccdash-catt-{}-cmd", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let shim = dir.join("slow.cmd");
+        // NOTE: cmd.exe runs the shim and waits for ping, as for an npm-installed tool
+        fs::write(&shim, "@ping -n 33 127.0.0.4 >NUL\r\n").unwrap();
+        let slow = run(&shim.to_string_lossy(), &[], Duration::from_millis(500)).unwrap_err();
+        assert!(slow.contains("was stopped after"), "{slow}");
+        let pinging = || {
+            crate::win::processes().into_iter().any(|p| {
+                crate::win::command_line(p.pid).is_some_and(|line| line.contains("127.0.0.4"))
+            })
+        };
+        let gone = (0..50).any(|_| {
+            std::thread::sleep(Duration::from_millis(40));
+            !pinging()
+        });
+        assert!(gone, "ping outlived the timeout");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Unix: `sh`.
+    #[cfg(unix)]
     #[test]
     fn a_recording_is_put_into_words_once_and_named_in_the_prompt() {
         let (mut cfg, root) = cfg("words");
@@ -672,6 +740,8 @@ mod tests {
         let _ = fs::remove_dir_all(root);
     }
 
+    /// Unix: `sh`.
+    #[cfg(unix)]
     #[test]
     fn what_cannot_be_heard_is_said_not_hidden() {
         let (mut cfg, root) = cfg("unheard");
