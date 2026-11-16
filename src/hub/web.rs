@@ -16,7 +16,7 @@ use ring::digest;
 use super::http::App;
 
 const CSP: &str = "default-src 'self'; script-src 'self'{hashes}; \
-    style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; \
+    style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; \
     manifest-src 'self'; worker-src 'self'; base-uri 'none'; frame-ancestors 'none'";
 
 pub async fn serve(State(app): State<App>, uri: Uri) -> Response {

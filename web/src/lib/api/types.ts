@@ -114,6 +114,45 @@ input: Array<[string, string]>,
 always: string | null, } | { "kind": "question", questions: Array<Question>, } | { "kind": "plan", plan: string, });
 
 /**
+ * A file kept on the hub for a prompt.
+ */
+export type Attachment = { id: string, 
+/**
+ * The file's name as uploaded, made safe (`safe_name`).
+ */
+name: string, kind: AttachmentKind, 
+/**
+ * From the file's first bytes, never from what the browser said.
+ */
+mime: string, bytes: number, sha256: string, 
+/**
+ * The session it was attached in, when the panel said.
+ */
+session: string | null, workspace: string | null, created_at: number, 
+/**
+ * When a collector last fetched it for a session; None: never sent.
+ */
+fetched_at: number | null, 
+/**
+ * Kept past `attachments.retention_days` and the quota.
+ */
+pinned: boolean, 
+/**
+ * When the retention drops it; None when pinned or kept for good.
+ */
+expires_at?: number, 
+/**
+ * A link the panel can show or play it through for a while, without
+ * its token (`/attachments/-/view/<key>`).
+ */
+url?: string, };
+
+/**
+ * What an attachment is to Claude and to the panel.
+ */
+export type AttachmentKind = "image" | "audio" | "video" | "file";
+
+/**
  * A session that wrote a note.
  */
 export type Author = { session: string, 
@@ -631,7 +670,12 @@ sync: boolean,
 /**
  * Keeps the workspace root in step through the hub (`[workspace] enable`).
  */
-workspace: boolean, };
+workspace: boolean, 
+/**
+ * Fetches the files attached to a prompt for its sessions
+ * (`[attachments] enable`).
+ */
+attachments: boolean, };
 
 /**
  * A machine whose collector reports to the hub. The hub keeps every one
@@ -691,7 +735,11 @@ export type HubFeatures = {
 /**
  * The workspace sync (`[workspace] enable`).
  */
-workspace: boolean, };
+workspace: boolean, 
+/**
+ * Files attached to prompts are kept here (`[attachments] enable`).
+ */
+attachments: boolean, };
 
 /**
  * The hub's own machine.

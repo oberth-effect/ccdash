@@ -238,6 +238,7 @@ fn create(conn: &Connection) -> Result<()> {
     conn.execute_batch(messages::SCHEMA)?;
     conn.execute_batch(claims::SCHEMA)?;
     conn.execute_batch(crate::drafts::SCHEMA)?;
+    conn.execute_batch(crate::attachments::SCHEMA)?;
     conn.execute_batch(crate::sync::hub::SCHEMA)?;
     conn.execute_batch(crate::workspace::hub::SCHEMA)?;
     migrate(conn)?;

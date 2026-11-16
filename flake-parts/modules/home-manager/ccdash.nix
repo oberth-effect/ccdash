@@ -431,6 +431,21 @@ in
         '';
       };
 
+      attachments.enable = mkOption {
+        type = types.bool;
+        default = true;
+        description = ''
+          Whether sessions may read the files attached to prompts in the
+          panel without asking: adds a `Read` rule for the collector's
+          attachments directory (`attachments/` in ccdash's state
+          directory) to {option}`programs.claude-code.settings.permissions.allow`.
+          Without it Claude asks before opening each attached file.
+          Sessions the panel starts get the rule through their own
+          settings either way. Set {option}`settings.attachments.enable`
+          to false to stop this machine fetching attachments at all.
+        '';
+      };
+
       asks.enable = mkOption {
         type = types.bool;
         default = true;
@@ -667,6 +682,12 @@ in
         };
         Install.WantedBy = [ "default.target" ];
       };
+    })
+    (mkIf (cfg.claudeCode.attachments.enable && (cfg.settings.attachments.enable or true)) {
+      # NOTE: `//` starts an absolute path in Claude Code's permission rules
+      programs.claude-code.settings.permissions.allow = [
+        "Read(/${cfg.settings.attachments.dir or "${config.xdg.stateHome}/ccdash/attachments"}/**)"
+      ];
     })
     (mkIf cfg.claudeCode.hooks.enable {
       programs.claude-code.settings.hooks = genAttrs hookEvents (event: [

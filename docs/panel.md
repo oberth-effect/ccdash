@@ -136,10 +136,12 @@ the terminal does.
 The field and its buttons are one frame, and the buttons are one row on
 every screen, so the chat keeps the height:
 
-- **+** adds to the prompt: a template (Settings › Composer holds them), a
-  `[[note]]` link, a skill, the text opened in your editor on a machine
-  (below), and the panel's keys. Attaching an image, a file, a voice
-  message or a video is listed there and not built yet.
+- **+** adds to the prompt: a photo or a file
+  ([attachments](attachments.md); pasting a screenshot or dropping files
+  on the field does the same), a template (Settings › Composer holds
+  them), a `[[note]]` link, a skill, the text opened in your editor on a
+  machine (below), and the panel's keys. Voice dictation is listed there
+  and not built yet.
 - **Aa** shows the formatting bar above the text: bold, italic,
   strikethrough, code, a code block, a link, lists, a quote, a heading,
   and **Preview**, which renders the markdown in place. Each button works
@@ -314,6 +316,13 @@ sets the `OTEL_*` variables and starts a receiver in the collector on
 redacted, as Claude Code sends it by default.
 
 ## 5. Machines, Claude state and Workspace
+
+The sidebar has three groups, a line between them: the work (Now,
+Sessions, Projects, Reports), what is kept and measured around it (Files,
+History, Analytics, Machines, Claude state, Workspace) and the panel's
+own (Settings, Keys and help). **Files** lists what was attached to
+prompts and is still on the hub, with Keep and Delete
+([attachments](attachments.md#4-files-what-is-kept-and-for-how-long)).
 
 ![Machines: the hub's own machine and two nodes with uptime, CPU, temperature, memory, battery, the screen's lock state, their sessions and a Lock button](images/machines.png)
 

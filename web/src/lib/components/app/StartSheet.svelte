@@ -29,6 +29,7 @@
 	import * as Dialog from '#lib/components/ui/dialog/index.js';
 	import { SmartSelect, type Choice } from '#lib/components/ui/smart-select/index.js';
 	import PromptField from '#lib/components/session/PromptField.svelte';
+	import { Tray } from '#lib/attachments.svelte.js';
 	import {
 		clearDraft,
 		editHostFor,
@@ -95,13 +96,20 @@
 	const target = $derived(switching ? live.sessions.get(switching.id) : undefined);
 	/** Stopped already (an earlier try's resume failed): only the copy is left to start. */
 	const stopped = $derived(Boolean(switching) && (!target || target.activity === 'gone'));
+	/** The files the first prompt carries. */
+	const tray = new Tray();
+	/** The hub keeps attachments and the picked machine fetches them. */
+	const canAttach = $derived(
+		Boolean(live.hub?.features.attachments) && Boolean(host) && live.features(host).attachments
+	);
 	const ready = $derived(
 		Boolean(
 			host &&
 			ws &&
 			(resume || project) &&
 			(!switching || ((model || effort) && host === switching.host)) &&
-			text.trim() &&
+			(text.trim() || (canAttach && tray.ids.length)) &&
+			!tray.busy &&
 			!busy &&
 			!pending &&
 			!draft?.editing
@@ -261,6 +269,7 @@
 		if (current.state === 'started') {
 			pending = null;
 			text = '';
+			tray.clear();
 			clearDraft(draftKey);
 			starter.open = false;
 			goto(`/sessions/${current.session}`);
@@ -275,7 +284,7 @@
 	}
 
 	async function start() {
-		const body = text.trim();
+		const body = canAttach ? tray.compose(text) : text.trim();
 		if (!ready) return;
 		busy = true;
 		error = '';
@@ -506,6 +515,7 @@
 					fill
 					disabled={busy || Boolean(pending)}
 					editing={draft?.editing ?? null}
+					tray={canAttach ? tray : null}
 					{editHost}
 					notice={draft?.notice ?? null}
 					onsubmit={start}

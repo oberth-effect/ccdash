@@ -534,6 +534,9 @@ pub struct HostFeatures {
     pub sync: bool,
     /// Keeps the workspace root in step through the hub (`[workspace] enable`).
     pub workspace: bool,
+    /// Fetches the files attached to a prompt for its sessions
+    /// (`[attachments] enable`).
+    pub attachments: bool,
 }
 
 /// A prompt being written in the panel, kept on the hub so it survives a
@@ -586,6 +589,8 @@ pub struct HubStatus {
 pub struct HubFeatures {
     /// The workspace sync (`[workspace] enable`).
     pub workspace: bool,
+    /// Files attached to prompts are kept here (`[attachments] enable`).
+    pub attachments: bool,
 }
 
 /// Colours generated from a machine's wallpaper, which a panel can follow.

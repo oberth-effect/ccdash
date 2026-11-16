@@ -49,6 +49,7 @@ async fn run(hub: Hub, mut limits: Limits) -> anyhow::Result<()> {
                 channel: true,
                 sync: false,
                 workspace: false,
+                attachments: true,
             },
             addr: None,
             tx: link,

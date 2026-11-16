@@ -43,6 +43,7 @@ use tracing::warn;
 use ts_rs::TS;
 
 use super::{
+    attachments,
     collect::{self, Tokens},
     core::{Cmd, Dirs, Hub, LaunchIssue, LaunchReq},
     reports, web,
@@ -101,6 +102,8 @@ pub struct App {
     pub web_dir: Arc<PathBuf>,
     /// The reports' files and view links (see `reports`).
     pub(crate) reports: Arc<reports::Reports>,
+    /// The files attached to prompts; None when `[attachments] enable` is off.
+    pub(crate) attachments: Option<Arc<attachments::Attachments>>,
     /// Ids of tokens revoked since the start; open streams on them end.
     revoked: broadcast::Sender<i64>,
     /// The workspace repositories, when the workspace sync is on.
@@ -148,6 +151,7 @@ pub async fn serve(
     sync: sync::hub::Mirror,
     git: Option<GitState>,
     reports: Arc<reports::Reports>,
+    attachments: Option<Arc<attachments::Attachments>>,
     catalog: Catalog,
 ) {
     let api = Router::new()
@@ -191,6 +195,16 @@ pub async fn serve(
         .route("/notes/{workspace}/{slug}/op", post(note_op))
         .route("/reports/{workspace}/{slug}/view", post(reports::mint))
         .route("/reports/{workspace}/{slug}/file", get(reports::file))
+        .route(
+            "/attachments",
+            get(attachments::list).post(attachments::upload),
+        )
+        .route(
+            "/attachments/{id}",
+            get(attachments::one)
+                .patch(attachments::patch)
+                .delete(attachments::remove),
+        )
         .route("/push", get(push_info))
         .route(
             "/push/subscriptions",
@@ -227,6 +241,7 @@ pub async fn serve(
         .route("/act/{key}/{action}", post(button))
         .route("/reports/-/view/{key}", get(reports::view))
         .merge(reports::upload_routes(tokens.clone(), reports.max_bytes()))
+        .merge(attachments::routes(tokens.clone()))
         .route(
             "/collect",
             get(collect::collect).with_state((
@@ -252,6 +267,7 @@ pub async fn serve(
             revoked: broadcast::channel(16).0,
             git,
             reports,
+            attachments,
             catalog,
         });
     if let Err(e) = axum::serve(

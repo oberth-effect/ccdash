@@ -1,6 +1,7 @@
 <script lang="ts">
-	// The areas, from the registry; a count where the area has one; the
-	// links keep the range, and the help closes the list. `compact`: icons
+	// The areas, from the registry, a line between its groups; a count
+	// where the area has one; the links keep the range, and the help ends
+	// the panel's own group. `compact`: icons
 	// only, for the collapsed sidebar.
 	import { page } from '$app/state';
 	import KeyboardIcon from '@lucide/svelte/icons/keyboard';
@@ -17,8 +18,11 @@
 </script>
 
 <nav class="flex flex-col gap-0.5 p-2" aria-label="Areas">
-	{#each offered() as area (area.href)}
+	{#each offered() as area, i (area.href)}
 		{@const active = area.match(page.url.pathname)}
+		{#if i > 0 && offered()[i - 1].group !== area.group}
+			<hr class="my-1.5 border-sidebar-border" />
+		{/if}
 		{@const badge = area.badge?.(inScope)}
 		<a
 			href={range ? `${area.href}?range=${encodeURIComponent(range)}` : area.href}
@@ -54,7 +58,7 @@
 		type="button"
 		title={compact ? 'Keys and help (?)' : undefined}
 		class={cn(
-			'mt-1 flex items-center gap-2.5 rounded-md border-t border-sidebar-border py-2 text-sm text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground',
+			'flex items-center gap-2.5 rounded-md py-2 text-sm text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground',
 			compact ? 'justify-center px-2' : 'px-2.5'
 		)}
 		onclick={() => {

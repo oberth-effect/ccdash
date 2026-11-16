@@ -27,6 +27,18 @@ const GRAPH_KEY = 'ccdash.graph';
 const REPORT_SIZE_KEY = 'ccdash.reportsize';
 const TEXT_SIZE_KEY = 'ccdash.textsize';
 const FORMAT_BAR_KEY = 'ccdash.formatbar';
+const ATTACH_KEY = 'ccdash.attachprefs';
+
+/** How photos are attached from this device. */
+export type AttachPrefs = {
+	/** Photos are made smaller before the upload. */
+	resize: boolean;
+	/** Their longest side then, in pixels: what Claude sees at most. */
+	edge: number;
+};
+/** NOTE: Claude 4.7 and later see up to 2576 px on the long side, earlier models 1568. */
+export const ATTACH_EDGES = [1568, 2576] as const;
+export const DEFAULT_ATTACH: AttachPrefs = { resize: true, edge: 2576 };
 
 /** The panel's size on this device, in percent of the browser's own text
  * size: text, buttons and spacing follow it together, as a browser zoom
@@ -158,6 +170,10 @@ class Prefs {
 	textSize = $state<TextSize>(
 		((stored) => (isTextSize(stored) ? stored : 'auto'))(load<unknown>(TEXT_SIZE_KEY, 'auto'))
 	);
+	attach = $state<AttachPrefs>({
+		...DEFAULT_ATTACH,
+		...load<Partial<AttachPrefs>>(ATTACH_KEY, {})
+	});
 	/** The composer's formatting bar (the Aa button). */
 	formatBar = $state<boolean>(browser && localStorage.getItem(FORMAT_BAR_KEY) === 'on');
 	/** The full sidebar on wide screens; off, a rail of icons (a narrow
@@ -244,6 +260,11 @@ class Prefs {
 		if (!browser) return;
 		const scale = this.textScale;
 		document.documentElement.style.fontSize = scale === 100 ? '' : `${scale}%`;
+	}
+
+	setAttach(changes: Partial<AttachPrefs>) {
+		this.attach = { ...this.attach, ...changes };
+		localStorage.setItem(ATTACH_KEY, JSON.stringify(this.attach));
 	}
 
 	setFormatBar(on: boolean) {

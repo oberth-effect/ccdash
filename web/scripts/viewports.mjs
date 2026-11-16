@@ -33,6 +33,7 @@ const PAGES = [
 	['chat-working', `/sessions/${WORKING}`],
 	['projects', '/projects'],
 	['machines', '/machines'],
+	['files', '/files'],
 	['settings', '/settings/appearance']
 ];
 /** The chat must keep at least this share of a session page's height. */

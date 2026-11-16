@@ -1,9 +1,11 @@
 <script lang="ts">
 	// A message between sessions, or from the owner, at its time.
 	import type { Message, Session } from '#lib/api/types.js';
+	import { parse } from '#lib/attachments.svelte.js';
 	import { fmtStamp } from '#lib/format.js';
 	import { live } from '#lib/live/store.svelte.js';
 	import { label } from '#lib/session.js';
+	import Attachments from './Attachments.svelte';
 
 	let {
 		message: m,
@@ -38,6 +40,7 @@
 					: 'delivered with the prompt'
 	);
 	const link = $derived(sent ? m.to_session : m.from_session);
+	const said = $derived(parse(m.text));
 </script>
 
 <div class="flex flex-col gap-1 {sent ? 'items-end' : 'items-start'} {pending ? 'opacity-80' : ''}">
@@ -46,9 +49,14 @@
 		{#if link && other}<a class="underline" href="/sessions/{link}">{who}</a>{:else}{who}{/if}
 		· {fmtStamp(m.sent_at)} · {status}
 	</span>
-	<div
-		class="max-w-[90%] rounded-lg border border-dashed bg-muted px-3 py-2 text-sm whitespace-pre-wrap"
-	>
-		{m.text}
-	</div>
+	{#if said.text}
+		<div
+			class="max-w-[90%] rounded-lg border border-dashed bg-muted px-3 py-2 text-sm whitespace-pre-wrap"
+		>
+			{said.text}
+		</div>
+	{/if}
+	{#if said.ids.length}
+		<Attachments ids={said.ids} failed={said.failed} align={sent ? 'end' : 'start'} />
+	{/if}
 </div>

@@ -1,7 +1,8 @@
 <script lang="ts">
 	// Settings › Composer: how the field behaves on this device (vim keys,
-	// line numbers, markdown, wrapping), the vimrc, which machine Edit in an
-	// editor opens on, the quick replies and the templates. Every choice here is
+	// line numbers, markdown, wrapping), the vimrc, how photos are attached,
+	// which machine Edit in an editor opens on, the quick replies and the
+	// templates. Every choice here is
 	// kept in this browser.
 	import { Button } from '#lib/components/ui/button/index.js';
 	import { Input } from '#lib/components/ui/input/index.js';
@@ -9,7 +10,13 @@
 	import { editHostFor } from '#lib/drafts.js';
 	import { bridgeWatch } from '#lib/vim.js';
 	import { live } from '#lib/live/store.svelte.js';
-	import { DEFAULT_EDITOR, DEFAULT_QUICK, DEFAULT_VIMRC, prefs } from '#lib/prefs.svelte.js';
+	import {
+		ATTACH_EDGES,
+		DEFAULT_EDITOR,
+		DEFAULT_QUICK,
+		DEFAULT_VIMRC,
+		prefs
+	} from '#lib/prefs.svelte.js';
 
 	let quickText = $state(prefs.quick.join('\n'));
 	let templates = $state(prefs.templates.map((t) => ({ ...t })));
@@ -191,6 +198,47 @@
 			</span>
 		{/if}
 	</div>
+</section>
+
+<section class="flex flex-col gap-2">
+	<h2 class="text-base font-semibold">Attachments</h2>
+	{#if live.hub?.features.attachments}
+		<label class="flex items-center gap-2 text-sm">
+			<input
+				type="checkbox"
+				class="size-4 accent-primary"
+				checked={prefs.attach.resize}
+				onchange={(e) => prefs.setAttach({ resize: e.currentTarget.checked })}
+			/>
+			Make photos smaller before they are uploaded from this device
+		</label>
+		<label class="flex flex-col gap-1 pl-6 text-sm">
+			<span>Longest side</span>
+			<select
+				class="{selectClass} max-w-md"
+				value={String(prefs.attach.edge)}
+				disabled={!prefs.attach.resize}
+				onchange={(e) => {
+					const edge = Number(e.currentTarget.value);
+					if ((ATTACH_EDGES as readonly number[]).includes(edge)) prefs.setAttach({ edge });
+				}}
+			>
+				<option value="2576">2576 px: all that newer Claude models see</option>
+				<option value="1568">1568 px: all that older models see, a third of the upload</option>
+			</select>
+		</label>
+		<p class="pl-6 text-xs text-muted-foreground">
+			Claude scales a picture down to this anyway, so nothing it would have seen is lost, the upload
+			over mobile data is a fraction, and the photo's place and device data are left out. Off,
+			photos go as they are (the + menu's "Photos in full size" is the same switch): for fine print
+			Claude should crop itself. What the hub keeps and for how long is in
+			<a class="underline" href="/files">Files</a>.
+		</p>
+	{:else}
+		<p class="text-sm text-muted-foreground">
+			Attachments are off on this hub (<code class="font-mono">[attachments] enable</code>).
+		</p>
+	{/if}
 </section>
 
 <section class="flex flex-col gap-2">

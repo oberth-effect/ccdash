@@ -19,6 +19,7 @@
 		replyTo,
 		type Session
 	} from '#lib/api/index.js';
+	import { Tray } from '#lib/attachments.svelte.js';
 	import { Button } from '#lib/components/ui/button/index.js';
 	import {
 		clearDraft,
@@ -41,6 +42,13 @@
 	const key = $derived(sessionDraft(s.id));
 	// svelte-ignore state_referenced_locally
 	let text = $state(initialDraft(sessionDraft(s.id)));
+	// svelte-ignore state_referenced_locally
+	const tray = new Tray(s.id, sessionDraft(s.id));
+	/** The hub keeps attachments and the session's machine fetches them. */
+	const canAttach = $derived(
+		Boolean(live.hub?.features.attachments) && live.features(s.host).attachments
+	);
+	const empty = $derived(!text.trim() && !(canAttach && tray.ids.length));
 	let field = $state<PromptField | null>(null);
 	let busy = $state(false);
 	let error = $state('');
@@ -104,8 +112,8 @@
 	}
 
 	async function submit(kind: 'reply' | 'message') {
-		const body = text.trim();
-		if (!body || busy || draft?.editing) return;
+		const body = canAttach ? tray.compose(text) : text.trim();
+		if (!body || busy || tray.busy || draft?.editing) return;
 		// NOTE: the field goes read-only while busy and loses focus; it gets it back
 		// where it had it (not on a phone that tapped the button)
 		const refocus = field?.hasFocus() ?? false;
@@ -115,6 +123,7 @@
 			if (kind === 'reply') live.put((await replyTo(s.id, body)).session);
 			else await messageTo(s.id, body);
 			text = '';
+			tray.clear();
 			clearDraft(key);
 			field?.remember(body);
 			onsent?.(kind);
@@ -185,6 +194,7 @@
 		label="Message to Claude"
 		disabled={busy}
 		editing={draft?.editing ?? null}
+		tray={canAttach ? tray : null}
 		{editHost}
 		notice={draft?.notice ?? null}
 		onsubmit={() => submit(canReply ? 'reply' : 'message')}
@@ -214,15 +224,15 @@
 				<Button
 					type="submit"
 					size="sm"
-					disabled={busy || !text.trim() || Boolean(draft?.editing)}
-					title="Send (Ctrl Enter)">Send</Button
+					disabled={busy || tray.busy || empty || Boolean(draft?.editing)}
+					title={tray.busy ? 'Waiting for the upload' : 'Send (Ctrl Enter)'}>Send</Button
 				>
 			{/if}
 			<Button
 				type="button"
 				size="sm"
 				variant={canReply ? 'outline' : 'default'}
-				disabled={busy || !text.trim() || Boolean(draft?.editing)}
+				disabled={busy || tray.busy || empty || Boolean(draft?.editing)}
 				title="Hand the text to Claude as context with its next prompt, without starting a turn (Ctrl Shift Enter)"
 				onclick={() => submit('message')}>Next prompt</Button
 			>

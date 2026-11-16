@@ -6,6 +6,7 @@
 //! mirror of this host's sessions for the DMS plugin and the CLI.
 
 mod api;
+pub mod attachments;
 mod link;
 mod queue;
 pub mod reports;
@@ -208,6 +209,8 @@ const SKILLS_EVERY_MS: i64 = 300_000;
 /// How often the desktop's colour files are looked at: two `stat`s, and the
 /// theme follows a new wallpaper within this.
 const PALETTE_EVERY: Duration = Duration::from_secs(3);
+/// How often the fetched attachments nobody used lately are dropped.
+const ATTACHMENTS_SWEEP_EVERY: Duration = Duration::from_secs(6 * 3600);
 /// A pending interrupt that no tool hook took within this (a turn of text
 /// alone, a lost hook) is dropped; the hub's mark went with the turn.
 const INTERRUPT_KEEP_MS: i64 = 10 * 60_000;
@@ -240,6 +243,7 @@ fn features(cfg: &CollectorConfig) -> HostFeatures {
         channel: cfg.launch.channel,
         sync: cfg.sync.enable,
         workspace: cfg.workspace.enable,
+        attachments: cfg.attachments.enable && cfg.hub.token_file.is_some(),
     }
 }
 
@@ -283,6 +287,7 @@ async fn serve(cfg: Arc<CollectorConfig>) -> Result<()> {
             cfg.edit.command.clone(),
         )
         .with_features(features(&cfg))
+        .with_config(cfg.clone())
         .with_skills(cfg.skills.plugin_dirs.clone())
         .with_sync(sync.clone())
         .with_workspace(workspace.clone())
@@ -340,6 +345,20 @@ async fn serve(cfg: Arc<CollectorConfig>) -> Result<()> {
         // NOTE: not on the `agents` poll: that needs a working `claude`, a wallpaper does not
         while palette_tick.send(LocalCmd::PaletteTick).await.is_ok() {
             ticks.tick().await;
+        }
+    });
+    tokio::spawn({
+        let cfg = cfg.clone();
+        async move {
+            let mut ticks = tokio::time::interval(ATTACHMENTS_SWEEP_EVERY);
+            loop {
+                ticks.tick().await;
+                let cfg = cfg.clone();
+                match tokio::task::spawn_blocking(move || attachments::sweep(&cfg)).await {
+                    Ok(0) | Err(_) => {}
+                    Ok(n) => info!("attachments: dropped {n} fetched files nobody used lately"),
+                }
+            }
         }
     });
     tokio::spawn(ingest_loop(ingest, local.sender()));
@@ -592,6 +611,8 @@ struct Actor {
     down_at: Option<i64>,
     /// How sessions start and stop here (`[launch]`).
     launch: Launch,
+    /// The whole configuration, for what works off the loop (attachments).
+    cfg: Arc<CollectorConfig>,
     /// `[attach] command`, for the hub's `Open`.
     attach: Vec<String>,
     /// `[edit] command`, for the hub's `Edit`.
@@ -680,6 +701,7 @@ impl Actor {
             },
             attach: Vec::new(),
             edit: Vec::new(),
+            cfg: Arc::new(CollectorConfig::default()),
             features: HostFeatures::default(),
             edits: Arc::default(),
             dirs: BTreeMap::new(),
@@ -799,6 +821,11 @@ impl Actor {
         self
     }
 
+    fn with_config(mut self, cfg: Arc<CollectorConfig>) -> Self {
+        self.cfg = cfg;
+        self
+    }
+
     fn with_features(mut self, features: HostFeatures) -> Self {
         self.features = features;
         self
@@ -885,8 +912,9 @@ impl Actor {
 
     /// Starts `spec` in the background and tells the hub what came of it;
     /// a session to continue is synced first (it may have run elsewhere).
-    fn launch(&self, launch: String, spec: LaunchSpec) {
+    fn launch(&self, launch: String, mut spec: LaunchSpec) {
         let (hub, cfg) = (self.hub.clone(), self.launch.clone());
+        let whole = self.cfg.clone();
         let jobs = self.jobs.clone();
         let inside = self.workspaces.locate(&spec.cwd).is_some();
         let sync = self.sync.clone().filter(|_| spec.resume.is_some());
@@ -896,8 +924,20 @@ impl Actor {
             {
                 warn!("launch {launch}: the sync pass did not finish in time");
             }
+            let allow = if whole.attachments.enable {
+                vec![attachments::read_rule(&whole)]
+            } else {
+                Vec::new()
+            };
+            let prompt = std::mem::take(&mut spec.prompt);
+            spec.prompt = tokio::task::spawn_blocking({
+                let (whole, prompt) = (whole.clone(), prompt.clone());
+                move || attachments::materialize(&whole, &prompt)
+            })
+            .await
+            .unwrap_or(prompt);
             let result = if inside {
-                actions::launch(&cfg, &spec, &jobs).await
+                actions::launch(&cfg, &spec, &jobs, &allow).await
             } else {
                 Err(format!("{} is outside every ccdash workspace", spec.cwd))
             };
@@ -1276,10 +1316,22 @@ impl Actor {
                 self.publish(serde_json::to_value(&update).unwrap_or(Value::Null));
             }
             ToCollector::Say { pid, text } => {
-                if let Some((_, tx)) = self.channels.get(&pid)
-                    && tx.try_send(ToChannel::Say { text }).is_err()
-                {
-                    warn!("channel of pid {pid} is not taking messages");
+                if let Some((_, tx)) = self.channels.get(&pid) {
+                    let (tx, cfg) = (tx.clone(), self.cfg.clone());
+                    // NOTE: off the loop: a prompt's attachments are fetched first
+                    tokio::spawn(async move {
+                        let text = tokio::task::spawn_blocking(move || {
+                            attachments::materialize(&cfg, &text)
+                        })
+                        .await;
+                        let sent = match text {
+                            Ok(text) => tx.send(ToChannel::Say { text }).await.is_ok(),
+                            Err(_) => false,
+                        };
+                        if !sent {
+                            warn!("channel of pid {pid} is not taking messages");
+                        }
+                    });
                 }
             }
             ToCollector::Decision { id, decision } => {

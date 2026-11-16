@@ -19,6 +19,7 @@ mod tests {
         crate::conversation::Conversation::export_all(&cfg).unwrap();
         crate::conversation::Stats::export_all(&cfg).unwrap();
         crate::conversation::Prompt::export_all(&cfg).unwrap();
+        crate::attachments::Attachment::export_all(&cfg).unwrap();
         crate::knowledge::Note::export_all(&cfg).unwrap();
         crate::knowledge::NoteView::export_all(&cfg).unwrap();
         crate::knowledge::Hit::export_all(&cfg).unwrap();

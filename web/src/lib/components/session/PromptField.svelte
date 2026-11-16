@@ -15,8 +15,8 @@
 	// A prompt: one frame around the editor (`Editor`, CodeMirror with vim
 	// keys when on) and a single row of buttons, shared by the session
 	// composer and the start sheet. The row holds only what is used all the
-	// time: `+` (templates, a note link, a skill, the editor on a machine,
-	// attachments to come, the keys), `Aa` (the formatting bar above the
+	// time: `+` (a photo or a file, templates, a note link, a skill, the
+	// editor on a machine, the keys), `Aa` (the formatting bar above the
 	// text, with the preview; off until asked for, kept per device), the
 	// prompt history (`PromptHistory`) and Expand; the caller's buttons end
 	// it. Enter is always a new line; Ctrl+Enter submits, Ctrl+Shift+Enter
@@ -25,13 +25,17 @@
 	// (`onedit`), Ctrl+Shift+F expands the field to most of the screen. A
 	// message that starts with `/` offers the skills of the field's host and
 	// workspace, as the terminal does; arrows, Enter, Tab or a tap complete
-	// one. Every key is in the panel's help (`help.svelte.ts`).
+	// one. Every key is in the panel's help (`help.svelte.ts`). With a
+	// `tray`, files are attached from the menu, by pasting or by dropping
+	// them on the field; they wait above the buttons until the prompt goes.
 	import type { Snippet } from 'svelte';
 	import { goto } from '$app/navigation';
 	import ALargeSmallIcon from '@lucide/svelte/icons/a-large-small';
 	import BoldIcon from '@lucide/svelte/icons/bold';
+	import CameraIcon from '@lucide/svelte/icons/camera';
 	import CodeIcon from '@lucide/svelte/icons/code';
 	import EyeIcon from '@lucide/svelte/icons/eye';
+	import FileIcon from '@lucide/svelte/icons/file';
 	import FileTextIcon from '@lucide/svelte/icons/file-text';
 	import HeadingIcon from '@lucide/svelte/icons/heading';
 	import HistoryIcon from '@lucide/svelte/icons/history';
@@ -51,14 +55,15 @@
 	import SquareTerminalIcon from '@lucide/svelte/icons/square-terminal';
 	import StrikethroughIcon from '@lucide/svelte/icons/strikethrough';
 	import TextQuoteIcon from '@lucide/svelte/icons/text-quote';
-	import VideoIcon from '@lucide/svelte/icons/video';
+	import XIcon from '@lucide/svelte/icons/x';
 	import { marked } from 'marked';
 	import { Unauthorized } from '#lib/api/client.js';
 	import { fetchSkills, type Editing, type Prompt } from '#lib/api/index.js';
 	import { Button } from '#lib/components/ui/button/index.js';
 	import * as Dialog from '#lib/components/ui/dialog/index.js';
 	import * as DropdownMenu from '#lib/components/ui/dropdown-menu/index.js';
-	import { fmtDuration } from '#lib/format.js';
+	import type { Tray } from '#lib/attachments.svelte.js';
+	import { fmtBytes, fmtDuration } from '#lib/format.js';
 	import { help } from '#lib/help.svelte.js';
 	import { live } from '#lib/live/store.svelte.js';
 	import { fence, link, prefixLines, wrap, type Edit } from '#lib/mdformat.js';
@@ -83,6 +88,7 @@
 		expandable = true,
 		editing = null,
 		editHost = null,
+		tray = null,
 		notice = null,
 		onsubmit,
 		onalternate,
@@ -115,6 +121,9 @@
 		editing?: Editing | null;
 		/** The machine `onedit` opens the editor on; null when none can. */
 		editHost?: string | null;
+		/** The files the prompt carries; null where attaching is off (the hub
+		 * or the session's machine does not do it). */
+		tray?: Tray | null;
 		/** How the last edit ended without text. */
 		notice?: string | null;
 		onsubmit: () => void;
@@ -142,6 +151,10 @@
 	let mode = $state('');
 	let vimrcErrors = $state<string[]>([]);
 	let historyOpen = $state(false);
+	let fileInput = $state<HTMLInputElement | null>(null);
+	let cameraInput = $state<HTMLInputElement | null>(null);
+	/** A file is held over the field. */
+	let dropping = $state(false);
 	let history = $state<Prompt[]>([]);
 	let historyLoaded = false;
 	/** Where up/down is in `history`; -1 is the field's own text. */
@@ -278,6 +291,39 @@
 		const { from, to } = editor.selection();
 		const edit = FORMATS[kind](text, from, to);
 		editor.replaceRange(edit.from, edit.to, edit.insert, edit.select);
+	}
+
+	function picked(event: Event) {
+		const input = event.currentTarget as HTMLInputElement;
+		if (input.files?.length) tray?.add(input.files);
+		// NOTE: the same file picked again must fire `change` again
+		input.value = '';
+	}
+
+	/** A screenshot or a copied file pasted into the field. */
+	function onpaste(event: ClipboardEvent) {
+		const files = event.clipboardData?.files;
+		if (!tray || locked || !files?.length) return;
+		event.preventDefault();
+		event.stopPropagation();
+		tray.add(files);
+	}
+
+	const carriesFiles = (event: DragEvent) =>
+		Boolean(tray && !locked && event.dataTransfer?.types.includes('Files'));
+
+	function ondragover(event: DragEvent) {
+		if (!carriesFiles(event)) return;
+		event.preventDefault();
+		dropping = true;
+	}
+
+	function ondrop(event: DragEvent) {
+		if (!carriesFiles(event)) return;
+		event.preventDefault();
+		event.stopPropagation();
+		dropping = false;
+		if (event.dataTransfer?.files.length) tray?.add(event.dataTransfer.files);
 	}
 
 	/** A skill from the menu: the field is empty, so `/` opens the list. */
@@ -440,6 +486,14 @@
 		else (document.activeElement as HTMLElement | null)?.blur();
 	}
 
+	/** Why attaching is off, for the menu's disabled entry. */
+	const attachOff = $derived(
+		live.hub?.features.attachments
+			? host
+				? `${host}'s collector does not fetch attachments ([attachments] enable, hub.token_file)`
+				: 'Pick a machine first'
+			: 'Attachments are off on the hub ([attachments] enable)'
+	);
 	const frameClass =
 		'flex min-h-0 flex-col rounded-lg border bg-background transition-colors focus-within:border-ring focus-within:ring-2 focus-within:ring-ring/40';
 	const FORMAT_BUTTONS = [
@@ -572,12 +626,35 @@
 						</DropdownMenu.Item>
 					{/if}
 					<DropdownMenu.Separator />
-					<DropdownMenu.Group>
-						<DropdownMenu.GroupHeading>Attach · not built yet</DropdownMenu.GroupHeading>
-						<DropdownMenu.Item disabled><PaperclipIcon /> Image or file</DropdownMenu.Item>
-						<DropdownMenu.Item disabled><MicIcon /> Voice message</DropdownMenu.Item>
-						<DropdownMenu.Item disabled><VideoIcon /> Video</DropdownMenu.Item>
-					</DropdownMenu.Group>
+					{#if tray}
+						<DropdownMenu.Item disabled={locked} onSelect={() => fileInput?.click()}>
+							<PaperclipIcon /> Photo or file
+							<span class="ml-auto pl-2 text-xs text-muted-foreground">or paste, or drop</span>
+						</DropdownMenu.Item>
+						<DropdownMenu.Item
+							class="pointer-fine:hidden"
+							disabled={locked}
+							onSelect={() => cameraInput?.click()}
+						>
+							<CameraIcon /> Take a photo
+						</DropdownMenu.Item>
+						<DropdownMenu.CheckboxItem
+							checked={!prefs.attach.resize}
+							closeOnSelect={false}
+							onCheckedChange={(full) => prefs.setAttach({ resize: !full })}
+						>
+							Photos in full size
+						</DropdownMenu.CheckboxItem>
+					{:else}
+						<DropdownMenu.Item disabled title={attachOff}>
+							<PaperclipIcon /> Photo or file
+							<span class="ml-auto pl-2 text-xs text-muted-foreground">off here</span>
+						</DropdownMenu.Item>
+					{/if}
+					<DropdownMenu.Item disabled>
+						<MicIcon /> Voice dictation
+						<span class="ml-auto pl-2 text-xs text-muted-foreground">not built yet</span>
+					</DropdownMenu.Item>
 					<DropdownMenu.Separator />
 					<DropdownMenu.Item onSelect={() => help.show()}>
 						<KeyboardIcon /> Keys and help
@@ -642,6 +719,60 @@
 	</div>
 {/snippet}
 
+{#snippet chips()}
+	<ul class="flex flex-wrap gap-1.5 px-1.5 pb-1.5" aria-label="Attached files">
+		{#each tray?.items ?? [] as item (item.key)}
+			<li
+				class="relative flex max-w-full items-center gap-2 overflow-hidden rounded-md border bg-card py-1 pr-1 pl-1 text-xs {item.state ===
+				'failed'
+					? 'border-critical/50'
+					: ''}"
+			>
+				{#if item.preview || (item.attachment?.kind === 'image' && item.attachment.url)}
+					<img
+						src={item.preview ?? item.attachment?.url}
+						alt=""
+						class="size-9 shrink-0 rounded object-cover"
+					/>
+				{:else}
+					<span class="flex size-9 shrink-0 items-center justify-center rounded bg-muted">
+						<FileIcon class="size-4 text-muted-foreground" />
+					</span>
+				{/if}
+				<span class="flex min-w-0 flex-col">
+					<span class="max-w-40 truncate font-medium">{item.name}</span>
+					{#if item.state === 'failed'}
+						<span class="max-w-56 text-critical" role="alert">{item.error}</span>
+					{:else}
+						<span class="text-muted-foreground">
+							{fmtBytes(item.bytes)}{item.state === 'uploading'
+								? ` · ${Math.round(item.progress * 100)}%`
+								: ''}
+						</span>
+					{/if}
+				</span>
+				<Button
+					variant="ghost"
+					size="icon-xs"
+					type="button"
+					aria-label="Remove {item.name}"
+					title={item.state === 'uploading' ? 'Cancel the upload' : 'Remove'}
+					onclick={() => tray?.remove(item.key)}
+				>
+					<XIcon />
+				</Button>
+				{#if item.state === 'uploading'}
+					<span
+						class="absolute bottom-0 left-0 h-0.5 bg-working transition-[width]"
+						style:width="{Math.max(4, item.progress * 100)}%"
+						aria-hidden="true"
+					></span>
+				{/if}
+			</li>
+		{/each}
+	</ul>
+{/snippet}
+
 {#snippet shown(big: boolean)}
 	{#if preview}
 		<div
@@ -667,7 +798,18 @@
 		onsubmit();
 	}}
 >
-	<div class="{frameClass} {fill ? 'flex-1' : ''} {expanded ? 'hidden' : ''}">
+	<!-- NOTE: capture: before the editor takes a pasted or dropped file as text -->
+	<div
+		class="{frameClass} {fill ? 'flex-1' : ''} {expanded ? 'hidden' : ''} {dropping
+			? 'border-working ring-2 ring-working/40'
+			: ''}"
+		role="group"
+		aria-label={label}
+		onpastecapture={onpaste}
+		ondragovercapture={ondragover}
+		ondragleave={() => (dropping = false)}
+		ondropcapture={ondrop}
+	>
 		{#if prefs.formatBar}{@render formatbar()}{/if}
 		{#if !expanded}{@render shown(false)}{/if}
 		<!-- NOTE: the editor's element moves into the expanded dialog and back; it is created once, here -->
@@ -734,8 +876,21 @@
 				{/each}
 			</ul>
 		{/if}
+		{#if tray && tray.items.length && !expanded}{@render chips()}{/if}
 		{#if !expanded}{@render toolbar(false)}{/if}
 	</div>
+	{#if tray}
+		<input bind:this={fileInput} type="file" multiple class="hidden" onchange={picked} />
+		<input
+			bind:this={cameraInput}
+			type="file"
+			accept="image/*"
+			capture="environment"
+			class="hidden"
+			onchange={picked}
+		/>
+		{#if tray.notice}<p class="text-xs text-warning" role="status">{tray.notice}</p>{/if}
+	{/if}
 	{#if notice && !editing}
 		<p class="text-xs text-muted-foreground" role="status">Editor: {notice}</p>
 	{/if}
@@ -773,6 +928,7 @@
 				bind:this={bigHost}
 				class="flex min-h-0 flex-1 flex-col {preview ? 'hidden' : ''} {locked ? 'opacity-60' : ''}"
 			></div>
+			{#if tray && tray.items.length}{@render chips()}{/if}
 			{@render toolbar(true)}
 		</form>
 	</Dialog.Content>

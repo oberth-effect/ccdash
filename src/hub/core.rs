@@ -603,6 +603,7 @@ impl Hub {
         tool_output_bytes: usize,
         repos: Option<Arc<Repos>>,
         wake_via: BTreeMap<String, String>,
+        attachments: bool,
     ) -> Self {
         let (tx, rx) = mpsc::channel(1024);
         let (updates, _) = broadcast::channel(256);
@@ -676,6 +677,7 @@ impl Hub {
                 machine: None,
                 features: HubFeatures {
                     workspace: workspace.is_some(),
+                    attachments,
                 },
             },
             host,
@@ -4567,6 +4569,7 @@ mod tests {
             0,
             None,
             BTreeMap::new(),
+            false,
         );
         let mut rxs = HashMap::new();
         for (conn, host) in ["navi", "flat"].into_iter().enumerate() {
@@ -4684,6 +4687,7 @@ mod tests {
             0,
             None,
             BTreeMap::new(),
+            false,
         );
         let (tx, rx) = mpsc::channel(64);
         hub.send(Cmd::CollectorOpen {
@@ -4984,6 +4988,7 @@ mod tests {
             0,
             None,
             BTreeMap::new(),
+            false,
         );
         let (tx, _rx) = mpsc::channel(64);
         hub.send(Cmd::CollectorOpen {
@@ -5047,6 +5052,7 @@ mod tests {
             0,
             None,
             BTreeMap::new(),
+            false,
         );
         let req = |resume: Option<&str>| LaunchReq {
             host: "navi".into(),
@@ -5339,6 +5345,7 @@ mod tests {
             0,
             None,
             BTreeMap::new(),
+            false,
         );
         // as after a hub restart: in the table, not yet in the live state
         let now = now_ms();
@@ -5425,6 +5432,7 @@ mod tests {
             0,
             None,
             BTreeMap::new(),
+            false,
         );
         let (tx, mut rx) = mpsc::channel(64);
         hub.send(Cmd::CollectorOpen {
@@ -5587,6 +5595,7 @@ mod tests {
                 0,
                 None,
                 via.clone(),
+                false,
             )
         };
         let hub = spawn(store.clone());

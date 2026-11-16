@@ -4,8 +4,10 @@
 	// sessions at their time, and the live block for what is happening now.
 	import type { Item, Session } from '#lib/api/types.js';
 	import { Button } from '#lib/components/ui/button/index.js';
+	import { parse } from '#lib/attachments.svelte.js';
 	import { fmtStamp } from '#lib/format.js';
 	import { busy, label, notice } from '#lib/session.js';
+	import Attachments from './Attachments.svelte';
 	import ConvItem from './ConvItem.svelte';
 	import LiveBlock from './LiveBlock.svelte';
 	import MessageItem from './MessageItem.svelte';
@@ -108,12 +110,18 @@
 			{@const ex = row.ex}
 			<section class="flex flex-col gap-2">
 				{#if ex.prompt !== null}
+					{@const said = parse(ex.prompt)}
 					<div class="flex flex-col items-end gap-1">
-						<div
-							class="max-w-[90%] rounded-lg bg-primary px-3 py-2 text-sm whitespace-pre-wrap text-primary-foreground"
-						>
-							{ex.prompt}
-						</div>
+						{#if said.text}
+							<div
+								class="max-w-[90%] rounded-lg bg-primary px-3 py-2 text-sm whitespace-pre-wrap text-primary-foreground"
+							>
+								{said.text}
+							</div>
+						{/if}
+						{#if said.ids.length}
+							<Attachments ids={said.ids} failed={said.failed} align="end" />
+						{/if}
 						<time class="text-xs text-muted-foreground"
 							>{fmtStamp(ex.at)}{ex.via === 'ccdash' ? ' · sent from ccdash' : ''}</time
 						>

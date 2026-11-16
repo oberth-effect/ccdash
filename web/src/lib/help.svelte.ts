@@ -33,7 +33,8 @@ export const KEY_GROUPS: KeyGroup[] = [
 			['Ctrl G', 'Edit in your editor on a machine'],
 			['Ctrl Shift F', 'Expand the field to the screen, and back'],
 			['/', 'Skills, at the start of the message'],
-			['[[', 'Link a note']
+			['[[', 'Link a note'],
+			['Ctrl V, or a drop', 'Attach a copied screenshot or file']
 		]
 	},
 	{

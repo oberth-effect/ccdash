@@ -13,6 +13,7 @@
 - [The panel](panel.md)
 - [Prompts and notifications](prompts-and-notifications.md)
 - [Sessions](sessions.md)
+- [Attachments](attachments.md)
 - [Knowledge](knowledge.md)
 - [Reports](reports.md)
 - [Machines](machines.md)
