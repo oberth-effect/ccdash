@@ -1991,18 +1991,26 @@ mod tests {
                 .collect();
             file_dacl_text(&path).unwrap()
         };
-        assert_eq!(text(""), format!("D:PAI(A;OICI;FA;;;{sid})"));
-        let wanted = Descriptor::from_sddl(&format!("D:PAI(A;OICI;FA;;;{sid})")).unwrap();
+        // NOTE: read back, SDDL names a well-known account by its alias: a CI runner's
+        // user is the built-in Administrator, `LA`
+        let wanted = Descriptor::from_sddl(&format!("D:PAI(A;OICI;FA;;;{sid})"))
+            .unwrap()
+            .dacl_text()
+            .unwrap();
         assert_eq!(
-            wanted.dacl_text().unwrap(),
             text(""),
-            "a second call compares equal and leaves it"
+            wanted,
+            "the user alone; a second call compares equal and leaves it"
         );
+        let user = wanted
+            .strip_prefix("D:PAI(A;OICI;FA;;;")
+            .and_then(|rest| rest.strip_suffix(')'))
+            .expect("one ACE, the user's");
         for file in ["before", "after"] {
             let acl = text(file);
             // NOTE: one inherited ACE, the user's
             assert_eq!(acl.matches("(A;").count(), 1, "{file}: {acl}");
-            assert!(acl.contains(&sid), "{file}: {acl}");
+            assert!(acl.ends_with(&format!(";;;{user})")), "{file}: {acl}");
         }
         owner_only(&dir).unwrap();
         let _ = std::fs::remove_dir_all(&dir);
