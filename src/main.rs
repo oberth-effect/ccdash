@@ -63,8 +63,25 @@ use crate::{
     wire::Source,
 };
 
+/// `0.1.0`; with the commit and the protocol when the build names its
+/// commit (`CCDASH_REV`, as the Windows release job does).
+fn version() -> &'static str {
+    static TEXT: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    TEXT.get_or_init(|| {
+        let version = env!("CARGO_PKG_VERSION");
+        match option_env!("CCDASH_REV").filter(|rev| !rev.is_empty()) {
+            Some(rev) => format!(
+                "{version} ({}, protocol {})",
+                rev.get(..7).unwrap_or(rev),
+                protocol::VERSION
+            ),
+            None => version.to_owned(),
+        }
+    })
+}
+
 #[derive(Parser)]
-#[command(version, about)]
+#[command(version = version(), about)]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -190,6 +207,32 @@ enum Command {
     #[cfg(windows)]
     #[command(hide = true)]
     EndTree { pid: u32 },
+    /// Install or refresh ccdash for this user: the binary on PATH, the
+    /// plugin for every session, Claude Code's hooks, the tray at logon;
+    /// then start it anew (Windows).
+    #[cfg(windows)]
+    Setup(win::setup::Options),
+    /// Run the collector under an icon in the taskbar: how it is doing,
+    /// the panel, the configuration, the log, updates (Windows).
+    #[cfg(windows)]
+    Tray {
+        #[arg(long)]
+        config: Option<PathBuf>,
+        /// Take over from the tray with this process id once it has ended.
+        #[arg(long, hide = true)]
+        replace: Option<u32>,
+    },
+    /// Put the build the hub's protocol calls for in place, from this
+    /// build's releases, and start it (Windows).
+    #[cfg(windows)]
+    Update {
+        /// Only say what the releases hold.
+        #[arg(long)]
+        check: bool,
+        /// Print this build's release manifest (the release job's).
+        #[arg(long, hide = true)]
+        describe: bool,
+    },
     /// Write every note of the hub's database as markdown with frontmatter:
     /// `<dir>/<workspace>/<kind>/<slug>.md`. Reads the database directly,
     /// so it works on a backup copy too.
@@ -483,6 +526,19 @@ fn main() -> ExitCode {
         Command::PreReceive => return exit(workspace::hub::pre_receive()),
         #[cfg(windows)]
         Command::EndTree { pid } => actions::end_tree_in_console(pid),
+        #[cfg(windows)]
+        Command::Setup(options) => win::setup::run(&options),
+        #[cfg(windows)]
+        Command::Tray { config, replace } => win::tray::run(config, replace),
+        #[cfg(windows)]
+        Command::Update { describe: true, .. } => {
+            win::tray::update::describe().and_then(|manifest| {
+                println!("{}", serde_json::to_string_pretty(&manifest)?);
+                Ok(())
+            })
+        }
+        #[cfg(windows)]
+        Command::Update { check, .. } => win::tray::update_now(check),
         Command::Export { config, db, dir } => export(config, db, &dir),
         Command::Demo { dir, listen } => {
             logging();
