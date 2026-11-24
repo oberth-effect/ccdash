@@ -199,7 +199,7 @@ runs on Linux only). ccdash for Windows is one file from the releases:
 
 ```powershell
 curl.exe -fLO https://github.com/tsandrini/ccdash/releases/latest/download/ccdash-x86_64.exe
-.\ccdash-x86_64.exe setup --hub wss://ccdash.example.org/collect --token .\token
+.\ccdash-x86_64.exe win setup --hub wss://ccdash.example.org/collect --token .\token
 ```
 
 It installs the collector, the hooks and the plugin, and a tray icon that

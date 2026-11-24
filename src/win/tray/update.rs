@@ -120,7 +120,7 @@ pub fn hash(path: &Path) -> Result<(String, u64)> {
 }
 
 /// The manifest of the running executable: what the release job publishes
-/// next to it (`ccdash update --describe`).
+/// next to it (`ccdash win update --describe`).
 ///
 /// # Errors
 ///
@@ -332,7 +332,7 @@ fn verify(file: &Path, manifest: &Manifest) -> Result<()> {
         bail!("the download is not the file its manifest describes (the release may be changing)");
     }
     let output = Command::new(file)
-        .args(["update", "--describe"])
+        .args(["win", "update", "--describe"])
         .stdin(Stdio::null())
         .creation_flags(CREATE_NO_WINDOW)
         .output()

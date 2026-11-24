@@ -1,4 +1,4 @@
-//! `ccdash setup`: ccdash for this user on a Windows workstation
+//! `ccdash win setup`: ccdash for this user on a Windows workstation
 //! (docs/windows.md). The binary on PATH, the ccdash plugin for every
 //! Claude Code session, Claude Code's hooks, the tray at logon; then the
 //! tray and its collector start anew. The binary carries what it installs,
@@ -10,7 +10,7 @@
 //! with the Home Manager module; a switch adds what it needs where it is
 //! missing, and what the config already says is kept.
 //!
-//! `ccdash setup --remove` takes it all out again, the configuration and
+//! `ccdash win setup --remove` takes it all out again, the configuration and
 //! the state excepted. Windows runs it for Uninstall in its list of
 //! installed apps, where setup enters ccdash.
 
@@ -35,7 +35,7 @@ use crate::{
     },
 };
 
-/// What `ccdash setup` is asked for.
+/// What `ccdash win setup` is asked for.
 #[derive(clap::Args, Debug, Default)]
 pub struct Options {
     /// The hub's `/collect` address, as `wss://ccdash.example.org/collect`
@@ -476,8 +476,8 @@ fn first_config(places: &Places, options: &Options) -> Result<String> {
     }
     fsx::set_mode(&kept, 0o600).with_context(|| format!("closing {}", kept.display()))?;
     let mut lines = vec![
-        "# ccdash collector, written by `ccdash setup` at the first install and yours to edit since".to_owned(),
-        "# (docs/windows.md, docs/configuration.md). The switches of `ccdash setup` add their keys".to_owned(),
+        "# ccdash collector, written by `ccdash win setup` at the first install and yours to edit since".to_owned(),
+        "# (docs/windows.md, docs/configuration.md). The switches of `ccdash win setup` add their keys".to_owned(),
         "# where missing.".to_owned(),
     ];
     if let Some(host) = &options.host {
@@ -665,7 +665,7 @@ fn claude_settings(places: &Places, options: &Options) -> Result<()> {
 /// 8. The tray at logon, which starts the collector: the `Run` key needs
 ///    no elevation (a scheduled task would).
 fn at_logon(places: &Places) -> Result<()> {
-    let wanted = format!("\"{}\" tray", places.exe.display());
+    let wanted = format!("\"{}\" win tray", places.exe.display());
     // NOTE: what windows/install.ps1 set: the collector alone, without the tray
     win::delete_user_registry_value(RUN_KEY, "ccdash-collector")
         .context("removing the old start at logon")?;
@@ -702,7 +702,7 @@ fn listed(places: &Places, key: &str, only_there: bool) -> Result<()> {
             .and_then(|()| std::fs::write(&icon, &image))
             .with_context(|| format!("writing {}", icon.display()))?;
     }
-    let remove = format!("\"{}\" setup --remove", places.exe.display());
+    let remove = format!("\"{}\" win setup --remove", places.exe.display());
     let authors = env!("CARGO_PKG_AUTHORS");
     let bin = places.exe.parent().unwrap_or(&places.exe);
     let texts = [
@@ -736,7 +736,9 @@ fn listed(places: &Places, key: &str, only_there: bool) -> Result<()> {
     };
     set().context("entering ccdash among the installed apps")?;
     if !there {
-        say("ccdash is in Windows' installed apps; Uninstall there runs `ccdash setup --remove`");
+        say(
+            "ccdash is in Windows' installed apps; Uninstall there runs `ccdash win setup --remove`",
+        );
     }
     Ok(())
 }
@@ -882,7 +884,7 @@ fn purged(places: &Places) -> Result<()> {
     Ok(())
 }
 
-/// `ccdash setup --remove`: what setup put in place. First what calls
+/// `ccdash win setup --remove`: what setup put in place. First what calls
 /// ccdash, Claude Code's hooks and the profile's line: while those cannot
 /// be taken out, the binary they call stays, and the entry among the
 /// installed apps with it, to try again from. Past that it goes on over
@@ -1025,7 +1027,7 @@ fn warn_of_places() {
     }
 }
 
-/// `ccdash setup`.
+/// `ccdash win setup`.
 ///
 /// # Errors
 ///
@@ -1283,7 +1285,7 @@ mod tests {
         assert_eq!(value("DisplayVersion").as_deref(), Some(crate::version()));
         assert_eq!(
             value("UninstallString"),
-            Some(format!("\"{}\" setup --remove", places.exe.display()))
+            Some(format!("\"{}\" win setup --remove", places.exe.display()))
         );
         let icon = PathBuf::from(value("DisplayIcon").unwrap());
         assert_eq!(icon, places.share.join(ICON_NAME));

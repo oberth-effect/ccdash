@@ -1,4 +1,4 @@
-//! `ccdash tray`: the collector under an icon in the taskbar's notification
+//! `ccdash win tray`: the collector under an icon in the taskbar's notification
 //! area (docs/windows.md). It starts the collector and starts it again
 //! when it ends, shows how it and its sessions are doing, opens the panel,
 //! the configuration and the log, and keeps the build in step with the hub
@@ -411,7 +411,7 @@ pub fn end_tray() -> Option<u32> {
     Some(pid)
 }
 
-/// Starts `exe tray` with no console, for good: it does not end with this
+/// Starts `exe win tray` with no console, for good: it does not end with this
 /// process, and holds none of its handles.
 ///
 /// # Errors
@@ -419,7 +419,7 @@ pub fn end_tray() -> Option<u32> {
 /// The process cannot be started.
 pub fn start_detached(exe: &Path, config: Option<&Path>, replace: Option<u32>) -> Result<Child> {
     let mut command = Command::new(exe);
-    command.arg("tray");
+    command.args(["win", "tray"]);
     if let Some(config) = config {
         command.arg("--config").arg(config);
     }
@@ -446,7 +446,7 @@ pub fn start_detached(exe: &Path, config: Option<&Path>, replace: Option<u32>) -
         .stderr(Stdio::null())
         .creation_flags(DETACHED_PROCESS)
         .spawn()
-        .with_context(|| format!("starting {} tray", exe.display()))
+        .with_context(|| format!("starting {} win tray", exe.display()))
 }
 
 /// The collector's process and when to start it.
@@ -752,7 +752,7 @@ fn check_update(shared: &Arc<Shared>, protocol: u32, asked: bool) {
 /// hooks), then its tray takes over from this one.
 fn hand_over(shared: &Shared, supervisor: &mut Supervisor, exe: &Path) -> Result<()> {
     let setup = Command::new(exe)
-        .args(["setup", "--refresh"])
+        .args(["win", "setup", "--refresh"])
         .stdin(Stdio::null())
         .creation_flags(CREATE_NO_WINDOW)
         .output();
@@ -931,7 +931,7 @@ fn detach(dir: &Path, config: Option<&Path>, replace: Option<u32>) -> Result<()>
     Ok(())
 }
 
-/// `ccdash update`: looks at the release for the hub's protocol (this
+/// `ccdash win update`: looks at the release for the hub's protocol (this
 /// build's, unless the hub refuses it) and puts its build in place; the
 /// new build then sets itself up and starts. `only_check` just says what
 /// the releases hold.
@@ -968,9 +968,9 @@ pub fn update_now(only_check: bool) -> Result<()> {
             // of and would pass on: whoever reads that pipe would wait for the tray to end
             win::keep_std_handles();
             let status = Command::new(&exe)
-                .arg("setup")
+                .args(["win", "setup"])
                 .status()
-                .with_context(|| format!("starting {} setup", exe.display()))?;
+                .with_context(|| format!("starting {} win setup", exe.display()))?;
             if !status.success() {
                 bail!("its setup failed ({status})");
             }
@@ -979,7 +979,7 @@ pub fn update_now(only_check: bool) -> Result<()> {
     Ok(())
 }
 
-/// `ccdash tray`.
+/// `ccdash win tray`.
 ///
 /// # Errors
 ///

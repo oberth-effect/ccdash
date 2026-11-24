@@ -207,32 +207,12 @@ enum Command {
     #[cfg(windows)]
     #[command(hide = true)]
     EndTree { pid: u32 },
-    /// Install or refresh ccdash for this user: the binary on PATH, the
-    /// plugin for every session, Claude Code's hooks, the tray at logon;
-    /// then start it anew (Windows).
+    /// What only a Windows workstation has: `setup` installs ccdash for
+    /// this user, `tray` runs the collector under an icon in the taskbar,
+    /// `update` puts the build the hub's protocol calls for in place.
     #[cfg(windows)]
-    Setup(win::setup::Options),
-    /// Run the collector under an icon in the taskbar: how it is doing,
-    /// the panel, the configuration, the log, updates (Windows).
-    #[cfg(windows)]
-    Tray {
-        #[arg(long)]
-        config: Option<PathBuf>,
-        /// Take over from the tray with this process id once it has ended.
-        #[arg(long, hide = true)]
-        replace: Option<u32>,
-    },
-    /// Put the build the hub's protocol calls for in place, from this
-    /// build's releases, and start it (Windows).
-    #[cfg(windows)]
-    Update {
-        /// Only say what the releases hold.
-        #[arg(long)]
-        check: bool,
-        /// Print this build's release manifest (the release job's).
-        #[arg(long, hide = true)]
-        describe: bool,
-    },
+    #[command(subcommand)]
+    Win(win::Command),
     /// Write every note of the hub's database as markdown with frontmatter:
     /// `<dir>/<workspace>/<kind>/<slug>.md`. Reads the database directly,
     /// so it works on a backup copy too.
@@ -527,18 +507,7 @@ fn main() -> ExitCode {
         #[cfg(windows)]
         Command::EndTree { pid } => actions::end_tree_in_console(pid),
         #[cfg(windows)]
-        Command::Setup(options) => win::setup::run(&options),
-        #[cfg(windows)]
-        Command::Tray { config, replace } => win::tray::run(config, replace),
-        #[cfg(windows)]
-        Command::Update { describe: true, .. } => {
-            win::tray::update::describe().and_then(|manifest| {
-                println!("{}", serde_json::to_string_pretty(&manifest)?);
-                Ok(())
-            })
-        }
-        #[cfg(windows)]
-        Command::Update { check, .. } => win::tray::update_now(check),
+        Command::Win(command) => win::run(command),
         Command::Export { config, db, dir } => export(config, db, &dir),
         Command::Demo { dir, listen } => {
             logging();

@@ -1,6 +1,6 @@
 # `claude` with the ccdash channel: the Windows twin of the Home Manager module's `claude`
 # wrapper (flake-parts/modules/home-manager/ccdash.nix, `claudeCode.channel.enable`).
-# `ccdash setup --channel` puts it in ~\.local\share\ccdash and dot-sources it from the
+# `ccdash win setup --channel` puts it in ~\.local\share\ccdash and dot-sources it from the
 # PowerShell profile; the binary carries this file (src/win/setup/mod.rs).
 #
 # Interactive sessions start with `--channels plugin:ccdash@inline --plugin-dir <plugin>`, so

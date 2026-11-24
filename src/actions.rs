@@ -200,7 +200,7 @@ pub async fn open_session(session: &Session, attach_command: &[String]) -> Resul
         .map(|arg| arg.replace("{id}", &short_id))
         .collect();
     let (program, args) = argv.split_first().context(if cfg!(windows) {
-        "no terminal to attach in: set `[attach] command` (`ccdash setup --terminal`)"
+        "no terminal to attach in: set `[attach] command` (`ccdash win setup --terminal`)"
     } else {
         "no terminal to attach in: set `[attach] command` (Home Manager: `services.ccdash.terminal`)"
     })?;

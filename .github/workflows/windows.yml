@@ -69,7 +69,7 @@ jobs:
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test
 
-  # `ccdash.exe` as a machine installs it (`ccdash setup`): one file, which
+  # `ccdash.exe` as a machine installs it (`ccdash win setup`): one file, which
   # carries the plugin, kept as the run's artifact. On main the `publish`
   # job puts it into the release of its protocol; a build of another branch
   # or of a pull request updates from nowhere.
@@ -114,7 +114,7 @@ jobs:
           mkdir dist
           cp "target/$HOST/release/ccdash.exe" dist/ccdash-x86_64.exe
           # NOTE: the build describes itself: the manifest is what the updater reads
-          dist/ccdash-x86_64.exe update --describe > dist/ccdash-x86_64.json
+          dist/ccdash-x86_64.exe win update --describe > dist/ccdash-x86_64.json
           cat dist/ccdash-x86_64.json
           dist/ccdash-x86_64.exe --version
       - uses: actions/upload-artifact@v7
@@ -173,7 +173,7 @@ jobs:
           notes="The newest Windows build that speaks protocol $protocol with its hub: commit $GITHUB_SHA.
           Every later build of this protocol replaces it; a machine's tray updates to it by itself.
 
-          To install: download \`ccdash-x86_64.exe\` and run \`ccdash-x86_64.exe setup --hub wss://<hub>/collect --token <token file>\` (docs/windows.md)."
+          To install: download \`ccdash-x86_64.exe\` and run \`ccdash-x86_64.exe win setup --hub wss://<hub>/collect --token <token file>\` (docs/windows.md)."
           if gh release view "$tag" > /dev/null 2>&1; then
             # NOTE: the executable, then the manifest that describes it: a machine that looks
             # between the two finds a file its manifest does not describe, and keeps what it has

@@ -212,7 +212,7 @@ pub fn to_text(json: &Json) -> Result<String> {
     Ok(serde_json::to_string_pretty(json)? + "\n")
 }
 
-/// What `ccdash setup` may add beyond the hooks.
+/// What `ccdash win setup` may add beyond the hooks.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Extras {
     pub status_line: bool,

@@ -1,6 +1,7 @@
 //! What only Windows has: safe wrappers over the Win32 calls ccdash makes
 //! there, and under them what a Windows workstation is installed and run
-//! with, [`setup`] and [`tray`] (docs/windows.md).
+//! with, [`setup`] and [`tray`] (docs/windows.md): the commands of
+//! `ccdash win` ([`Command`]).
 
 pub mod setup;
 pub mod tray;
@@ -134,6 +135,53 @@ use windows_sys::{
     },
     core::{BOOL, PWSTR},
 };
+
+/// `ccdash win …`: what only a Windows workstation has.
+#[derive(clap::Subcommand)]
+pub enum Command {
+    /// Install or refresh ccdash for this user: the binary on PATH, the
+    /// plugin for every session, Claude Code's hooks, the tray at logon;
+    /// then start it anew.
+    Setup(setup::Options),
+    /// Run the collector under an icon in the taskbar: how it is doing,
+    /// the panel, the configuration, the log, updates.
+    Tray {
+        #[arg(long)]
+        config: Option<std::path::PathBuf>,
+        /// Take over from the tray with this process id once it has ended.
+        #[arg(long, hide = true)]
+        replace: Option<u32>,
+    },
+    /// Put the build the hub's protocol calls for in place, from this
+    /// build's releases, and start it.
+    Update {
+        /// Only say what the releases hold.
+        #[arg(long)]
+        check: bool,
+        /// Print this build's release manifest (the release job's).
+        #[arg(long, hide = true)]
+        describe: bool,
+    },
+}
+
+/// Runs a command of `ccdash win`.
+///
+/// # Errors
+///
+/// The command's own: [`setup::run`], [`tray::run`], [`tray::update_now`],
+/// or the running executable cannot be read for its manifest.
+pub fn run(command: Command) -> anyhow::Result<()> {
+    match command {
+        Command::Setup(options) => setup::run(&options),
+        Command::Tray { config, replace } => tray::run(config, replace),
+        Command::Update { describe: true, .. } => {
+            let manifest = tray::update::describe()?;
+            println!("{}", serde_json::to_string_pretty(&manifest)?);
+            Ok(())
+        }
+        Command::Update { check, .. } => tray::update_now(check),
+    }
+}
 
 /// The DNS host name, as configured.
 pub fn hostname() -> Option<String> {

@@ -29,7 +29,7 @@ Download it and run its setup, as yourself (no elevation):
 
 ```powershell
 curl.exe -fLO https://github.com/tsandrini/ccdash/releases/latest/download/ccdash-x86_64.exe
-.\ccdash-x86_64.exe setup --hub wss://ccdash.example.org/collect --token .\token
+.\ccdash-x86_64.exe win setup --hub wss://ccdash.example.org/collect --token .\token
 ```
 
 The file is not signed: downloaded with a browser, Windows asks before it
@@ -55,13 +55,13 @@ The host name is the DNS host name, lowercased; `--host` sets another.
 Setup is safe to run again: what is in place is kept. To build ccdash
 yourself you need Rust with a C compiler (ring and the bundled SQLite need
 one: the MSVC toolchain, or the GNU one with MinGW); then `cargo build
---release` and `target\release\ccdash.exe setup …`. Such a build does not
+--release` and `target\release\ccdash.exe win setup …`. Such a build does not
 update itself (section 5).
 
 ## 2. Optional features
 
 As on NixOS, everything beyond reporting and answering prompts is off until
-you turn it on. A switch of `ccdash setup` adds what it needs where it is
+you turn it on. A switch of `ccdash win setup` adds what it needs where it is
 missing, at the first install or any later run; what `config.toml` already
 says is kept.
 
@@ -102,7 +102,7 @@ PowerShell 7's profile; another shell loads
 
 ## 3. The tray
 
-`ccdash tray` runs the collector under an icon in the taskbar's
+`ccdash win tray` runs the collector under an icon in the taskbar's
 notification area; Windows keeps a new icon under `^` until you drag it
 out. The icon is ccdash's three bars, and a dot in its corner says what
 wants a look:
@@ -132,9 +132,9 @@ collector started some other way (`ccdash collector` in a terminal) is left
 to run and shown like its own. What the tray itself did is in `tray.log`,
 next to the collector's.
 
-Setup puts `ccdash tray` into the `Run` key, which needs no elevation (a
+Setup puts `ccdash win tray` into the `Run` key, which needs no elevation (a
 scheduled task, `schtasks /SC ONLOGON`, would); Task Manager › Startup apps
-turns it off and on. From a terminal, `ccdash tray` returns at once and
+turns it off and on. From a terminal, `ccdash win tray` returns at once and
 leaves the tray running. A released build opens no console window at logon
 on Windows 11 24H2 and later; on an earlier Windows, and with a build of
 your own, one opens for a moment.
@@ -196,17 +196,17 @@ and their channel reconnects to the new collector. An update also brings
 the build's plugin and `claude` wrapper and the hooks it may have added to
 `settings.json`; it changes nothing else.
 
-By hand, `ccdash update` does the same from a terminal, and `ccdash update
---check` only says what the releases hold. `ccdash --version` names the
-build's commit and protocol. Any release's `ccdash-x86_64.exe setup`
+By hand, `ccdash win update` does the same from a terminal, and `ccdash win
+update --check` only says what the releases hold. `ccdash --version` names
+the build's commit and protocol. Any release's `ccdash-x86_64.exe win setup`
 installs that build over the one in place.
 
 A build of your own names no releases and stays as it is: build again and
-run its `setup`.
+run its `win setup`.
 
 ## 6. Removing
 
-Uninstall ccdash in Settings › Apps › Installed apps, or run `ccdash setup
+Uninstall ccdash in Settings › Apps › Installed apps, or run `ccdash win setup
 --remove`. It stops the tray and the collector and takes out what setup put
 in:
 
@@ -226,7 +226,7 @@ stays in the installed apps, and `remove.log` in the state folder says why,
 as Settings shows no output.
 
 The configuration with its token and the state stay, for a later install;
-`ccdash setup --remove --purge` takes them too. `~\.local\bin` stays on
+`ccdash win setup --remove --purge` takes them too. `~\.local\bin` stays on
 your `PATH`, as Claude Code lives there as well. Sessions that are open
 call ccdash's hooks until they are started again.
 
@@ -255,7 +255,7 @@ agree on, and only `LOCALAPPDATA` is the same for all of them. The
 collector's log names its pipes. One tray runs per state folder, and it
 ends and restarts only the collector of its own pipes. Such a variable
 belongs to your user (`setx`), not to one shell: the tray that starts at
-logon has to see it too, and `ccdash setup` warns when it would not.
+logon has to see it too, and `ccdash win setup` warns when it would not.
 
 ## 8. Differences
 

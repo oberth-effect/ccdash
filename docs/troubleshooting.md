@@ -64,7 +64,7 @@ The panel offers only what the machine does.
 | Lock, Suspend                     | `power.lock`, `power.suspend`                                                                     |
 | The Claude state, Workspace pages | `sync.enable`; the hub's and the collectors' `workspace.enable`                                   |
 
-On Windows the switches of `ccdash setup` turn these on
+On Windows the switches of `ccdash win setup` turn these on
 ([Windows](windows.md#2-optional-features)).
 
 Without the allowlist Claude Code does not load the channel, so Reply stays
