@@ -14,6 +14,8 @@ on:
       - "Cargo.lock"
       - "windows/**"
       - "claude-plugin/**"
+      # NOTE: the executable carries it, and a test reads its shapes (src/win/tray/icon.rs)
+      - "dms-plugin/icon.svg"
       - "web/src/lib/api/types.ts"
       - ".github/workflows/windows.yml"
   pull_request:
@@ -23,6 +25,8 @@ on:
       - "Cargo.lock"
       - "windows/**"
       - "claude-plugin/**"
+      # NOTE: the executable carries it, and a test reads its shapes (src/win/tray/icon.rs)
+      - "dms-plugin/icon.svg"
       - "web/src/lib/api/types.ts"
       - ".github/workflows/windows.yml"
   workflow_dispatch:
