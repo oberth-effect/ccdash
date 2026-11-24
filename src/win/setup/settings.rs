@@ -448,33 +448,33 @@ mod tests {
     #[test]
     fn what_the_file_holds_stays_in_its_order_with_ccdash_next_to_it() {
         let before = r#"{
-  "model": "opus",
-  "hooks": {
-    "Stop": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "my-own-hook"
-          }
+    "model": "opus",
+    "hooks": {
+        "Stop": [
+            {
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "my-own-hook"
+                    }
+                ]
+            }
+        ],
+        "PreToolUse": [
+            {
+                "matcher": "*",
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "ccdash emit",
+                        "timeout": 5
+                    }
+                ]
+            }
         ]
-      }
-    ],
-    "PreToolUse": [
-      {
-        "matcher": "*",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "ccdash emit",
-            "timeout": 5
-          }
-        ]
-      }
-    ]
-  },
-  "alwaysThinkingEnabled": true,
-  "cleanupPeriodDays": 99999
+    },
+    "alwaysThinkingEnabled": true,
+    "cleanupPeriodDays": 99999
 }
 "#;
         let (text, added) = merge(before, Extras::default()).unwrap();
@@ -554,44 +554,44 @@ mod tests {
         let (with, added) = merge("", all).unwrap();
         assert_eq!(unmerge(&with).unwrap(), ("{}\n".to_owned(), added));
         let own = r#"{
-  "model": "opus",
-  "hooks": {
-    "Stop": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "my-own-hook"
-          }
-        ]
-      }
-    ],
-    "PreToolUse": [
-      {
-        "matcher": "Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "ccdash emit",
-            "timeout": 5
-          },
-          {
-            "type": "command",
-            "command": "mine-in-the-same-list"
-          }
-        ]
-      }
-    ],
-    "Notification": []
-  },
-  "statusLine": {
-    "type": "command",
-    "command": "my-line --short"
-  },
-  "env": {
-    "OTEL_METRICS_EXPORTER": "none",
-    "MINE": "1"
-  }
+    "model": "opus",
+    "hooks": {
+        "Stop": [
+            {
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "my-own-hook"
+                    }
+                ]
+            }
+        ],
+        "PreToolUse": [
+            {
+                "matcher": "Bash",
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "ccdash emit",
+                        "timeout": 5
+                    },
+                    {
+                        "type": "command",
+                        "command": "mine-in-the-same-list"
+                    }
+                ]
+            }
+        ],
+        "Notification": []
+    },
+    "statusLine": {
+        "type": "command",
+        "command": "my-line --short"
+    },
+    "env": {
+        "OTEL_METRICS_EXPORTER": "none",
+        "MINE": "1"
+    }
 }
 "#;
         let (with, _) = merge(own, all).unwrap();

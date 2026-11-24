@@ -104,8 +104,8 @@ impl Badge {
     }
 }
 
-/// The dot's centre, its radius, and the radius cleared around it, in 64ths
-/// of the icon's side.
+/// The dot's centre, its radius, and the radius cleared around it, in
+/// sixty-fourths of the icon's side.
 const DOT: (f32, f32, f32, f32) = (48.0, 48.0, 13.0, 16.5);
 /// Samples per pixel and side, for smooth edges.
 const SAMPLES: usize = 4;
@@ -260,8 +260,8 @@ mod tests {
         let svg = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
             <rect width="32" height="32" fill="#000000"/>
             <rect
-              x="4" y="6.5" rx="2" width="8"
-              height="4" fill="#ff8000" />
+                x="4" y="6.5" rx="2" width="8"
+                height="4" fill="#ff8000" />
             <rect x="1" y="1" width="2" height="2" fill="url(#gradient)" />
             <circle cx="5" cy="5" r="2" fill="#ffffff" />
         </svg>"##;
